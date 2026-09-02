@@ -371,18 +371,44 @@ export function analyseCirculation(
   const clearWidth = new Float32Array(distance.length);
   for (let i = 0; i < distance.length; i++) clearWidth[i] = distance[i]! * 2;
 
-  const startPoints = entries.length > 0 ? entries : [region.interiorPoint];
   const starts: number[] = [];
-  for (const entry of startPoints) {
-    const cell = worldToCell(grid, entry);
-    if (cell >= 0 && grid.free[cell]) {
-      starts.push(cell);
-      continue;
+
+  if (entries.length > 0) {
+    for (const entry of entries) {
+      const cell = worldToCell(grid, entry);
+      if (cell >= 0 && grid.free[cell]) {
+        starts.push(cell);
+        continue;
+      }
+      // A doorway's own cell is usually inside the wall and so not free. Search
+      // outwards for the nearest free cell instead of dropping the entry point.
+      const nearby = nearestFreeCell(grid, entry);
+      if (nearby >= 0) starts.push(nearby);
     }
-    // A doorway's own cell is usually inside the wall and so not free. Search
-    // outwards for the nearest free cell instead of dropping the entry point.
-    const nearby = nearestFreeCell(grid, entry);
-    if (nearby >= 0) starts.push(nearby);
+  } else {
+    /*
+     * A room with no doorway drawn yet: start from the most OPEN cell in it.
+     *
+     * Not the interior point. The route is a maximin path, so its width can
+     * never exceed the width at the cell it starts from — and the interior
+     * point of a furnished room is very often underneath something. Falling
+     * back to the nearest free cell then starts the walk wedged against a
+     * table leg, and the whole room is reported as a 20 cm squeeze however
+     * open it actually is.
+     *
+     * That is not a hypothetical: it made the starter room, which has no doors
+     * until somebody adds one, report a squeeze the moment a dining table was
+     * placed in the middle of it. Beginning at the widest point asks the right
+     * question — "if you were standing in the open part of this room, how
+     * narrow does it get to reach the rest of it" — and matches what a real
+     * doorway gives you, since a doorway is passable by construction.
+     */
+    let best = -1;
+    for (let i = 0; i < clearWidth.length; i++) {
+      if (!grid.free[i]) continue;
+      if (best === -1 || clearWidth[i]! > clearWidth[best]!) best = i;
+    }
+    if (best >= 0) starts.push(best);
   }
 
   const reached = reachableFrom(grid, starts);

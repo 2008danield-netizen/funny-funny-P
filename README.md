@@ -6,11 +6,12 @@ walk through it — in the browser, with no install.
 
 **Live app:** https://2008danield-netizen.github.io/VR-home-design-project/
 
-> **Status: session 4 — clearance, ergonomics and a shopping list.** Collision
-> already stopped furniture ending up inside a wall; now the app also tells you
-> whether the room actually works — doors that can open, drawers that can come
-> out, a route you can walk — and totals what it all costs. The AI design advisor
-> and the VR walkthrough are next.
+> **Status: session 5 — the design advisor, and a room generator.** The app now
+> has an opinion. It reads your layout against published interior-design
+> guidelines, tells you what is wrong *and why*, applies the fix for you where it
+> can, and will lay a whole room out from an empty floor. It is a rules engine,
+> not a language model — every judgement names the measurement it failed, runs
+> offline, and can be argued with. The VR walkthrough is next.
 
 ---
 
@@ -72,6 +73,32 @@ rooms they are in, and a running total. Prices ship as rough estimates so the
 totals work immediately, and **every estimated figure is labelled as one** — at
 the line, at the total and in the CSV export. Type a real price over any of them
 and it counts as confirmed.
+
+**A design advisor that shows its working.**
+Fourteen rules drawn from published interior-design guidance — focal points,
+conversation distance, coffee-table reach, rug sizing, visual balance, scale,
+alignment, layered lighting, colour contrast and temperature, bed and desk
+placement, and a laid dining table. Every finding states **the measurement and
+the guideline it failed** (*"the reach is 82 cm; the guideline is 30–45 cm"*),
+the principle behind it, and — where the app is confident the change is safe —
+a button that makes it for you. It praises what is right as well as flagging
+what is not, gives the design a score out of 100, and says plainly that it is a
+list of rules rather than an opinion about your taste.
+
+It is deliberately **not** an LLM. It runs offline, instantly, for free, gives
+the same answer twice, and is explicit enough about its arithmetic that a model
+added later has something to check itself against rather than something to
+replace.
+
+**Furnish a room for me.**
+Pick living room, bedroom, dining room or workspace, a palette and an optional
+budget, and the app lays the room out from an empty floor: the anchor piece on
+the best wall for it, then everything defined relative to that — coffee table at
+a proper reach, rug reaching under the whole seating group, bedsides flanking
+the headboard, chairs set round the table, the desk turned so daylight falls to
+the side of the screen. Then it **takes pieces back out** until you can walk
+through the room, and tells you what it removed and why. It arrives as one undo
+step.
 
 **Materials and light.**
 Nine procedurally generated floor materials (oak, walnut, ash, porcelain,
@@ -189,6 +216,16 @@ src/
 │   ├── collision.ts    Oriented boxes, separating-axis tests, the solver
 │   └── colliders.ts    Turning walls and furniture into colliders
 │
+├── advisor/          Does the room WORK, and is it any good?
+│   ├── types.ts        Findings, fixes, and every guideline number in one place
+│   ├── rules.ts        The fourteen rules — the design knowledge lives here
+│   ├── advise.ts       Running them, and the score
+│   ├── fixes.ts        Applying a suggestion, through the ordinary edit path
+│   ├── generate.ts     Laying a room out from an empty floor
+│   ├── rooms.ts        What a piece is FOR, and therefore what a room is for
+│   ├── colour.ts       Contrast, temperature and hue families
+│   └── geometry.ts     The measuring tape: room walls, blank spans, legality
+│
 ├── clearance/        Does the room work?
 │   ├── zones.ts        Floor each piece needs kept clear, and door swings
 │   ├── circulation.ts  Occupancy grid, distance transform, widest-path search
@@ -261,7 +298,26 @@ src/
     knowingly ignore, and only the rules marked `required` are ever enforced,
     and only in strict mode.
 
-11. **A price carries its provenance everywhere.** `PriceBasis` travels from the
+11. **The advisor never writes a position directly.** Every fix and every piece
+    the generator places goes through `state/furnitureOps.ts`, the same path a
+    mouse drag takes. A suggestion that buries a bed in a wall is far worse than
+    no suggestion, because afterwards the user cannot tell which of the app's
+    guarantees still hold.
+
+12. **A rule offers no fix it has not checked.** Fixes are validated against the
+    real collision and containment tests *before* the button is rendered. An
+    Apply button that does nothing is experienced as the app being broken.
+
+13. **Every finding carries a measurement.** "The room feels unbalanced" is
+    horoscope writing. "84% of the furniture mass is on the north half" is a
+    fact somebody can disagree with — and disagreeing with it is allowed.
+
+14. **The advisor is renderer-free.** Nothing under `advisor/` may import
+    Three.js. It runs under Node in the tests today and could run on a server
+    tomorrow; that is worth one duplicated table of swatch colours, which a test
+    keeps honest.
+
+15. **A price carries its provenance everywhere.** `PriceBasis` travels from the
     catalogue entry through the line item into the total and out to the CSV.
     Never display or export a figure without it — a guessed number that reads
     like a quoted one is how somebody budgets a room wrong.
@@ -272,20 +328,33 @@ src/
 npm test
 ```
 
-101 tests covering the parts where a bug is invisible on screen: room detection
+190 tests covering the parts where a bug is invisible on screen: room detection
 (L-shapes, partitions, disconnected structures, winding, stable identity),
 collision (penetration depth, sliding, wall-snap orientation, wedged pieces),
 furniture placement end to end, clearance zones and circulation analysis,
-structural plan edits, document validation, and the schema migrations. They are pure logic — no browser, no GPU — so they run in
-under a second and gate every deploy.
+structural plan edits, document validation, the schema migrations, every advisor
+rule (does it fire when it should, and stay quiet when it should not), and the
+generator. They are pure logic — no browser, no GPU — so they run in about two
+seconds and gate every deploy.
 
-They have earned their place: they caught a separating-axis test that
-under-reported penetration whenever one box's projection contained the other's
-(so a sofa dropped on a thin wall never escaped it), a solver that never
-terminated on exact contact, a wall-snap that seated furniture facing into the
-wall, and a circulation metric that measured the narrowest gap *anywhere* —
-which is always the few centimetres beside a skirting board, in every room ever
-drawn.
+The advisor's tests ask three things of every rule: does it stay quiet when it
+should, does every fix it offers actually apply, and does applying one leave the
+design legal. The generator is then run past the advisor itself — a layout the
+app builds and its own critic marks down means one of the two has the rule
+wrong.
+
+They have earned their place. Across five sessions they have caught a
+separating-axis test that under-reported penetration whenever one box's
+projection contained the other's (so a sofa dropped on a thin wall never escaped
+it), a solver that never terminated on exact contact, a wall-snap that seated
+furniture facing into the wall, a circulation metric that measured the narrowest
+gap *anywhere* — which is always the few centimetres beside a skirting board —
+a design score whose curve made five small notes outrank a room you could not
+walk into, a colour check that called an off-white "warm" because HSL saturation
+blows up near white, a generator that laid the rug before the armchair existed
+and was then told off by its own rug rule, and a circulation fixture that had
+been passing for three sessions on a fallback value while quietly marooning five
+square metres of floor.
 
 ---
 
@@ -295,14 +364,32 @@ drawn.
 - ~~**Session 2** — editable multi-room plans, doors and windows.~~ ✅
 - ~~**Session 3** — furniture catalogue and hard collision.~~ ✅
 - ~~**Session 4** — clearance, ergonomics and the shopping list.~~ ✅
-- **Session 5 — AI design advisor.** Reads the design document *and the clearance
-  report* — which is already a structured, measured account of what is wrong with
-  a layout — then critiques proportion, circulation and colour, suggests
-  alternatives, and can propose concrete moves. This is also where the price
-  estimates get replaced with real looked-up figures.
-- **Session 6 — VR walkthrough.** WebXR immersive mode with teleport locomotion.
-- **Later** — accounts, cloud sync, shared project links, subscription tiers, and
-  a native app wrapping this same codebase.
+- ~~**Session 5** — the design advisor and the room generator.~~ ✅
+- **Session 6 — VR walkthrough.** WebXR immersive mode with teleport locomotion,
+  so you can put a headset on and stand in the room you have just laid out.
+- **Session 7 — accounts and cloud sync.** Designs currently live only in this
+  browser's `localStorage`; one cleared cache loses everything. This is also the
+  session that makes shared project links and, eventually, subscription tiers
+  possible.
+- **Later** — an LLM advisor layered *on top of* the rules engine rather than
+  replacing it: the rules give it measured facts to reason from and a way to be
+  checked. Real looked-up prices. More retailers. A native app wrapping this
+  same codebase.
+
+### Why the advisor is not an LLM (yet)
+
+It was the obvious way to build it, and it was the wrong first step. The app is
+static files on GitHub Pages with no backend, so an API key cannot be kept
+secret — the honest options were "paste your own key into the browser" or "stand
+up a serverless proxy", and both are infrastructure decisions rather than design
+ones.
+
+More importantly, a model that says *"the sofa is too far from the coffee table"*
+and a rule that says *"the reach is 82 cm, the guideline is 30–45 cm"* are not
+competitors. The second is what makes the first checkable. Building the rules
+first means the model, when it arrives, has measured facts to reason from and a
+list of things it does not need to guess at — and the app keeps working, offline
+and for free, for anyone who never turns it on.
 
 ---
 

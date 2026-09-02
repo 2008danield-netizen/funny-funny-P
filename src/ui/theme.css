@@ -1299,3 +1299,250 @@ select {
 .shopping__basis--unknown {
   color: var(--accent);
 }
+
+/* ============================== Design advisor ==========================
+ *
+ * The score block is the only place in the app that uses colour to pass
+ * judgement, so the four bands are deliberately muted: a red score on
+ * somebody's home is a harsher thing to put on screen than a red build
+ * failure, and the panel has to stay readable rather than alarming.
+ */
+
+.advisor__score {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.advisor__score--excellent { border-color: rgba(122, 176, 130, 0.5); }
+.advisor__score--good { border-color: rgba(216, 163, 74, 0.4); }
+.advisor__score--fair { border-color: rgba(200, 148, 92, 0.4); }
+.advisor__score--needs-work { border-color: rgba(200, 100, 88, 0.45); }
+
+.advisor__number {
+  font-family: var(--font-mono);
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.advisor__outof {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 2px;
+}
+
+.advisor__band {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.advisor__band strong {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.advisor__band span {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.advisor__meter {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  overflow: hidden;
+  margin: 8px 0 4px;
+}
+
+.advisor__meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  transition: width 200ms ease;
+}
+
+.advisor__meter-fill--excellent { background: #7ab082; }
+.advisor__meter-fill--good { background: var(--accent); }
+.advisor__meter-fill--fair { background: #c8945c; }
+.advisor__meter-fill--needs-work { background: #c86458; }
+
+/* --------------------------------- Rooms ------------------------------- */
+
+.advisor__rooms {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0;
+}
+
+.advisor__room {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px;
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.advisor__room:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.advisor__room-name {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.advisor__room-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ------------------------------- Findings ------------------------------ */
+
+.advisor__findings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.advisor__finding {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.advisor__finding-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.advisor__finding-head:hover { background: var(--surface-hover); }
+
+.advisor__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.advisor__finding--critical .advisor__dot { background: #c86458; }
+.advisor__finding--improve .advisor__dot { background: var(--accent); }
+.advisor__finding--polish .advisor__dot { background: #6f7f92; }
+.advisor__finding--praise .advisor__dot { background: #7ab082; }
+
+/* Praise is present but recessive: it should reassure without competing
+   with the things that actually need doing. */
+.advisor__finding--praise { opacity: 0.78; }
+
+.advisor__finding-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.advisor__finding-title {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.35;
+}
+
+.advisor__finding-detail {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.advisor__why {
+  margin: 0;
+  padding: 0 10px 9px 26px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.advisor__apply {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 0 10px 9px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid rgba(216, 163, 74, 0.35);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.advisor__apply:hover {
+  background: rgba(216, 163, 74, 0.26);
+}
+
+.advisor__status {
+  margin: 6px 0 10px;
+  padding: 7px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+/* ------------------------------ The furnisher --------------------------- */
+
+.btn--wide {
+  width: 100%;
+  justify-content: center;
+}
+
+.advisor__furnish {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.advisor__note {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}

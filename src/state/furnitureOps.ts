@@ -82,10 +82,32 @@ export interface PlacementResult {
  * flush, and only then gets nudged clear of anything already standing there.
  * Resolving first and snapping second would undo the resolution.
  */
+export interface PlaceOptions {
+  /**
+   * The angle to drop the piece in at. Defaults to zero (facing +Z).
+   *
+   * The generator and the advisor's fixes have already worked out which way a
+   * piece should face — a chair belongs facing its table, not facing north —
+   * so they need to say so rather than place it and rotate it afterwards,
+   * which would test the WRONG box for collisions and could refuse a placement
+   * that is perfectly legal at the intended angle.
+   */
+  rotation?: number;
+  /**
+   * Whether a wall-placed piece hunts for a nearby wall to seat itself against.
+   *
+   * On (the default) for a human drag, where it is what makes dropping a
+   * bookcase near a wall feel right. Off for a caller that has already chosen
+   * an exact position and angle, and does not want them silently overridden.
+   */
+  snapWalls?: boolean;
+}
+
 export function placeFurniture(
   doc: DesignDocument,
   catalogId: string,
   at: Point2,
+  options: PlaceOptions = {},
 ): PlacementResult {
   if (!isKnownCatalogId(catalogId)) return { id: null, reason: 'Unknown item' };
 
@@ -100,13 +122,13 @@ export function placeFurniture(
     center: { x: at.x, z: at.z },
     halfWidth: entry.width / 2,
     halfDepth: entry.depth / 2,
-    rotation: 0,
+    rotation: options.rotation ?? 0,
   };
 
   const colliders = collidersForNewItem(doc.plan, doc.furniture, catalogId);
 
   // Things that live against walls find one and turn to face the room.
-  if (entry.placement === 'wall') {
+  if ((options.snapWalls ?? true) && entry.placement === 'wall') {
     const snapped = snapToWall(
       box,
       colliders,

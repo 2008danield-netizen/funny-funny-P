@@ -9,13 +9,12 @@
  * cannot navigate to is a complaint rather than a tool.
  */
 
-import { useMemo } from 'react';
-
 import { Panel } from '../components/Panel';
 import { Toggle } from '../components/Toggle';
 import { Slider } from '../components/Slider';
-import { analyseClearance, type ClearanceIssue } from '@/clearance/analyze';
+import type { ClearanceIssue } from '@/clearance/analyze';
 import { useDesign, useDesignEdit } from '@/bridge/useDesign';
+import { useClearanceReport } from '@/bridge/useAnalysis';
 import { useEditor } from '@/bridge/useEditor';
 import { editorStore } from '@/state/selection';
 import { formatLength } from '@/state/units';
@@ -25,9 +24,10 @@ export function IssuesPanel() {
   const edit = useDesignEdit();
   const { showClearance, selection } = useEditor();
 
-  // Memoised on the document: the analysis walks a grid per room, and this
-  // component re-renders on every store change including furniture drags.
-  const report = useMemo(() => analyseClearance(doc), [doc]);
+  // Shared with the Advisor panel, which reads the same circulation figures.
+  // The analysis walks a grid per room and both panels re-render on every
+  // store change, drag frames included, so it is computed once per document.
+  const report = useClearanceReport();
 
   const { required, advisory } = report.counts;
   const clean = required === 0 && advisory === 0;

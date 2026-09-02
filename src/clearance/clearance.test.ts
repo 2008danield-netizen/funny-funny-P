@@ -202,16 +202,30 @@ describe('circulation', () => {
   });
 
   it('finds the gap between two obstacles', () => {
-    // Two blocks leaving a 60 cm slot between them, across a 4 m deep room.
+    /*
+     * Two blocks spanning the width of the room with a 60 cm gap between them,
+     * so the only way from one half to the other is through that gap.
+     *
+     * The geometry matters. An earlier version of this fixture used two blocks
+     * running the full DEPTH of the room, which reads like a slot and is
+     * actually three sealed corridors with no route between them at all — the
+     * test passed on a fallback value rather than on a measured route, and the
+     * five square metres it had marooned went unnoticed because nothing
+     * checked. A squeeze and a barrier are different findings and the fixture
+     * has to be one or the other on purpose.
+     */
     const obstacles: Collider[] = [
-      { kind: 'furniture', id: 'a', center: { x: -1.3, z: 0 }, halfWidth: 1, halfDepth: 2, rotation: 0 },
-      { kind: 'furniture', id: 'b', center: { x: 1.3, z: 0 }, halfWidth: 1, halfDepth: 2, rotation: 0 },
+      { kind: 'furniture', id: 'a', center: { x: -1.65, z: 0 }, halfWidth: 1.35, halfDepth: 0.3, rotation: 0 },
+      { kind: 'furniture', id: 'b', center: { x: 1.65, z: 0 }, halfWidth: 1.35, halfDepth: 0.3, rotation: 0 },
     ];
 
     const report = analyseCirculation(room(), obstacles, [], 0.9);
-    // The slot is 0.6 m wide, so the narrowest route through must be about that
-    // — and below the 0.9 m guideline, so it is reported.
+
+    // Both halves are open, so nothing is cut off — this is a squeeze.
+    expect(report.marooned).toHaveLength(0);
+    // And getting between them means passing through the 60 cm gap.
     expect(report.narrowestRoute).toBeLessThan(0.9);
+    expect(report.narrowestRoute).toBeGreaterThan(0.4);
     expect(report.pinchPoints.length).toBeGreaterThan(0);
   });
 

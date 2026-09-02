@@ -13,6 +13,7 @@ import { Viewport } from './Viewport';
 import { Toolbar } from './Toolbar';
 import { PlanPanel } from './panels/PlanPanel';
 import { CataloguePanel } from './panels/CataloguePanel';
+import { AdvisorPanel } from './panels/AdvisorPanel';
 import { IssuesPanel } from './panels/IssuesPanel';
 import { ShoppingListPanel } from './panels/ShoppingListPanel';
 import { InspectorPanel } from './panels/InspectorPanel';
@@ -127,6 +128,9 @@ export function App() {
                 the selection is what the user is thinking about, so its
                 properties should never require scrolling to reach. */}
             <InspectorPanel onSplitWall={handleSplitWall} onRotate={handleRotate} />
+            {/* The advisor sits above the catalogue: it is the panel that tells
+                you what to do next, and the catalogue is where you go to do it. */}
+            <AdvisorPanel />
             <CataloguePanel />
             <IssuesPanel />
             <ShoppingListPanel />
