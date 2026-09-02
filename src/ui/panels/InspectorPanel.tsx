@@ -29,6 +29,9 @@ import {
 } from '@/scene/openings/presets';
 import { editorStore } from '@/state/selection';
 import { removeOpening, deleteWall, resolveRoomSpec, setRoomSpec, updateOpening } from '@/state/planOps';
+import { duplicateFurniture, removeFurniture, resizeFurniture } from '@/state/furnitureOps';
+import { getCatalogEntry } from '@/furniture/catalog';
+import { itemDimensions } from '@/physics/colliders';
 import { OPENING_LIMITS, PLAN_LIMITS, type WallSide } from '@/state/types';
 import { formatArea, formatLength } from '@/state/units';
 
@@ -37,14 +40,17 @@ type FinishId = (typeof WALL_FINISHES)[number]['id'];
 interface InspectorPanelProps {
   /** Inserts a corner at the middle of the selected wall. */
   onSplitWall: () => void;
+  /** Turns the selected piece of furniture by one step. */
+  onRotate: (direction: number) => void;
 }
 
-export function InspectorPanel({ onSplitWall }: InspectorPanelProps) {
+export function InspectorPanel({ onSplitWall, onRotate }: InspectorPanelProps) {
   const { selection } = useEditor();
   const wall = useSelectedWall();
   const openingSelection = useSelectedOpening();
   const region = useSelectedRegion();
 
+  if (selection.kind === 'furniture') return <FurnitureInspector onRotate={onRotate} />;
   if (wall) return <WallInspector onSplitWall={onSplitWall} />;
   if (openingSelection) return <OpeningInspector />;
   if (region) return <RoomInspector />;
@@ -62,7 +68,7 @@ export function InspectorPanel({ onSplitWall }: InspectorPanelProps) {
 
 /* --------------------------------- Wall -------------------------------- */
 
-function WallInspector({ onSplitWall }: InspectorPanelProps) {
+function WallInspector({ onSplitWall }: Pick<InspectorPanelProps, 'onSplitWall'>) {
   const wall = useSelectedWall();
   const plan = useDesignSlice((doc) => doc.plan);
   const units = useDesignSlice((doc) => doc.units);
@@ -175,6 +181,143 @@ function WallInspector({ onSplitWall }: InspectorPanelProps) {
       <p className="field__hint">
         Adding a corner splits this wall in two so you can bend it — the fastest
         way to turn a rectangle into an L-shaped room.
+      </p>
+    </Panel>
+  );
+}
+
+/* ------------------------------ Furniture ------------------------------ */
+
+function FurnitureInspector({ onRotate }: Pick<InspectorPanelProps, 'onRotate'>) {
+  const { selection } = useEditor();
+  const furniture = useDesignSlice((doc) => doc.furniture);
+  const units = useDesignSlice((doc) => doc.units);
+  const edit = useDesignEdit();
+
+  const item = furniture.find((candidate) => candidate.id === selection.id);
+  if (!item) return null;
+
+  const itemId = item.id;
+  const entry = getCatalogEntry(item.catalogId);
+  const dimensions = itemDimensions(item);
+  const degrees = Math.round((item.rotation * 180) / Math.PI);
+
+  return (
+    <Panel title={entry.name} badge={entry.series}>
+      <p className="field__hint">{entry.description}</p>
+
+      <div className="summary">
+        <div className="summary__item">
+          <span className="summary__label">Width</span>
+          <span className="summary__value">{formatLength(dimensions.width, units)}</span>
+        </div>
+        <div className="summary__item">
+          <span className="summary__label">Depth</span>
+          <span className="summary__value">{formatLength(dimensions.depth, units)}</span>
+        </div>
+        <div className="summary__item">
+          <span className="summary__label">Height</span>
+          <span className="summary__value">{formatLength(dimensions.height, units)}</span>
+        </div>
+      </div>
+
+      {/* Colourways. Each swatch shows the frame and upholstery colours
+          together, since for most pieces both are visible at once. */}
+      <div className="field">
+        <span className="field__label">Finish</span>
+        <div className="colorways">
+          {entry.colorways.map((colorway) => {
+            const active = (item.colorwayId ?? entry.colorways[0]!.id) === colorway.id;
+            return (
+              <button
+                key={colorway.id}
+                type="button"
+                title={colorway.label}
+                aria-label={colorway.label}
+                aria-pressed={active}
+                className={`colorways__item ${active ? 'colorways__item--active' : ''}`}
+                onClick={() =>
+                  edit((draft) => {
+                    const target = draft.furniture.find((candidate) => candidate.id === itemId);
+                    if (target) target.colorwayId = colorway.id;
+                  })
+                }
+              >
+                <span style={{ background: colorway.frame }} />
+                <span style={{ background: colorway.soft }} />
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="field">
+        <label className="field__label">
+          <span>Rotation</span>
+          <span className="field__value">{degrees}&deg;</span>
+        </label>
+        <div className="button-row">
+          <button type="button" className="btn" onClick={() => onRotate(-1)} title="Rotate anticlockwise (Shift+R)">
+            &#8630; 15&deg;
+          </button>
+          <button type="button" className="btn" onClick={() => onRotate(1)} title="Rotate clockwise (R)">
+            15&deg; &#8631;
+          </button>
+        </div>
+      </div>
+
+      {/* Only a genuinely variable product is resizable — see the note on
+          `resizable` in the catalogue. */}
+      {entry.resizable?.width && (
+        <Slider
+          label="Length"
+          displayValue={formatLength(dimensions.width, units)}
+          value={dimensions.width}
+          min={entry.resizable.width[0]}
+          max={entry.resizable.width[1]}
+          step={0.01}
+          onChange={(value) =>
+            edit(
+              (draft) => {
+                resizeFurniture(draft, itemId, { width: value });
+              },
+              { history: 'coalesce', coalesceKey: `furniture.${itemId}.width` },
+            )
+          }
+        />
+      )}
+
+      <div className="button-row">
+        <button
+          type="button"
+          className="btn"
+          title="Duplicate (Ctrl/Cmd + D)"
+          onClick={() => {
+            let created: string | null = null;
+            edit((draft) => {
+              created = duplicateFurniture(draft, itemId);
+            });
+            if (created) editorStore.select('furniture', created);
+          }}
+        >
+          Duplicate
+        </button>
+        <button
+          type="button"
+          className="btn btn--danger"
+          onClick={() => {
+            edit((draft) => removeFurniture(draft, itemId));
+            editorStore.clearSelection();
+          }}
+        >
+          Remove
+        </button>
+      </div>
+
+      <p className="field__hint">
+        Drag it anywhere in the room — it will not pass through a wall or another
+        piece, and things that belong against a wall snap flush to one as they
+        get close.
       </p>
     </Panel>
   );

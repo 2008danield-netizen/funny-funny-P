@@ -10,6 +10,7 @@ import {
   SCHEMA_VERSION,
   type DesignDocument,
   type FloorSpec,
+  type FurnitureItem,
   type Opening,
   type PlanModel,
   type RoomSpec,
@@ -19,6 +20,7 @@ import {
 } from './types';
 import { migrateDocument } from './migrate';
 import { addRectangle, normalizePlan } from './planOps';
+import { getCatalogEntry, isKnownCatalogId } from '@/furniture/catalog';
 
 /** Warm off-white -- reads as "freshly painted" rather than clinical white. */
 export const DEFAULT_WALL_COLOR = '#ece7df';
@@ -63,6 +65,7 @@ export function createDefaultDocument(): DesignDocument {
     name: 'Untitled Home',
     updatedAt: new Date().toISOString(),
     plan: createDefaultPlan(),
+    furniture: [],
     lighting: {
       presetId: 'daylight',
       intensity: 1,
@@ -262,6 +265,70 @@ function safePlan(value: unknown): PlanModel {
 }
 
 /**
+ * Coerces a parsed value into a valid furniture list.
+ *
+ * Items naming a catalogue entry that no longer exists are DROPPED rather than
+ * remapped: silently turning someone's wardrobe into a bookcase because a
+ * catalogue ID was renamed would be worse than the gap. Positions are clamped
+ * to the plan area but not collision-checked here — validation runs before the
+ * plan is known to be sound, and `reseatFurniture` handles that afterwards.
+ */
+function safeFurniture(value: unknown): FurnitureItem[] {
+  if (!Array.isArray(value)) return [];
+
+  const items: FurnitureItem[] = [];
+  const seen = new Set<string>();
+  const limit = PLAN_LIMITS.planExtent;
+
+  value.forEach((entry, index) => {
+    if (typeof entry !== 'object' || entry === null) return;
+    const raw = entry as Record<string, unknown>;
+
+    const catalogId = typeof raw.catalogId === 'string' ? raw.catalogId : '';
+    if (!isKnownCatalogId(catalogId)) return;
+
+    const id = safeString(raw.id, `f${index + 1}`, 40);
+    if (seen.has(id)) return;
+    seen.add(id);
+
+    const catalogEntry = getCatalogEntry(catalogId);
+    let size: FurnitureItem['size'];
+    if (typeof raw.size === 'object' && raw.size !== null && catalogEntry.resizable) {
+      const rawSize = raw.size as Record<string, unknown>;
+      size = {
+        width: clamp(rawSize.width, 0.1, 6, catalogEntry.width),
+        depth: clamp(rawSize.depth, 0.1, 6, catalogEntry.depth),
+        height: clamp(rawSize.height, 0.05, 4, catalogEntry.height),
+      };
+    }
+
+    items.push({
+      id,
+      catalogId,
+      x: clamp(raw.x, -limit, limit, 0),
+      z: clamp(raw.z, -limit, limit, 0),
+      y: clamp(raw.y, 0, 4, 0),
+      // Normalised into -PI..PI so a document cannot carry an accumulated
+      // rotation of forty radians from repeated key presses.
+      rotation: normalizeAngle(clamp(raw.rotation, -1000, 1000, 0)),
+      ...(typeof raw.colorwayId === 'string' ? { colorwayId: raw.colorwayId } : {}),
+      ...(size ? { size } : {}),
+    });
+  });
+
+  return items;
+}
+
+/** Wraps an angle into -PI..PI. */
+export function normalizeAngle(radians: number): number {
+  const twoPi = Math.PI * 2;
+  let angle = radians % twoPi;
+  if (angle > Math.PI) angle -= twoPi;
+  if (angle < -Math.PI) angle += twoPi;
+  return angle;
+}
+
+/**
  * Coerces an arbitrary parsed object into a valid DesignDocument.
  *
  * Deliberately forgiving rather than strict: a document saved by an older build
@@ -285,6 +352,7 @@ export function sanitizeDocument(input: unknown): DesignDocument {
     units: raw.units === 'imperial' ? 'imperial' : 'metric',
     showCeilings: raw.showCeilings === true,
     plan: safePlan(raw.plan),
+    furniture: safeFurniture(raw.furniture),
     lighting: {
       presetId:
         rawLighting.presetId === 'overcast' ||

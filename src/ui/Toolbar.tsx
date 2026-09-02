@@ -54,6 +54,13 @@ const TOOLS: ToolDefinition[] = [
     hint: 'Click a wall to cut a window.',
     shortcut: 'N',
   },
+  {
+    id: 'furnish',
+    label: 'Furnish',
+    icon: 'F',
+    hint: 'Pick something from the catalogue, then click inside a room.',
+    shortcut: 'F',
+  },
 ];
 
 export function Toolbar() {

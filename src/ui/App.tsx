@@ -12,6 +12,7 @@ import { useCallback, useRef, useState } from 'react';
 import { Viewport } from './Viewport';
 import { Toolbar } from './Toolbar';
 import { PlanPanel } from './panels/PlanPanel';
+import { CataloguePanel } from './panels/CataloguePanel';
 import { InspectorPanel } from './panels/InspectorPanel';
 import { LightingPanel } from './panels/LightingPanel';
 import { ViewPanel } from './panels/ViewPanel';
@@ -54,6 +55,10 @@ export function App() {
 
   const handleSplitWall = useCallback(() => {
     engineRef.current?.splitSelectedWall();
+  }, []);
+
+  const handleRotate = useCallback((direction: number) => {
+    engineRef.current?.rotateSelection(direction);
   }, []);
 
   return (
@@ -119,7 +124,8 @@ export function App() {
             {/* The inspector sits at the top: in a direct-manipulation editor
                 the selection is what the user is thinking about, so its
                 properties should never require scrolling to reach. */}
-            <InspectorPanel onSplitWall={handleSplitWall} />
+            <InspectorPanel onSplitWall={handleSplitWall} onRotate={handleRotate} />
+            <CataloguePanel />
             <PlanPanel />
             <LightingPanel />
             <ViewPanel

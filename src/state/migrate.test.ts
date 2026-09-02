@@ -41,7 +41,10 @@ function v1Document() {
 describe('v1 to v2 migration', () => {
   it('keeps the name, units and lighting', () => {
     const doc = sanitizeDocument(v1Document());
-    expect(doc.schemaVersion).toBe(2);
+    // A v1 document is carried all the way to the current schema, not just to
+    // the next one: the migration chain runs every step in order.
+    expect(doc.schemaVersion).toBe(3);
+    expect(doc.furniture).toEqual([]);
     expect(doc.name).toBe('My Living Room');
     expect(doc.units).toBe('imperial');
     expect(doc.lighting.presetId).toBe('evening');
@@ -105,7 +108,7 @@ describe('v1 to v2 migration', () => {
     delete legacy.schemaVersion;
 
     const doc = sanitizeDocument(legacy);
-    expect(doc.schemaVersion).toBe(2);
+    expect(doc.schemaVersion).toBe(3);
     expect(findRegions(doc.plan)).toHaveLength(1);
   });
 

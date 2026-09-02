@@ -161,6 +161,24 @@ function migrateV1ToV2(doc: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+/* ------------------------------- v2 -> v3 ------------------------------ */
+
+/**
+ * v3 adds furniture.
+ *
+ * Purely additive, so the upgrade is just an empty list — but it still goes
+ * through a named step rather than being left to the validator's default. When
+ * v4 arrives, the chain below has to run v2 -> v3 -> v4 in order, and a version
+ * that quietly has no migration is the one that gets skipped by accident.
+ */
+function migrateV2ToV3(doc: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...doc,
+    schemaVersion: 3,
+    furniture: Array.isArray(doc.furniture) ? doc.furniture : [],
+  };
+}
+
 /**
  * Brings a document up to the current schema.
  *
@@ -179,6 +197,9 @@ export function migrateDocument(input: Record<string, unknown>): Record<string, 
 
   if (declared < 2) {
     doc = migrateV1ToV2(doc);
+  }
+  if (declared < 3) {
+    doc = migrateV2ToV3(doc);
   }
 
   return doc;

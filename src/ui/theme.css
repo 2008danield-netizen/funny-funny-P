@@ -955,3 +955,152 @@ select {
 .material-tile--active .material-tile__glyph {
   color: var(--accent);
 }
+
+/* ═══════════════════ Session 3: furniture ═══════════════════ */
+
+/* Category tabs in the catalogue. Wrap rather than scroll, since seven short
+   labels fit in two rows and a horizontal scroller hides half of them. */
+.catalog__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.catalog__tab {
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 11px;
+  color: var(--text-secondary);
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.catalog__tab:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.catalog__tab--active {
+  background: var(--surface-hover);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* The item list. Capped in height with its own scroll so the catalogue cannot
+   push everything else in the sidebar out of reach. */
+.catalog__list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+
+.catalog__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  text-align: left;
+  transition: background 120ms ease;
+}
+
+.catalog__item:hover {
+  background: var(--surface-hover);
+}
+
+.catalog__item--armed {
+  background: var(--accent-dim);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.catalog__thumb {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  color: var(--text-muted);
+}
+
+.catalog__item--armed .catalog__thumb {
+  color: var(--accent);
+}
+
+.catalog__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.catalog__name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog__dims {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.catalog__badge {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  font-family: var(--font-ui);
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* The trademark and data-provenance notice. Deliberately quiet but always
+   present — it is a legal courtesy, not a decoration. */
+.catalog__attribution {
+  font-size: 10px;
+  line-height: 1.5;
+  opacity: 0.75;
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+}
+
+/* Colourway swatches: each shows frame and upholstery side by side, since on
+   most pieces both are visible at once. */
+.colorways {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.colorways__item {
+  display: flex;
+  width: 34px;
+  height: 24px;
+  padding: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  transition: transform 100ms ease, box-shadow 100ms ease;
+}
+
+.colorways__item span {
+  flex: 1;
+}
+
+.colorways__item:hover {
+  transform: scale(1.08);
+}
+
+.colorways__item--active {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 3.5px var(--accent);
+}

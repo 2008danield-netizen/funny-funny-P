@@ -32,6 +32,7 @@ import {
 } from './planGraph';
 import { WALL_MATERIAL_SLOT, buildOpeningFurniture, buildWallGeometry, wallMatrix } from './wallBuilder';
 import { resolveRoomSpec } from '@/state/planOps';
+import type { Selection } from '@/state/selection';
 import type { PlanModel, WallFaceSpec } from '@/state/types';
 
 /** Height of the skirting board, in metres. */
@@ -42,8 +43,14 @@ const SKIRTING_DEPTH = 0.016;
 /** Radius of the draggable corner handles, in metres. */
 const HANDLE_RADIUS = 0.11;
 
-/** What a raycast against the building hit. */
-export type PickKind = 'wall' | 'vertex' | 'opening' | 'floor';
+/**
+ * What a raycast hit.
+ *
+ * Includes 'furniture' even though this class never produces one: `interpret`
+ * is the single place that decodes a mesh's pick metadata, and `Furnishings`
+ * tags its pick volumes the same way rather than duplicating the decoder.
+ */
+export type PickKind = 'wall' | 'vertex' | 'opening' | 'floor' | 'furniture';
 
 export interface PickResult {
   kind: PickKind;
@@ -54,11 +61,14 @@ export interface PickResult {
   face?: 'a' | 'b';
 }
 
-/** What the user currently has selected. Mirrors `state/selection.ts`. */
-export interface SelectionState {
-  kind: PickKind | null;
-  id: string | null;
-}
+/**
+ * What the user currently has selected.
+ *
+ * Uses the editor store's own `Selection` type rather than a local copy: the
+ * selection can name things this class knows nothing about (furniture, since
+ * session 3), and a narrower local type would force every caller to filter.
+ */
+export type SelectionState = Selection;
 
 interface WallEntry {
   mesh: THREE.Mesh;

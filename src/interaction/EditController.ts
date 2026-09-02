@@ -22,6 +22,7 @@
 import * as THREE from 'three';
 
 import { Building, type PickResult } from '@/scene/Building';
+import type { Furnishings } from '@/scene/Furnishings';
 import { nearestSnapCandidates, snapPoint } from './snapping';
 import { distance } from '@/scene/planGraph';
 import { getOpeningPreset } from '@/scene/openings/presets';
@@ -38,14 +39,27 @@ import {
   updateOpening,
 } from '@/state/planOps';
 import { editorStore, isOpeningTool } from '@/state/selection';
+import {
+  duplicateFurniture,
+  moveFurniture,
+  placeFurniture,
+  removeFurniture,
+  reseatFurniture,
+  rotateFurniture,
+} from '@/state/furnitureOps';
+import { itemDimensions } from '@/physics/colliders';
+import { normalizeAngle } from '@/state/defaults';
 import type { Point2 } from '@/state/types';
 import { formatLength } from '@/state/units';
 
 /** How close the pointer must come to a wall to place an opening on it. */
 const OPENING_PICK_RADIUS = 0.6;
 
+/** Degrees the keyboard shortcut turns furniture by. */
+const FURNITURE_ROTATION_STEP = 15;
+
 interface DragState {
-  kind: 'vertex' | 'wall' | 'opening';
+  kind: 'vertex' | 'wall' | 'opening' | 'furniture';
   id: string;
   /** Where on the floor the drag started. */
   origin: Point2;
@@ -60,6 +74,7 @@ export class EditController {
   private camera: THREE.Camera;
   private canvas: HTMLCanvasElement;
   private building: Building;
+  private furnishings: Furnishings;
   private orbit: { enabled: boolean };
 
   private raycaster = new THREE.Raycaster();
@@ -76,11 +91,13 @@ export class EditController {
     canvas: HTMLCanvasElement,
     camera: THREE.Camera,
     building: Building,
+    furnishings: Furnishings,
     orbit: { enabled: boolean },
   ) {
     this.canvas = canvas;
     this.camera = camera;
     this.building = building;
+    this.furnishings = furnishings;
     this.orbit = orbit;
 
     const onPointerDown = (event: PointerEvent) => this.handlePointerDown(event);
@@ -132,10 +149,23 @@ export class EditController {
     return { x: hit.x, z: hit.z };
   }
 
-  /** The nearest pickable thing under the pointer. */
+  /**
+   * The nearest pickable thing under the pointer.
+   *
+   * Furniture is tested first and wins outright. Its pick volume is a bounding
+   * box that necessarily overlaps the floor beneath it, so testing everything
+   * together and taking the nearest hit would let a floor poking through the gap
+   * under a chair steal the click.
+   */
   private pick(): PickResult | null {
-    const intersections = this.raycaster.intersectObjects(this.building.pickTargets(), false);
-    for (const intersection of intersections) {
+    const furniture = this.raycaster.intersectObjects(this.furnishings.pickTargets(), false);
+    for (const intersection of furniture) {
+      const result = Building.interpret(intersection);
+      if (result) return result;
+    }
+
+    const building = this.raycaster.intersectObjects(this.building.pickTargets(), false);
+    for (const intersection of building) {
       const result = Building.interpret(intersection);
       if (result) return result;
     }
@@ -172,6 +202,31 @@ export class EditController {
       return;
     }
 
+    /* ---- Dropping a catalogue item ---- */
+    if (state.tool === 'furnish') {
+      if (!floor || !state.pendingCatalogId) return;
+      const catalogId = state.pendingCatalogId;
+      let placedId: string | null = null;
+      let reason: string | undefined;
+
+      designStore.edit((draft) => {
+        const result = placeFurniture(draft, catalogId, floor);
+        placedId = result.id;
+        reason = result.reason;
+      });
+
+      if (placedId) {
+        editorStore.select('furniture', placedId);
+        // Stay armed so a row of dining chairs is a row of clicks. Escape or
+        // another tool disarms.
+        editorStore.patch({ readout: 'Placed. Click again for another.' });
+      } else {
+        editorStore.patch({ readout: reason ?? 'It does not fit there' });
+      }
+      this.suppressOrbit();
+      return;
+    }
+
     /* ---- Placing an opening ---- */
     if (isOpeningTool(state.tool)) {
       this.placeOpening(pick, floor, state.tool === 'door');
@@ -187,7 +242,17 @@ export class EditController {
     editorStore.select(pick.kind, pick.id);
 
     /* ---- Starting a drag ---- */
-    if (state.tool !== 'move' || !floor) return;
+    if (!floor) return;
+    // Furniture drags with the Select tool too. Arranging a room is the common
+    // case, and making people switch tools first would be needless friction —
+    // whereas dragging a WALL by accident would wreck the plan, so that stays
+    // behind the Move tool.
+    if (pick.kind === 'furniture') {
+      this.beginFurnitureDrag(pick.id, floor);
+      return;
+    }
+
+    if (state.tool !== 'move') return;
     if (pick.kind === 'vertex') this.beginVertexDrag(pick.id, floor);
     else if (pick.kind === 'wall') this.beginWallDrag(pick.id, floor);
     else if (pick.kind === 'opening') this.beginOpeningDrag(pick.id, floor);
@@ -229,13 +294,19 @@ export class EditController {
       // mid-drag merge would delete the vertex being dragged out from under the
       // pointer, and repeated topology edits would flood the undo history.
       if (this.drag.moved) {
+        const wasPlanEdit = this.drag.kind !== 'furniture' && this.drag.kind !== 'opening';
         designStore.edit(
-          (draft) => normalizePlan(draft.plan),
+          (draft) => {
+            normalizePlan(draft.plan);
+            // Moving a wall can leave furniture buried in it. Rather than
+            // blocking the wall edit, the furniture is pushed clear afterwards.
+            if (wasPlanEdit) reseatFurniture(draft);
+          },
           { history: 'coalesce', coalesceKey: this.dragCoalesceKey() },
         );
       }
       this.drag = null;
-      editorStore.patch({ readout: null });
+      editorStore.patch({ readout: null, collidingIds: [] });
     }
 
     this.orbit.enabled = true;
@@ -288,6 +359,25 @@ export class EditController {
       id: wallId,
       origin,
       startVertices,
+      startOffset: 0,
+      moved: false,
+    };
+    this.orbit.enabled = false;
+  }
+
+  private beginFurnitureDrag(itemId: string, origin: Point2): void {
+    const item = designStore
+      .getState()
+      .furniture.find((candidate) => candidate.id === itemId);
+    if (!item) return;
+
+    this.drag = {
+      kind: 'furniture',
+      id: itemId,
+      origin,
+      // Reused to hold the piece's starting position, so each frame computes an
+      // absolute target rather than accumulating deltas through the solver.
+      startVertices: new Map([[itemId, { x: item.x, z: item.z }]]),
       startOffset: 0,
       moved: false,
     };
@@ -367,6 +457,30 @@ export class EditController {
       );
       editorStore.patch({
         readout: `moved ${formatLength(Math.hypot(applied.x, applied.z), units)}`,
+      });
+      return;
+    }
+
+    if (drag.kind === 'furniture') {
+      const start = drag.startVertices.get(drag.id);
+      if (!start) return;
+
+      const target = { x: start.x + delta.x, z: start.z + delta.z };
+      let blocked: string[] = [];
+
+      designStore.edit(
+        (draft) => {
+          // Wall-snapping is applied on every frame, not just on release, so
+          // the piece visibly clicks into place against a wall as it passes.
+          const result = moveFurniture(draft, drag.id, target, { snapWalls: true });
+          blocked = result.blockedBy;
+        },
+        { history: 'coalesce', coalesceKey: this.dragCoalesceKey() },
+      );
+
+      editorStore.patch({
+        collidingIds: blocked.filter((id) => id !== drag.id),
+        readout: blocked.length > 0 ? 'Blocked' : null,
       });
       return;
     }
@@ -506,6 +620,8 @@ export class EditController {
       if (this.drawAnchor) {
         this.drawAnchor = null;
         editorStore.patch({ readout: null });
+      } else if (state.pendingCatalogId) {
+        editorStore.armCatalogItem(null);
       } else if (state.tool !== 'select') {
         editorStore.setTool('select');
       } else {
@@ -514,15 +630,41 @@ export class EditController {
       return;
     }
 
-    if (event.key !== 'Delete' && event.key !== 'Backspace') return;
     const { kind, id } = state.selection;
     if (!kind || !id) return;
 
+    // Rotate the selected piece in 15-degree steps; Shift reverses.
+    if (event.key.toLowerCase() === 'r' && kind === 'furniture') {
+      event.preventDefault();
+      this.rotateSelection(event.shiftKey ? -1 : 1);
+      return;
+    }
+
+    // Duplicate, for building a row of chairs.
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd') {
+      if (kind !== 'furniture') return;
+      event.preventDefault();
+      let created: string | null = null;
+      designStore.edit((draft) => {
+        created = duplicateFurniture(draft, id);
+      });
+      if (created) editorStore.select('furniture', created);
+      else editorStore.patch({ readout: 'No space for a copy' });
+      return;
+    }
+
+    if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+
     event.preventDefault();
     designStore.edit((draft) => {
-      if (kind === 'wall') deleteWall(draft.plan, id);
-      else if (kind === 'vertex') deleteVertex(draft.plan, id);
-      else if (kind === 'opening') removeOpening(draft.plan, id);
+      if (kind === 'wall') {
+        deleteWall(draft.plan, id);
+        reseatFurniture(draft);
+      } else if (kind === 'vertex') {
+        deleteVertex(draft.plan, id);
+        reseatFurniture(draft);
+      } else if (kind === 'opening') removeOpening(draft.plan, id);
+      else if (kind === 'furniture') removeFurniture(draft, id);
     });
     editorStore.clearSelection();
   }
@@ -539,6 +681,37 @@ export class EditController {
       created = splitWall(draft.plan, id, 0.5);
     });
     if (created) editorStore.select('vertex', created);
+  }
+
+  /**
+   * Rotates the selected piece by one step.
+   *
+   * The rotation goes through the solver, so turning a long sofa in a tight
+   * alcove is refused rather than silently burying it in the wall.
+   */
+  rotateSelection(direction: number): void {
+    const { kind, id } = editorStore.getState().selection;
+    if (kind !== 'furniture' || !id) return;
+
+    const item = designStore.getState().furniture.find((candidate) => candidate.id === id);
+    if (!item) return;
+
+    const step = (FURNITURE_ROTATION_STEP * Math.PI) / 180;
+    const target = normalizeAngle(item.rotation + step * direction);
+
+    let ok = false;
+    designStore.edit((draft) => {
+      ok = rotateFurniture(draft, id, target);
+    });
+    if (!ok) editorStore.patch({ readout: 'Not enough space to turn it' });
+  }
+
+  /** The footprint of the selected piece, for the inspector's readout. */
+  selectedFootprint(): { width: number; depth: number } | null {
+    const { kind, id } = editorStore.getState().selection;
+    if (kind !== 'furniture' || !id) return null;
+    const item = designStore.getState().furniture.find((candidate) => candidate.id === id);
+    return item ? itemDimensions(item) : null;
   }
 
   /** Cancels an in-progress wall being drawn. */

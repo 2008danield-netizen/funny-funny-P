@@ -37,6 +37,7 @@ const TOOL_KEYS: Record<string, EditTool> = {
   w: 'draw',
   d: 'door',
   n: 'window',
+  f: 'furnish',
 };
 
 /** Input types that swallow keystrokes as text and own their own undo stack. */

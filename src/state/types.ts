@@ -31,8 +31,9 @@
  * v1 — a single rectangular room described by width/depth/height.
  * v2 — an arbitrary wall graph supporting multi-room plans and openings.
  *      `state/migrate.ts` upgrades v1 documents by tracing a rectangle.
+ * v3 — furniture placed in the plan.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** Which measurement system the UI displays. Storage is always metric. */
 export type UnitSystem = 'metric' | 'imperial';
@@ -183,6 +184,41 @@ export interface LightingSpec {
 
 /* ───────────────────────────── The document ──────────────────────────── */
 
+/* ─────────────────────────────── Furniture ──────────────────────────── */
+
+/**
+ * One piece of furniture placed in the plan.
+ *
+ * Deliberately thin: everything about what the piece IS lives in the catalogue
+ * (`furniture/catalog.ts`), and this record only says which catalogue entry it
+ * is and where it stands. That keeps documents small, lets the catalogue grow
+ * or have its geometry improved without touching saved designs, and means a
+ * design file names products rather than embedding copies of them.
+ */
+export interface FurnitureItem {
+  id: string;
+  /** ID of an entry in the furniture catalogue. */
+  catalogId: string;
+  /** Centre of the piece's footprint on the floor plane, in metres. */
+  x: number;
+  z: number;
+  /** Height of the piece's base above the floor. Zero for anything free-standing. */
+  y: number;
+  /** Rotation about the Y axis, in radians. Zero faces +Z. */
+  rotation: number;
+  /** Overrides the catalogue colourway. */
+  colorwayId?: string;
+  /**
+   * Overrides the catalogue dimensions, in metres.
+   *
+   * Only meaningful for entries the catalogue marks resizable — an extendable
+   * dining table genuinely comes in several lengths, whereas a specific
+   * bookcase does not, and letting the user stretch one would make the
+   * dimensions on screen a lie.
+   */
+  size?: { width: number; depth: number; height: number };
+}
+
 /** The complete, serialisable state of one design. */
 export interface DesignDocument {
   schemaVersion: number;
@@ -192,6 +228,7 @@ export interface DesignDocument {
   updatedAt: string;
 
   plan: PlanModel;
+  furniture: FurnitureItem[];
   lighting: LightingSpec;
 
   /** Ceilings hidden by default so the orbit camera can look into the plan. */
@@ -202,7 +239,6 @@ export interface DesignDocument {
 
   /*
    * FUTURE SESSIONS ADD THEIR STATE HERE, for example:
-   *   furniture: FurnitureInstance[];   // session 3
    *   advisorNotes: AdvisorNote[];      // session 5
    * Adding an optional field is backward-compatible and needs no schema bump.
    */
@@ -220,6 +256,24 @@ export const PLAN_LIMITS = {
   vertexMergeDistance: 0.02,
   /** Extent of the editable plan area from the origin, in metres. */
   planExtent: 40,
+} as const;
+
+/** Limits and tolerances for furniture placement. All metres. */
+export const FURNITURE_LIMITS = {
+  /**
+   * Gap left between a piece and whatever it collides with.
+   *
+   * Not zero: with an exact touch, floating-point noise makes a piece resting
+   * against a wall flicker between colliding and not, and two surfaces at
+   * precisely the same depth z-fight. Two millimetres is invisible and stable.
+   */
+  contactGap: 0.002,
+  /** How close a piece must be to a wall before it snaps flush against it. */
+  wallSnapDistance: 0.35,
+  /** Rotation increment applied by the keyboard shortcut, in degrees. */
+  rotationStep: 15,
+  /** Maximum passes the collision solver makes before giving up on a move. */
+  solverIterations: 6,
 } as const;
 
 export const OPENING_LIMITS = {

@@ -1,13 +1,15 @@
 # havavamama
 
 A web-based 3D interior design studio. Draw a floor plan, put doors and windows
-in it, paint the rooms, and walk through it — in the browser, with no install.
+in it, paint the rooms, furnish it with real products, and walk through it — in
+the browser, with no install.
 
 **Live app:** https://2008danield-netizen.github.io/VR-home-design-project/
 
-> **Status: session 2 — editable multi-room plans.** You can now draw and reshape
-> walls directly in 3D, build plans with several rooms, and cut real doors and
-> windows through the walls. Furniture, collision and the AI advisor are next.
+> **Status: session 3 — furniture with real collision.** You can now furnish a
+> plan from a catalogue of real products at real sizes, and nothing you place can
+> end up inside a wall or inside another piece. The AI design advisor and the VR
+> walkthrough are next.
 
 ---
 
@@ -31,6 +33,22 @@ Eight presets at real dimensions — single, double and sliding doors, an open
 doorway, casement, picture, floor-to-ceiling and clerestory windows. They are
 genuinely cut through the wall, with frames, glazing bars, sills and reveals.
 Doors are drawn standing open so you can see the floor area their swing uses.
+
+**Furnish it, with things that fit.**
+A catalogue of real IKEA products at their real published sizes — sofas, chairs,
+dining and coffee tables, bookcases, wardrobes, chests, beds, desks, rugs and
+lamps. Pick one, click inside a room, and it drops in. Pieces that belong against
+a wall find one, turn to face the room and seat themselves flush.
+
+**Collision that actually holds.**
+Furniture cannot be placed or dragged into a wall or into another piece — not
+"is highlighted red", but genuinely cannot. Push a sofa at a wall and it slides
+along it. Turn a long table in a space too tight for it and the rotation is
+refused rather than silently burying it. Move a wall through a sofa and the sofa
+is pushed clear afterwards, so editing the plan never breaks the furniture. A
+doorway is a real gap: you can push a chair from one room into another through
+it, but not through the wall beside it. Rugs are the one exception — they lie on
+the floor and everything stands on top of them.
 
 **Materials and light.**
 Nine procedurally generated floor materials (oak, walnut, ash, porcelain,
@@ -84,12 +102,15 @@ Edit any file under `src/` and the browser updates instantly without a refresh.
 | `M` | **Move** — drag corners, walls, doors and windows |
 | `W` | **Wall** — click to place corners; walls chain as you go |
 | `D` / `N` | **Door** / **Window** — click a wall to cut one |
+| `F` | **Furnish** — pick from the catalogue, then click in a room |
 | `G` | Toggle snapping |
 
 | Key | Action |
 | --- | --- |
 | `1` `2` `3` `4` | Overview / Corner / Inside / Plan viewpoints |
-| `Delete` | Remove the selected wall, corner or opening |
+| `R` / `Shift`+`R` | Rotate the selected furniture by 15° |
+| `Ctrl`/`⌘` + `D` | Duplicate the selected furniture |
+| `Delete` | Remove the selected wall, corner, opening or furniture |
 | `Esc` | Cancel the current wall, tool, or selection |
 | `Ctrl`/`⌘` + `Z` | Undo (add `Shift` to redo) |
 
@@ -130,6 +151,7 @@ src/
 │   ├── types.ts        Document shape + the conventions everything depends on
 │   ├── store.ts        Observable store with undo/redo history
 │   ├── planOps.ts      Structural edits: draw, split, delete, heal, normalise
+│   ├── furnitureOps.ts Placing, moving, rotating — all through the solver
 │   ├── selection.ts    Tool and selection state (view state, never saved)
 │   ├── migrate.ts      Schema upgrades — session 1 designs still open
 │   ├── defaults.ts     Starting document + validation of untrusted input
@@ -140,6 +162,14 @@ src/
 │   ├── Renderer.ts     WebGL setup, colour management, tone mapping, resizing
 │   └── Engine.ts       Scene graph owner + render loop; the React⇄Three seam
 │
+├── physics/          Collision
+│   ├── collision.ts    Oriented boxes, separating-axis tests, the solver
+│   └── colliders.ts    Turning walls and furniture into colliders
+│
+├── furniture/        The catalogue
+│   ├── catalog.ts      Real products, real dimensions, retailer-link fields
+│   └── builders.ts     Procedural geometry, built from each piece's dimensions
+│
 ├── interaction/      Direct 3D editing
 │   ├── EditController.ts  Picking, dragging, drawing, placing openings
 │   └── snapping.ts        Vertex / alignment / angle / grid snapping
@@ -147,6 +177,7 @@ src/
 ├── scene/            What is actually in the world
 │   ├── planGraph.ts    Wall graph maths + ROOM DETECTION (planar faces)
 │   ├── Building.ts     Walls, floors, ceilings, skirtings, handles
+│   ├── Furnishings.ts  Furniture meshes, shape cache, collision tinting
 │   ├── wallBuilder.ts  Wall extrusion with holes; door and window furniture
 │   ├── floorBuilder.ts Polygon floors, ceilings and skirting ribbons
 │   ├── Lighting.ts     Lighting presets, IBL environment, shadow fitting
@@ -187,17 +218,32 @@ src/
    corners, drops degenerate and duplicate walls, prunes orphans and refits
    openings. Without it, a few minutes of dragging corrupts the graph.
 
+8. **Every furniture move goes through the solver.** There is no code path in
+   `furnitureOps` that writes a position without collision-checking it first.
+   That is what makes the guarantee hold regardless of how the user got there.
+
+9. **Furniture geometry is cached by SHAPE, not by item.** Twenty identical
+   chairs share one set of buffers. Never dispose a shape's geometry when
+   removing an item — the cache owns it.
+
 ### Tests
 
 ```bash
 npm test
 ```
 
-38 tests covering the parts where a bug is invisible on screen: room detection
+80 tests covering the parts where a bug is invisible on screen: room detection
 (L-shapes, partitions, disconnected structures, winding, stable identity),
-structural plan edits, document validation, and the session 1 → 2 migration.
-They are pure logic — no browser, no GPU — so they run in under a second and
-gate every deploy.
+collision (penetration depth, sliding, wall-snap orientation, wedged pieces),
+furniture placement end to end, structural plan edits, document validation, and
+the schema migrations. They are pure logic — no browser, no GPU — so they run in
+under a second and gate every deploy.
+
+They have earned their place: they caught a separating-axis test that
+under-reported penetration whenever one box's projection contained the other's
+(so a sofa dropped on a thin wall never escaped it), a solver that never
+terminated on exact contact, and a wall-snap that seated furniture facing into
+the wall.
 
 ---
 
@@ -205,16 +251,34 @@ gate every deploy.
 
 - ~~**Session 1** — the room viewer.~~ ✅
 - ~~**Session 2** — editable multi-room plans, doors and windows.~~ ✅
-- **Session 3 — furniture.** A catalogue with real IKEA dimensions, drag and drop
-  placement, selection and transform handles, saved into the design document.
-- **Session 4 — collision and clearance.** Furniture that physically cannot
-  overlap a wall or another piece, plus walkway widths and door-swing clearance
-  (the swing arcs are already drawn).
+- ~~**Session 3** — furniture catalogue and hard collision.~~ ✅
+- **Session 4 — clearance and ergonomics.** Collision keeps furniture out of
+  solid things; clearance is the next layer — walkway widths, door-swing zones
+  (the arcs are already drawn), drawer pull-out, and the distance from a sofa to
+  a television. Plus a shopping list totalling a room's contents.
 - **Session 5 — AI design advisor.** Reads the design document, critiques layout,
   circulation and colour, and suggests alternatives.
 - **Session 6 — VR walkthrough.** WebXR immersive mode with teleport locomotion.
 - **Later** — accounts, cloud sync, shared project links, subscription tiers, and
   a native app wrapping this same codebase.
+
+---
+
+## Catalogue data and trademarks
+
+The furniture catalogue names real IKEA products. IKEA and those product names
+are trademarks of Inter IKEA Systems B.V.; havavamama is not affiliated with,
+endorsed by, or sponsored by IKEA. The names are used descriptively so a user can
+recognise the piece they own or intend to buy.
+
+The dimensions were **not** scraped — IKEA's terms prohibit that, and there is no
+public API. They are written from general knowledge of the published nominal
+sizes, so every entry carries `verifiedAt: null` to record that nobody has
+checked it against a current listing. **Before this backs a paid product**, verify
+each entry and settle the trademark position; IKEA runs affiliate and partner
+programmes, which is the ordinary route to using product data properly. The
+`retailer`, `sku` and `url` fields on every entry exist so a licensed feed can
+fill them in later without touching any other code.
 
 ---
 

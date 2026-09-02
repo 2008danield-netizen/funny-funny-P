@@ -22,6 +22,7 @@ import { CameraController, type ViewpointId } from '@/controls/CameraController'
 import { EditController } from '@/interaction/EditController';
 import { Lighting } from '@/scene/Lighting';
 import { Building } from '@/scene/Building';
+import { Furnishings } from '@/scene/Furnishings';
 import { MaterialLibrary } from '@/scene/materials/MaterialLibrary';
 import { designStore } from '@/state/store';
 import { editorStore } from '@/state/selection';
@@ -41,6 +42,7 @@ export class Engine {
   private cameraController: CameraController;
   private materials: MaterialLibrary;
   private building: Building;
+  private furnishings: Furnishings;
   private lighting: Lighting;
   private editController: EditController;
 
@@ -77,12 +79,16 @@ export class Engine {
     this.building = new Building(this.materials);
     this.scene.add(this.building.group);
 
+    this.furnishings = new Furnishings();
+    this.scene.add(this.furnishings.group);
+
     // The edit controller drives OrbitControls' `enabled` flag directly so that
     // a drag on a wall does not also orbit the camera.
     this.editController = new EditController(
       this.renderer.canvas,
       this.cameraController.camera,
       this.building,
+      this.furnishings,
       this.cameraController.controls,
     );
 
@@ -131,6 +137,11 @@ export class Engine {
     this.editController.splitSelectedWall();
   }
 
+  /** Turns the selected piece of furniture by one step. */
+  rotateSelection(direction: number): void {
+    this.editController.rotateSelection(direction);
+  }
+
   /** Abandons a wall that is part-way through being drawn. */
   cancelDrawing(): void {
     this.editController.cancelDrawing();
@@ -159,6 +170,9 @@ export class Engine {
     if (planChanged || ceilingsChanged) {
       this.building.update(doc.plan, doc.showCeilings);
     }
+    if (!previous || previous.furniture !== doc.furniture) {
+      this.furnishings.update(doc.furniture);
+    }
     if (planChanged) {
       this.cameraController.configureForPlan(doc.plan);
     }
@@ -174,10 +188,18 @@ export class Engine {
   /** Mirrors editor state (tool, selection, hover) into the scene. */
   private applyEditorState(): void {
     const state = editorStore.getState();
-    // Handles and the grid appear for any tool that manipulates the plan.
-    this.building.setEditMode(state.tool !== 'select');
+    // Corner handles and the grid belong to the plan tools; showing them while
+    // arranging furniture is clutter the user cannot act on.
+    const planTool = state.tool === 'move' || state.tool === 'draw';
+    this.building.setEditMode(planTool);
     this.building.setSelection(state.selection);
     this.building.setHover(state.hover);
+
+    this.furnishings.setSelection({
+      selectedId: state.selection.kind === 'furniture' ? state.selection.id : null,
+      hoveredId: state.hover.kind === 'furniture' ? state.hover.id : null,
+      collidingIds: new Set(state.collidingIds),
+    });
   }
 
   private start(): void {
@@ -233,6 +255,7 @@ export class Engine {
     this.onStats = null;
 
     this.editController.dispose();
+    this.furnishings.dispose();
     this.building.dispose();
     this.lighting.dispose();
     this.materials.dispose();

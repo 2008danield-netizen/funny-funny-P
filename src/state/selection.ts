@@ -11,7 +11,7 @@
  * and neither owns the other.
  */
 
-export type SelectionKind = 'wall' | 'vertex' | 'opening' | 'floor';
+export type SelectionKind = 'wall' | 'vertex' | 'opening' | 'floor' | 'furniture';
 
 export interface Selection {
   kind: SelectionKind | null;
@@ -29,7 +29,9 @@ export type EditTool =
   /** Click a wall to place a door. */
   | 'door'
   /** Click a wall to place a window. */
-  | 'window';
+  | 'window'
+  /** Click inside a room to drop the armed catalogue item. */
+  | 'furnish';
 
 export interface EditorState {
   tool: EditTool;
@@ -44,6 +46,17 @@ export interface EditorState {
   windowPresetId: string;
   /** Live feedback shown in the viewport while dragging or drawing. */
   readout: string | null;
+
+  /**
+   * The catalogue item armed for placement, or null.
+   *
+   * View state rather than design state: an armed item is an intention, not a
+   * part of the design, and it must not survive a reload or land in an export.
+   */
+  pendingCatalogId: string | null;
+
+  /** Items currently overlapping something, for the warning tint. */
+  collidingIds: string[];
 }
 
 const EMPTY: Selection = { kind: null, id: null };
@@ -60,6 +73,8 @@ function initialState(): EditorState {
     doorPresetId: 'door-single',
     windowPresetId: 'window-casement',
     readout: null,
+    pendingCatalogId: null,
+    collidingIds: [],
   };
 }
 
@@ -98,6 +113,17 @@ class EditorStore {
         const current = this.state[key];
         const incoming = value as Selection;
         if (current.kind === incoming.kind && current.id === incoming.id) continue;
+      } else if (key === 'collidingIds') {
+        // Compared by content: this is recomputed on every drag frame and would
+        // otherwise report a change sixty times a second while nothing altered.
+        const current = this.state.collidingIds;
+        const incoming = value as string[];
+        if (
+          current.length === incoming.length &&
+          current.every((id, index) => id === incoming[index])
+        ) {
+          continue;
+        }
       } else if (this.state[key] === value) {
         continue;
       }
@@ -125,7 +151,22 @@ class EditorStore {
   setTool(tool: EditTool): void {
     // Changing tool drops the selection unless the new tool acts on it, so the
     // inspector never shows a wall's properties while the draw tool is active.
-    this.patch({ tool, readout: null, selection: tool === 'select' ? this.state.selection : EMPTY });
+    this.patch({
+      tool,
+      readout: null,
+      selection: tool === 'select' ? this.state.selection : EMPTY,
+      // Switching away from furnishing disarms whatever was on the cursor.
+      pendingCatalogId: tool === 'furnish' ? this.state.pendingCatalogId : null,
+    });
+  }
+
+  /** Arms a catalogue item and switches to the furnish tool. */
+  armCatalogItem(catalogId: string | null): void {
+    this.patch({
+      pendingCatalogId: catalogId,
+      tool: catalogId ? 'furnish' : 'select',
+      readout: catalogId ? 'Click inside a room to place it' : null,
+    });
   }
 }
 
