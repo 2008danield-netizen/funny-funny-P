@@ -1,0 +1,772 @@
+/*
+ * havavamama UI theme.
+ *
+ * A dark studio chrome is not a stylistic whim: the viewport is the product,
+ * and a light interface competes with it for attention while also shifting the
+ * user's perception of the wall colours they are choosing. Every professional
+ * 3D tool is dark for the same reason.
+ *
+ * All values are tokens so a future white-label or "designer pro" theme is a
+ * variable swap rather than a rewrite.
+ */
+
+:root {
+  /* Surfaces, from deepest to most raised. */
+  --surface-0: #0e1013;
+  --surface-1: #16191e;
+  --surface-2: #1e2228;
+  --surface-3: #272c34;
+  --surface-hover: #2f353e;
+
+  /* Text. */
+  --text-primary: #eef1f5;
+  --text-secondary: #a2abb8;
+  --text-muted: #6c7684;
+
+  /* Brand accent — a warm brass that reads as "interiors" rather than "tech". */
+  --accent: #d8a34a;
+  --accent-strong: #eab659;
+  --accent-dim: rgba(216, 163, 74, 0.16);
+
+  --border: #2b3038;
+  --border-strong: #3a414c;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  --shadow-panel: 0 12px 32px rgba(0, 0, 0, 0.45);
+
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  /* The viewport fills the window; nothing should ever scroll the page itself. */
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+/* A single consistent focus ring — visible for keyboard users, suppressed for
+   mouse users via :focus-visible. Accessibility is much cheaper to keep than
+   to retrofit once the app has a hundred controls. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 5px;
+  border: 3px solid var(--surface-1);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+/* ───────────────────────────── Layout ───────────────────────────── */
+
+.app {
+  display: grid;
+  grid-template-rows: 48px 1fr;
+  height: 100%;
+}
+
+.app__body {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  min-height: 0;
+}
+
+.app__body--collapsed {
+  grid-template-columns: 1fr 0;
+}
+
+/* On narrow screens the sidebar becomes a bottom sheet so the 3D view keeps
+   the majority of the screen. */
+@media (max-width: 820px) {
+  .app__body {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 46%;
+  }
+  .app__body--collapsed {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 0;
+  }
+}
+
+/* ───────────────────────────── Top bar ──────────────────────────── */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+  z-index: 2;
+}
+
+.topbar__brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-right: 6px;
+}
+
+.topbar__logo {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+.topbar__logo span {
+  color: var(--accent);
+}
+
+.topbar__tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.topbar__name {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  min-width: 160px;
+  font-weight: 500;
+}
+
+.topbar__name:hover {
+  border-color: var(--border);
+}
+
+.topbar__name:focus {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  outline: none;
+}
+
+.topbar__spacer {
+  flex: 1;
+}
+
+.topbar__group {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+/* ───────────────────────────── Buttons ──────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.btn--icon {
+  width: 30px;
+  padding: 0;
+  font-size: 14px;
+}
+
+.btn--ghost {
+  background: transparent;
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.btn--accent {
+  background: var(--accent);
+  color: #1a1408;
+  font-weight: 600;
+}
+
+.btn--accent:hover:not(:disabled) {
+  background: var(--accent-strong);
+  color: #1a1408;
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: #4a2626;
+  color: #ffd9d9;
+}
+
+/* ──────────────────────────── Viewport ──────────────────────────── */
+
+.viewport {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-0);
+}
+
+.viewport__canvas-host {
+  position: absolute;
+  inset: 0;
+}
+
+.viewport__overlay {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.viewport__viewpoints {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(14, 16, 19, 0.82);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  pointer-events: auto;
+}
+
+.viewport__hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: rgba(14, 16, 19, 0.75);
+  backdrop-filter: blur(10px);
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  max-width: 260px;
+  line-height: 1.45;
+}
+
+.viewport__stats {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  background: rgba(14, 16, 19, 0.75);
+  backdrop-filter: blur(10px);
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.viewport__error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  text-align: center;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* ───────────────────────────── Sidebar ──────────────────────────── */
+
+.sidebar {
+  background: var(--surface-1);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+
+@media (max-width: 820px) {
+  .sidebar {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
+
+/* ────────────────────────────── Panel ───────────────────────────── */
+
+.panel {
+  border-bottom: 1px solid var(--border);
+}
+
+.panel__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 14px;
+  text-align: left;
+}
+
+.panel__header:hover {
+  background: var(--surface-2);
+}
+
+.panel__chevron {
+  color: var(--text-muted);
+  font-size: 10px;
+  transition: transform 160ms ease;
+  width: 10px;
+}
+
+.panel__chevron--open {
+  transform: rotate(90deg);
+}
+
+.panel__title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.panel__badge {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.panel__body {
+  padding: 4px 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ────────────────────────────── Fields ──────────────────────────── */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field__label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.field__value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.field__hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* Range slider — the browser default is inconsistent and ugly across engines,
+   so both the WebKit and Firefox pseudo-elements are styled explicitly. */
+.slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--surface-1);
+}
+
+.slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+}
+
+.slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--surface-1);
+}
+
+.slider:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Segmented control. */
+.segmented {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.segmented__option {
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-align: center;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.segmented__option:hover {
+  color: var(--text-primary);
+}
+
+.segmented__option--active {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+/* Colour input: the native swatch is small and unstyleable, so it is stretched
+   to fill a styled wrapper and its internal chrome is removed. */
+.color-input {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px 5px 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.color-input:hover {
+  border-color: var(--border-strong);
+}
+
+.color-input__swatch {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.color-input__swatch::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.color-input__swatch::-webkit-color-swatch {
+  border: none;
+  border-radius: 3px;
+}
+.color-input__swatch::-moz-color-swatch {
+  border: none;
+  border-radius: 3px;
+}
+
+.color-input__hex {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  padding: 0;
+}
+
+.color-input__hex:focus {
+  outline: none;
+}
+
+/* Swatch grids. */
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+}
+
+.swatches__item {
+  aspect-ratio: 1;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  transition: transform 100ms ease, box-shadow 100ms ease;
+}
+
+.swatches__item:hover {
+  transform: scale(1.12);
+  z-index: 1;
+}
+
+.swatches__item--active {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 3.5px var(--accent);
+}
+
+/* Material preset tiles. */
+.materials {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.material-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  transition: border-color 120ms ease;
+}
+
+.material-tile:hover {
+  border-color: var(--border-strong);
+}
+
+.material-tile--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.material-tile__preview {
+  aspect-ratio: 1;
+  width: 100%;
+  background-size: cover;
+  background-position: center;
+}
+
+.material-tile__label {
+  font-size: 9.5px;
+  line-height: 1.25;
+  color: var(--text-secondary);
+  padding: 0 4px 5px;
+  text-align: center;
+}
+
+.material-tile--active .material-tile__label {
+  color: var(--text-primary);
+}
+
+.material-group__title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+/* Wall selector tabs. */
+.wall-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 3px;
+}
+
+.wall-tab {
+  padding: 7px 4px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  transition: background 120ms ease;
+}
+
+.wall-tab:hover {
+  background: var(--surface-hover);
+}
+
+.wall-tab--active {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.wall-tab__dot {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+/* Toggle switch. */
+.toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle__label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.toggle__track {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 19px;
+  border-radius: 10px;
+  background: var(--surface-3);
+  transition: background 140ms ease;
+}
+
+.toggle__track--on {
+  background: var(--accent);
+}
+
+.toggle__knob {
+  position: absolute;
+  top: 2.5px;
+  left: 2.5px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  transition: transform 140ms ease;
+}
+
+.toggle__track--on .toggle__knob {
+  transform: translateX(15px);
+  background: #1a1408;
+}
+
+/* Summary rows in the room panel. */
+.summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 9px 10px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.summary__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.summary__label {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.summary__value {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+
+.button-row {
+  display: flex;
+  gap: 6px;
+}
+
+.button-row .btn {
+  flex: 1;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
