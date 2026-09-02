@@ -57,6 +57,9 @@ export interface EditorState {
 
   /** Items currently overlapping something, for the warning tint. */
   collidingIds: string[];
+
+  /** Whether clearance zones are drawn on the floor. */
+  showClearance: boolean;
 }
 
 const EMPTY: Selection = { kind: null, id: null };
@@ -75,6 +78,9 @@ function initialState(): EditorState {
     readout: null,
     pendingCatalogId: null,
     collidingIds: [],
+    // Off by default: the zones are analysis, and a first-time visitor should
+    // see their room rather than a floor covered in blue rectangles.
+    showClearance: false,
   };
 }
 

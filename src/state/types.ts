@@ -32,8 +32,9 @@
  * v2 — an arbitrary wall graph supporting multi-room plans and openings.
  *      `state/migrate.ts` upgrades v1 documents by tracing a rectangle.
  * v3 — furniture placed in the plan.
+ * v4 — clearance settings and per-item price overrides.
  */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /** Which measurement system the UI displays. Storage is always metric. */
 export type UnitSystem = 'metric' | 'imperial';
@@ -209,6 +210,17 @@ export interface FurnitureItem {
   /** Overrides the catalogue colourway. */
   colorwayId?: string;
   /**
+   * A confirmed price for this specific piece, overriding the catalogue's
+   * estimate.
+   *
+   * The catalogue ships rough estimates so totals work out of the box, but they
+   * are guesses: IKEA prices differ by country and change constantly. A number
+   * here is one somebody actually looked up, and is treated as fact rather than
+   * as an estimate everywhere it is displayed or exported.
+   */
+  price?: number;
+
+  /**
    * Overrides the catalogue dimensions, in metres.
    *
    * Only meaningful for entries the catalogue marks resizable — an extendable
@@ -230,6 +242,17 @@ export interface DesignDocument {
   plan: PlanModel;
   furniture: FurnitureItem[];
   lighting: LightingSpec;
+  clearance: ClearanceSettings;
+
+  /**
+   * Currency symbol for the shopping list.
+   *
+   * A label only — no conversion happens, because there is no exchange-rate
+   * source here and silently converting a guessed price would compound one
+   * inaccuracy with another. The catalogue's estimates are nominal euro figures;
+   * changing this relabels them and the UI says so.
+   */
+  currency: string;
 
   /** Ceilings hidden by default so the orbit camera can look into the plan. */
   showCeilings: boolean;
@@ -244,6 +267,24 @@ export interface DesignDocument {
    */
 }
 
+/* ────────────────────────────── Clearance ────────────────────────────── */
+
+/**
+ * How strictly clearance guidance is applied.
+ *
+ * Clearance is not collision. A collision is physically impossible; a 70 cm
+ * walkway is merely tight, and a designer working a small flat may accept one
+ * deliberately. So the default is advisory — problems are shown and counted,
+ * and the user decides. Strict mode turns the same rules into hard constraints
+ * for anyone who would rather the app refuse.
+ */
+export interface ClearanceSettings {
+  /** When true, placement is refused where it would violate a clearance rule. */
+  strict: boolean;
+  /** Minimum width of a main circulation route, in metres. */
+  walkwayWidth: number;
+}
+
 /* ────────────────────────────── Constraints ──────────────────────────── */
 
 /** Limits enforced by the UI and by the sanitiser. All metres. */
@@ -256,6 +297,23 @@ export const PLAN_LIMITS = {
   vertexMergeDistance: 0.02,
   /** Extent of the editable plan area from the origin, in metres. */
   planExtent: 40,
+} as const;
+
+/**
+ * Circulation and clearance defaults, in metres.
+ *
+ * These are widely-published interior design guidelines rather than building
+ * code, which varies by jurisdiction. They are exposed as named constants so
+ * the numbers a user is being judged against are inspectable rather than
+ * buried in a comparison somewhere.
+ */
+export const CLEARANCE_DEFAULTS = {
+  /** Main route through a room. 900 mm is the usual recommendation. */
+  walkway: 0.9,
+  /** A secondary squeeze-past route; below this a gap is a pinch point. */
+  walkwayTight: 0.75,
+  /** Grid resolution used by the circulation analysis. */
+  gridCell: 0.1,
 } as const;
 
 /** Limits and tolerances for furniture placement. All metres. */

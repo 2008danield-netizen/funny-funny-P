@@ -1,15 +1,16 @@
 # havavamama
 
 A web-based 3D interior design studio. Draw a floor plan, put doors and windows
-in it, paint the rooms, furnish it with real products, and walk through it — in
-the browser, with no install.
+in it, paint the rooms, furnish it with real products that genuinely fit, and
+walk through it — in the browser, with no install.
 
 **Live app:** https://2008danield-netizen.github.io/VR-home-design-project/
 
-> **Status: session 3 — furniture with real collision.** You can now furnish a
-> plan from a catalogue of real products at real sizes, and nothing you place can
-> end up inside a wall or inside another piece. The AI design advisor and the VR
-> walkthrough are next.
+> **Status: session 4 — clearance, ergonomics and a shopping list.** Collision
+> already stopped furniture ending up inside a wall; now the app also tells you
+> whether the room actually works — doors that can open, drawers that can come
+> out, a route you can walk — and totals what it all costs. The AI design advisor
+> and the VR walkthrough are next.
 
 ---
 
@@ -49,6 +50,28 @@ is pushed clear afterwards, so editing the plan never breaks the furniture. A
 doorway is a real gap: you can push a chair from one room into another through
 it, but not through the wall beside it. Rugs are the one exception — they lie on
 the floor and everything stands on top of them.
+
+**Does it work, not just does it fit.**
+Collision answers whether a wardrobe fits in an alcove. Clearance answers whether
+its doors can open once it is there. The app checks door swings, drawer and door
+pull-out space, legroom in front of seating, room to pull a dining chair out and
+walk behind it, access down the sides of a bed, and the width of the route
+through each room. Problems are listed in plain language with the measurement
+that failed — *"narrows to 62 cm; the guideline is 90 cm"* — and drawn as zones
+on the floor so you can see what they mean. Click any issue to select the piece
+causing it.
+
+Guidance is **advisory by default**, because a tight walkway in a small flat may
+be exactly the right trade and the app has no business refusing it. A strict mode
+turns the hard rules — door swings, pull-out space — into constraints the solver
+enforces as it does walls. Advisory guidance is never enforced, even then.
+
+**A shopping list that totals up.**
+Every piece in the plan, grouped by product, with quantities, dimensions, which
+rooms they are in, and a running total. Prices ship as rough estimates so the
+totals work immediately, and **every estimated figure is labelled as one** — at
+the line, at the total and in the CSV export. Type a real price over any of them
+and it counts as confirmed.
 
 **Materials and light.**
 Nine procedurally generated floor materials (oak, walnut, ash, porcelain,
@@ -166,9 +189,15 @@ src/
 │   ├── collision.ts    Oriented boxes, separating-axis tests, the solver
 │   └── colliders.ts    Turning walls and furniture into colliders
 │
+├── clearance/        Does the room work?
+│   ├── zones.ts        Floor each piece needs kept clear, and door swings
+│   ├── circulation.ts  Occupancy grid, distance transform, widest-path search
+│   └── analyze.ts      The report: issues in plain language with measurements
+│
 ├── furniture/        The catalogue
-│   ├── catalog.ts      Real products, real dimensions, retailer-link fields
-│   └── builders.ts     Procedural geometry, built from each piece's dimensions
+│   ├── catalog.ts      Real products, real dimensions, clearances, prices
+│   ├── builders.ts     Procedural geometry, built from each piece's dimensions
+│   └── pricing.ts      Shopping list, price provenance, CSV export
 │
 ├── interaction/      Direct 3D editing
 │   ├── EditController.ts  Picking, dragging, drawing, placing openings
@@ -178,6 +207,7 @@ src/
 │   ├── planGraph.ts    Wall graph maths + ROOM DETECTION (planar faces)
 │   ├── Building.ts     Walls, floors, ceilings, skirtings, handles
 │   ├── Furnishings.ts  Furniture meshes, shape cache, collision tinting
+│   ├── ClearanceOverlay.ts  Zones drawn flat on the floor
 │   ├── wallBuilder.ts  Wall extrusion with holes; door and window furniture
 │   ├── floorBuilder.ts Polygon floors, ceilings and skirting ribbons
 │   ├── Lighting.ts     Lighting presets, IBL environment, shadow fitting
@@ -226,24 +256,36 @@ src/
    chairs share one set of buffers. Never dispose a shape's geometry when
    removing an item — the cache owns it.
 
+10. **Collision is physics; clearance is advice.** Keep them apart. Collision is
+    never optional and never negotiable. Clearance is guidance the user may
+    knowingly ignore, and only the rules marked `required` are ever enforced,
+    and only in strict mode.
+
+11. **A price carries its provenance everywhere.** `PriceBasis` travels from the
+    catalogue entry through the line item into the total and out to the CSV.
+    Never display or export a figure without it — a guessed number that reads
+    like a quoted one is how somebody budgets a room wrong.
+
 ### Tests
 
 ```bash
 npm test
 ```
 
-80 tests covering the parts where a bug is invisible on screen: room detection
+101 tests covering the parts where a bug is invisible on screen: room detection
 (L-shapes, partitions, disconnected structures, winding, stable identity),
 collision (penetration depth, sliding, wall-snap orientation, wedged pieces),
-furniture placement end to end, structural plan edits, document validation, and
-the schema migrations. They are pure logic — no browser, no GPU — so they run in
+furniture placement end to end, clearance zones and circulation analysis,
+structural plan edits, document validation, and the schema migrations. They are pure logic — no browser, no GPU — so they run in
 under a second and gate every deploy.
 
 They have earned their place: they caught a separating-axis test that
 under-reported penetration whenever one box's projection contained the other's
 (so a sofa dropped on a thin wall never escaped it), a solver that never
-terminated on exact contact, and a wall-snap that seated furniture facing into
-the wall.
+terminated on exact contact, a wall-snap that seated furniture facing into the
+wall, and a circulation metric that measured the narrowest gap *anywhere* —
+which is always the few centimetres beside a skirting board, in every room ever
+drawn.
 
 ---
 
@@ -252,15 +294,32 @@ the wall.
 - ~~**Session 1** — the room viewer.~~ ✅
 - ~~**Session 2** — editable multi-room plans, doors and windows.~~ ✅
 - ~~**Session 3** — furniture catalogue and hard collision.~~ ✅
-- **Session 4 — clearance and ergonomics.** Collision keeps furniture out of
-  solid things; clearance is the next layer — walkway widths, door-swing zones
-  (the arcs are already drawn), drawer pull-out, and the distance from a sofa to
-  a television. Plus a shopping list totalling a room's contents.
-- **Session 5 — AI design advisor.** Reads the design document, critiques layout,
-  circulation and colour, and suggests alternatives.
+- ~~**Session 4** — clearance, ergonomics and the shopping list.~~ ✅
+- **Session 5 — AI design advisor.** Reads the design document *and the clearance
+  report* — which is already a structured, measured account of what is wrong with
+  a layout — then critiques proportion, circulation and colour, suggests
+  alternatives, and can propose concrete moves. This is also where the price
+  estimates get replaced with real looked-up figures.
 - **Session 6 — VR walkthrough.** WebXR immersive mode with teleport locomotion.
 - **Later** — accounts, cloud sync, shared project links, subscription tiers, and
   a native app wrapping this same codebase.
+
+---
+
+## About the prices
+
+The catalogue ships **rough price estimates** so the shopping list totals
+something out of the box. They are guesses: written from general knowledge, not
+checked against any listing, and IKEA prices differ by country and change several
+times a year.
+
+The code treats them accordingly. Every price carries a *basis* — `estimate`,
+`confirmed`, or `unknown` — and that basis survives aggregation, so a total made
+of estimates is labelled an estimate total. Typing a real price over one promotes
+it to `confirmed`. The CSV export carries the basis column and a warning line.
+
+Session 5 replaces the estimates with real figures; the same `price` field is
+what it will write to.
 
 ---
 

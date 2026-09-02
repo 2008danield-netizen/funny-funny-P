@@ -13,6 +13,8 @@ import { Viewport } from './Viewport';
 import { Toolbar } from './Toolbar';
 import { PlanPanel } from './panels/PlanPanel';
 import { CataloguePanel } from './panels/CataloguePanel';
+import { IssuesPanel } from './panels/IssuesPanel';
+import { ShoppingListPanel } from './panels/ShoppingListPanel';
 import { InspectorPanel } from './panels/InspectorPanel';
 import { LightingPanel } from './panels/LightingPanel';
 import { ViewPanel } from './panels/ViewPanel';
@@ -126,6 +128,8 @@ export function App() {
                 properties should never require scrolling to reach. */}
             <InspectorPanel onSplitWall={handleSplitWall} onRotate={handleRotate} />
             <CataloguePanel />
+            <IssuesPanel />
+            <ShoppingListPanel />
             <PlanPanel />
             <LightingPanel />
             <ViewPanel

@@ -22,6 +22,7 @@ import {
 import { obbCorners, snapToWall, solvePosition, type Obb } from '@/physics/collision';
 import { findRegions, pointInPolygon, type Region } from '@/scene/planGraph';
 import { getCatalogEntry, isKnownCatalogId } from '@/furniture/catalog';
+import { violatesRequiredClearance } from '@/clearance/analyze';
 import { FURNITURE_LIMITS, type DesignDocument, type FurnitureItem, type Point2 } from './types';
 
 /* ---------------------------------- IDs -------------------------------- */
@@ -38,6 +39,32 @@ export function newFurnitureId(doc: DesignDocument): string {
 /** Whether a point lies inside any room of the plan. */
 function insideAnyRoom(regions: readonly Region[], point: Point2): boolean {
   return regions.some((region) => pointInPolygon(point, region.polygon));
+}
+
+/**
+ * Builds the validity test the solver uses.
+ *
+ * Always: the piece's centre must be inside a room. Under strict mode, it must
+ * also not intrude on any REQUIRED clearance zone — a door swing, or the space
+ * a drawer needs to open. Advisory guidance is never enforced even in strict
+ * mode; it is the sort of thing a designer trades away deliberately, and
+ * blocking it would make small rooms impossible to work in.
+ *
+ * Note this is passed to the solver rather than checked afterwards, so strict
+ * mode does not merely reject a move: the solver pushes the piece out of the
+ * clearance zone exactly as it pushes it out of a wall.
+ */
+function validityTest(
+  doc: DesignDocument,
+  itemId: string,
+  regions: readonly Region[],
+  box: Obb,
+): (center: Point2) => boolean {
+  return (center) => {
+    if (!insideAnyRoom(regions, center)) return false;
+    if (!doc.clearance.strict) return true;
+    return !violatesRequiredClearance(doc, itemId, { ...box, center });
+  };
 }
 
 export interface PlacementResult {
@@ -93,11 +120,17 @@ export function placeFurniture(
     colliders,
     padding: FURNITURE_LIMITS.contactGap,
     iterations: FURNITURE_LIMITS.solverIterations,
-    isPositionValid: (center) => insideAnyRoom(regions, center),
+    // A brand-new piece has no ID yet, so nothing can be excluded as its own.
+    isPositionValid: validityTest(doc, '', regions, box),
   });
 
   if (!solved.resolved) {
-    return { id: null, reason: 'No room for it there' };
+    return {
+      id: null,
+      reason: doc.clearance.strict
+        ? 'No room for it there, with clearances enforced'
+        : 'No room for it there',
+    };
   }
 
   const id = newFurnitureId(doc);
@@ -161,7 +194,7 @@ export function moveFurniture(
     colliders,
     padding: FURNITURE_LIMITS.contactGap,
     iterations: FURNITURE_LIMITS.solverIterations,
-    isPositionValid: (center) => insideAnyRoom(regions, center),
+    isPositionValid: validityTest(doc, id, regions, box),
   });
 
   if (!solved.resolved) {
@@ -203,7 +236,7 @@ export function rotateFurniture(doc: DesignDocument, id: string, radians: number
     colliders,
     padding: FURNITURE_LIMITS.contactGap,
     iterations: FURNITURE_LIMITS.solverIterations,
-    isPositionValid: (center) => insideAnyRoom(regions, center),
+    isPositionValid: validityTest(doc, id, regions, box),
   });
 
   if (!solved.resolved) return false;

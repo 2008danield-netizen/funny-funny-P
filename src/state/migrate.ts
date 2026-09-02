@@ -179,6 +179,28 @@ function migrateV2ToV3(doc: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+/* ------------------------------- v3 -> v4 ------------------------------ */
+
+/**
+ * v4 adds clearance settings and a currency label.
+ *
+ * Additive, and deliberately defaulting `strict` to false: an existing design
+ * was laid out under no clearance rules at all, so switching them on as hard
+ * constraints would greet the user with a layout their own app now refuses to
+ * let them recreate.
+ */
+function migrateV3ToV4(doc: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...doc,
+    schemaVersion: 4,
+    clearance:
+      typeof doc.clearance === 'object' && doc.clearance !== null
+        ? doc.clearance
+        : { strict: false, walkwayWidth: 0.9 },
+    currency: typeof doc.currency === 'string' ? doc.currency : 'EUR',
+  };
+}
+
 /**
  * Brings a document up to the current schema.
  *
@@ -200,6 +222,9 @@ export function migrateDocument(input: Record<string, unknown>): Record<string, 
   }
   if (declared < 3) {
     doc = migrateV2ToV3(doc);
+  }
+  if (declared < 4) {
+    doc = migrateV3ToV4(doc);
   }
 
   return doc;

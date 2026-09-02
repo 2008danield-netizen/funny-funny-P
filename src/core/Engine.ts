@@ -23,6 +23,8 @@ import { EditController } from '@/interaction/EditController';
 import { Lighting } from '@/scene/Lighting';
 import { Building } from '@/scene/Building';
 import { Furnishings } from '@/scene/Furnishings';
+import { ClearanceOverlay } from '@/scene/ClearanceOverlay';
+import { analyseClearance } from '@/clearance/analyze';
 import { MaterialLibrary } from '@/scene/materials/MaterialLibrary';
 import { designStore } from '@/state/store';
 import { editorStore } from '@/state/selection';
@@ -43,6 +45,7 @@ export class Engine {
   private materials: MaterialLibrary;
   private building: Building;
   private furnishings: Furnishings;
+  private clearanceOverlay: ClearanceOverlay;
   private lighting: Lighting;
   private editController: EditController;
 
@@ -81,6 +84,9 @@ export class Engine {
 
     this.furnishings = new Furnishings();
     this.scene.add(this.furnishings.group);
+
+    this.clearanceOverlay = new ClearanceOverlay();
+    this.scene.add(this.clearanceOverlay.group);
 
     // The edit controller drives OrbitControls' `enabled` flag directly so that
     // a drag on a wall does not also orbit the camera.
@@ -173,6 +179,18 @@ export class Engine {
     if (!previous || previous.furniture !== doc.furniture) {
       this.furnishings.update(doc.furniture);
     }
+
+    // Clearance depends on the plan, the furniture and the settings alike, so
+    // it is refreshed whenever any of them moves. The overlay itself skips the
+    // work while hidden.
+    if (
+      !previous ||
+      previous.plan !== doc.plan ||
+      previous.furniture !== doc.furniture ||
+      previous.clearance !== doc.clearance
+    ) {
+      this.refreshClearance();
+    }
     if (planChanged) {
       this.cameraController.configureForPlan(doc.plan);
     }
@@ -185,9 +203,18 @@ export class Engine {
     this.appliedDocument = doc;
   }
 
+  /** Recomputes the clearance report and pushes it to the overlay. */
+  private refreshClearance(): void {
+    if (!editorStore.getState().showClearance) return;
+    const report = analyseClearance(designStore.getState());
+    this.clearanceOverlay.update(report.zones, report.violatedZoneIds);
+  }
+
   /** Mirrors editor state (tool, selection, hover) into the scene. */
   private applyEditorState(): void {
     const state = editorStore.getState();
+    this.clearanceOverlay.setVisible(state.showClearance);
+    if (state.showClearance) this.refreshClearance();
     // Corner handles and the grid belong to the plan tools; showing them while
     // arranging furniture is clutter the user cannot act on.
     const planTool = state.tool === 'move' || state.tool === 'draw';
@@ -255,6 +282,7 @@ export class Engine {
     this.onStats = null;
 
     this.editController.dispose();
+    this.clearanceOverlay.dispose();
     this.furnishings.dispose();
     this.building.dispose();
     this.lighting.dispose();

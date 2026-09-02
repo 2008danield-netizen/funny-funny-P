@@ -1104,3 +1104,198 @@ select {
 .colorways__item--active {
   box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 3.5px var(--accent);
 }
+
+/* ═══════════════════ Session 4: clearance & shopping list ═══════════════════ */
+
+.issues {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+
+.issue {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  text-align: left;
+  transition: background 120ms ease;
+}
+
+.issue:hover {
+  background: var(--surface-hover);
+}
+
+.issue--active {
+  background: var(--surface-hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Severity is carried by a dot rather than by the row's background: a sidebar
+   full of red panels reads as "everything is broken" and stops being read. */
+.issue__dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-top: 4px;
+  border-radius: 50%;
+}
+
+.issue--required .issue__dot {
+  background: #d8483f;
+}
+
+.issue--advisory .issue__dot {
+  background: var(--accent);
+}
+
+.issue__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.issue__title {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.35;
+}
+
+.issue__detail {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* ------------------------------ Shopping list ----------------------------- */
+
+.shopping {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+
+.shopping__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.shopping__row:hover {
+  background: var(--surface-hover);
+}
+
+.shopping__name {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.shopping__quantity {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.shopping__rooms {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.shopping__price {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.shopping__price-input {
+  width: 62px;
+  padding: 3px 6px;
+  background: var(--surface-3);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: right;
+}
+
+.shopping__price-input:hover {
+  border-color: var(--border-strong);
+}
+
+.shopping__price-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* An estimate is marked at the point of use, not only in a footnote — this is
+   the tag that stops a guessed number reading as a quoted one. */
+.shopping__est {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: var(--accent-dim);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.shopping__row--confirmed .shopping__price-input {
+  color: var(--text-primary);
+}
+
+.shopping__total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 9px 10px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.shopping__total-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.shopping__total-value {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.shopping__basis {
+  font-size: 10.5px;
+  line-height: 1.5;
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.shopping__basis--estimate,
+.shopping__basis--unknown {
+  color: var(--accent);
+}

@@ -43,8 +43,14 @@ describe('v1 to v2 migration', () => {
     const doc = sanitizeDocument(v1Document());
     // A v1 document is carried all the way to the current schema, not just to
     // the next one: the migration chain runs every step in order.
-    expect(doc.schemaVersion).toBe(3);
+    expect(doc.schemaVersion).toBe(4);
     expect(doc.furniture).toEqual([]);
+    // v4 additions arrive with safe defaults. Strict clearance in particular
+    // must default OFF: an old design was laid out under no clearance rules,
+    // and switching them on as hard constraints would greet the user with a
+    // layout their own app now refuses to let them recreate.
+    expect(doc.clearance.strict).toBe(false);
+    expect(doc.currency).toBe('EUR');
     expect(doc.name).toBe('My Living Room');
     expect(doc.units).toBe('imperial');
     expect(doc.lighting.presetId).toBe('evening');
@@ -108,7 +114,7 @@ describe('v1 to v2 migration', () => {
     delete legacy.schemaVersion;
 
     const doc = sanitizeDocument(legacy);
-    expect(doc.schemaVersion).toBe(3);
+    expect(doc.schemaVersion).toBe(4);
     expect(findRegions(doc.plan)).toHaveLength(1);
   });
 

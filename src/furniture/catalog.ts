@@ -54,6 +54,50 @@ export type BuildSpec =
   | { kind: 'desk'; drawers: number }
   | { kind: 'trolley'; tiers: number };
 
+/**
+ * A patch of floor a piece needs kept clear to be usable.
+ *
+ * This is what separates "it fits" from "it works". A chest of drawers fits
+ * neatly in an alcove and is useless there if the drawers cannot open; a sofa
+ * fits against a wall and is uncomfortable if the coffee table is 15 cm away.
+ * Each entry declares its own requirements, so the rules are product knowledge
+ * rather than a pile of special cases in the analyser.
+ *
+ * Zones are measured from the piece's own footprint edge, in its local frame,
+ * where "front" is its +Z face — the direction it faces.
+ */
+export interface ClearanceSpec {
+  /** Stable ID, used to name the issue in the UI. */
+  id: string;
+  side: 'front' | 'back' | 'left' | 'right';
+  /** How far the zone extends beyond that edge, in metres. */
+  depth: number;
+  /** Plain-language reason, shown to the user. */
+  label: string;
+  /**
+   * How seriously to take it.
+   *
+   * 'required' zones become hard constraints in strict mode; 'advisory' ones
+   * never do, and are the sort of thing a designer routinely trades away.
+   */
+  severity: 'required' | 'advisory';
+}
+
+/** A price, and how much to trust it. */
+export interface PriceEstimate {
+  /** Nominal figure, in euros. */
+  amount: number;
+  /**
+   * Always 'estimate' for catalogue data.
+   *
+   * These figures are written from general knowledge, not from a live feed:
+   * IKEA prices differ by country and are revised constantly. Nothing here has
+   * been checked against a listing, and the UI labels every one of them. A
+   * per-item override on a placed piece supersedes this and counts as fact.
+   */
+  basis: 'estimate';
+}
+
 /** A colour option. Roles map onto the material slots used by the builders. */
 export interface Colorway {
   id: string;
@@ -102,6 +146,12 @@ export interface CatalogEntry {
   /** Whether the piece is normally pushed against a wall. Drives auto-snapping. */
   placement: 'wall' | 'free';
 
+  /** Floor this piece needs kept clear around it. */
+  clearances?: ClearanceSpec[];
+
+  /** Rough price, for the shopping list. See `PriceEstimate`. */
+  price?: PriceEstimate;
+
   /* ---- Retailer linkage: empty until a licensed data feed fills it in. ---- */
   retailer: string | null;
   sku: string | null;
@@ -139,6 +189,80 @@ const UPHOLSTERY = [LINEN, CHARCOAL, SAGE, NAVY, RUST];
 const WOODS = [OAK, WHITE, BLACK_BROWN, BIRCH];
 const WOODS_WHITE_FIRST = [WHITE, OAK, BLACK_BROWN, BIRCH];
 
+/* ------------------------- Clearance shorthands ------------------------ */
+
+/** Space to pull a drawer out, or swing a door open, off the front. */
+const drawerPull = (depth: number): ClearanceSpec => ({
+  id: 'pull-out',
+  side: 'front',
+  depth,
+  label: 'Room to open the drawers',
+  severity: 'required',
+});
+
+const doorSwing = (depth: number): ClearanceSpec => ({
+  id: 'door-swing',
+  side: 'front',
+  depth,
+  label: 'Room to swing the doors open',
+  severity: 'required',
+});
+
+/** Legroom and a route past, in front of seating. */
+const seatingApproach = (depth = 0.45): ClearanceSpec => ({
+  id: 'legroom',
+  side: 'front',
+  depth,
+  label: 'Legroom in front of the seat',
+  severity: 'advisory',
+});
+
+/** Room to pull a chair out and walk behind it, around a dining table. */
+const diningPullOut = (): ClearanceSpec[] =>
+  (['front', 'back', 'left', 'right'] as const).map((side) => ({
+    id: `dining-${side}`,
+    side,
+    // 900 mm is the standard: roughly 450 to slide the chair back and another
+    // 450 to walk behind someone sitting in it.
+    depth: 0.9,
+    label: 'Room to pull a chair out and pass behind it',
+    severity: 'advisory' as const,
+  }));
+
+/** Access down at least one long side of a bed, and at the foot. */
+const bedAccess = (): ClearanceSpec[] => [
+  {
+    id: 'bed-side-left',
+    side: 'left',
+    depth: 0.6,
+    label: 'Room to get in and out of bed',
+    severity: 'advisory',
+  },
+  {
+    id: 'bed-side-right',
+    side: 'right',
+    depth: 0.6,
+    label: 'Room to get in and out of bed',
+    severity: 'advisory',
+  },
+  {
+    id: 'bed-foot',
+    side: 'front',
+    depth: 0.45,
+    label: 'Room to pass the foot of the bed',
+    severity: 'advisory',
+  },
+];
+
+/** Room to sit down at and get out from a desk. */
+const deskChairZone = (): ClearanceSpec => ({
+  id: 'desk-chair',
+  side: 'front',
+  depth: 0.9,
+  label: 'Room for a chair at the desk',
+  severity: 'advisory',
+});
+
 /* -------------------------------- Entries ------------------------------ */
 
 /** Shared defaults for the retailer-linkage fields. */
@@ -160,6 +284,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: UPHOLSTERY,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [seatingApproach()],
+    price: { amount: 649, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -175,6 +301,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: UPHOLSTERY,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [seatingApproach()],
+    price: { amount: 549, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -190,6 +318,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: UPHOLSTERY,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [seatingApproach()],
+    price: { amount: 899, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -205,6 +335,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: UPHOLSTERY,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [seatingApproach()],
+    price: { amount: 299, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -220,6 +352,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: UPHOLSTERY,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [seatingApproach()],
+    price: { amount: 799, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -235,6 +369,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [BIRCH, BLACK_BROWN, OAK, WHITE],
     layer: 'furniture',
     placement: 'free',
+    clearances: [seatingApproach(0.4)],
+    price: { amount: 129, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -250,6 +386,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: UPHOLSTERY,
     layer: 'furniture',
     placement: 'free',
+    clearances: [seatingApproach(0.4)],
+    price: { amount: 279, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -265,6 +403,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [WHITE, BLACK_BROWN, PINE],
     layer: 'furniture',
     placement: 'free',
+    clearances: [seatingApproach(0.5)],
+    price: { amount: 79, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -280,6 +420,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [BLACK_BROWN, PINE],
     layer: 'furniture',
     placement: 'free',
+    clearances: [seatingApproach(0.5)],
+    price: { amount: 45, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -295,6 +437,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [WHITE, CHARCOAL, LINEN],
     layer: 'furniture',
     placement: 'free',
+    clearances: [seatingApproach(0.5)],
+    price: { amount: 79, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -310,6 +454,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [CHARCOAL, NAVY],
     layer: 'furniture',
     placement: 'free',
+    clearances: [seatingApproach(0.6)],
+    price: { amount: 229, basis: 'estimate' },
   },
 
   /* ------------------------------- Tables ----------------------------- */
@@ -327,6 +473,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS,
     layer: 'furniture',
     placement: 'free',
+    price: { amount: 35, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -342,6 +489,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS,
     layer: 'furniture',
     placement: 'free',
+    price: { amount: 15, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -357,6 +505,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [BIRCH, OAK, BLACK_BROWN],
     layer: 'furniture',
     placement: 'free',
+    price: { amount: 99, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -372,6 +521,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [CHARCOAL, WHITE],
     layer: 'furniture',
     placement: 'free',
+    price: { amount: 59, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -389,6 +539,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     resizable: { width: [1.2, 1.8] },
     layer: 'furniture',
     placement: 'free',
+    clearances: diningPullOut(),
+    price: { amount: 249, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -404,6 +556,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [PINE, WHITE, BLACK_BROWN],
     layer: 'furniture',
     placement: 'free',
+    clearances: diningPullOut(),
+    price: { amount: 99, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -419,6 +573,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [OAK, BLACK_BROWN],
     layer: 'furniture',
     placement: 'free',
+    clearances: diningPullOut(),
+    price: { amount: 599, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -434,6 +590,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [WHITE, BLACK_BROWN],
     layer: 'furniture',
     placement: 'free',
+    clearances: diningPullOut(),
+    price: { amount: 199, basis: 'estimate' },
   },
 
   /* ------------------------------- Storage ---------------------------- */
@@ -451,6 +609,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS_WHITE_FIRST,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [drawerPull(0.45)],
+    price: { amount: 60, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -466,6 +626,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS_WHITE_FIRST,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [drawerPull(0.45)],
+    price: { amount: 45, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -481,6 +643,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS_WHITE_FIRST,
     layer: 'furniture',
     placement: 'free',
+    clearances: [drawerPull(0.5)],
+    price: { amount: 139, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -496,6 +660,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS_WHITE_FIRST,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [drawerPull(0.5)],
+    price: { amount: 79, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -511,6 +677,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS_WHITE_FIRST,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [drawerPull(0.5)],
+    price: { amount: 49, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -526,6 +694,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [WHITE, BLACK_BROWN, PINE],
     layer: 'furniture',
     placement: 'wall',
+    clearances: [drawerPull(0.45)],
+    price: { amount: 179, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -541,6 +711,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS_WHITE_FIRST,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [drawerPull(0.55)],
+    price: { amount: 199, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -556,6 +728,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [WHITE, BLACK_BROWN, PINE],
     layer: 'furniture',
     placement: 'wall',
+    clearances: [drawerPull(0.55)],
+    price: { amount: 349, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -571,6 +745,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS_WHITE_FIRST,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [doorSwing(0.5)],
+    price: { amount: 199, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -586,6 +762,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS_WHITE_FIRST,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [doorSwing(0.65)],
+    price: { amount: 425, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -601,6 +779,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS_WHITE_FIRST,
     layer: 'furniture',
     placement: 'wall',
+    clearances: [doorSwing(0.65)],
+    price: { amount: 285, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -616,6 +796,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [PINE, WHITE],
     layer: 'furniture',
     placement: 'wall',
+    clearances: [drawerPull(0.4)],
+    price: { amount: 89, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -631,6 +813,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [CHARCOAL, WHITE, SAGE],
     layer: 'furniture',
     placement: 'free',
+    price: { amount: 45, basis: 'estimate' },
   },
 
   /* -------------------------------- Beds ------------------------------ */
@@ -648,6 +831,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS_WHITE_FIRST,
     layer: 'furniture',
     placement: 'wall',
+    clearances: bedAccess(),
+    price: { amount: 349, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -663,6 +848,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: WOODS_WHITE_FIRST,
     layer: 'furniture',
     placement: 'wall',
+    clearances: bedAccess(),
+    price: { amount: 299, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -678,6 +865,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [WHITE, BLACK_BROWN],
     layer: 'furniture',
     placement: 'wall',
+    clearances: bedAccess(),
+    price: { amount: 259, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -693,6 +882,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: UPHOLSTERY,
     layer: 'furniture',
     placement: 'wall',
+    clearances: bedAccess(),
+    price: { amount: 229, basis: 'estimate' },
   },
 
   /* ------------------------------ Workspace --------------------------- */
@@ -710,6 +901,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [OAK, WHITE, CHARCOAL],
     layer: 'furniture',
     placement: 'wall',
+    clearances: [deskChairZone()],
+    price: { amount: 229, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -725,6 +918,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [WHITE, BLACK_BROWN, OAK],
     layer: 'furniture',
     placement: 'wall',
+    clearances: [deskChairZone()],
+    price: { amount: 99, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -740,6 +935,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [WHITE, BLACK_BROWN, OAK],
     layer: 'furniture',
     placement: 'free',
+    clearances: [drawerPull(0.55)],
+    price: { amount: 129, basis: 'estimate' },
   },
 
   /* -------------------------------- Rugs ------------------------------ */
@@ -757,6 +954,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [LINEN, CHARCOAL, SAGE],
     layer: 'floor',
     placement: 'free',
+    price: { amount: 179, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -772,6 +970,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [LINEN, CHARCOAL],
     layer: 'floor',
     placement: 'free',
+    price: { amount: 79, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -787,6 +986,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [LINEN, NAVY, RUST],
     layer: 'floor',
     placement: 'free',
+    price: { amount: 499, basis: 'estimate' },
   },
 
   /* ------------------------------ Lighting ---------------------------- */
@@ -804,6 +1004,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [CHARCOAL, WHITE],
     layer: 'furniture',
     placement: 'free',
+    price: { amount: 79, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -819,6 +1020,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [CHARCOAL, WHITE],
     layer: 'furniture',
     placement: 'free',
+    price: { amount: 15, basis: 'estimate' },
   },
   {
     ...UNLINKED,
@@ -834,6 +1036,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     colorways: [CHARCOAL, WHITE],
     layer: 'furniture',
     placement: 'free',
+    price: { amount: 49, basis: 'estimate' },
   },
 ];
 

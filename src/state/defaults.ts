@@ -5,6 +5,7 @@
  */
 
 import {
+  CLEARANCE_DEFAULTS,
   OPENING_LIMITS,
   PLAN_LIMITS,
   SCHEMA_VERSION,
@@ -71,6 +72,13 @@ export function createDefaultDocument(): DesignDocument {
       intensity: 1,
       shadowsEnabled: true,
     },
+    clearance: {
+      // Advisory by default. Clearance is guidance, not physics, and a designer
+      // working a small flat routinely accepts a tight walkway on purpose.
+      strict: false,
+      walkwayWidth: CLEARANCE_DEFAULTS.walkway,
+    },
+    currency: 'EUR',
     // Hidden by default: opaque ceilings block the orbit camera's view in from
     // above, which is how people naturally inspect a floor plan.
     showCeilings: false,
@@ -312,11 +320,38 @@ function safeFurniture(value: unknown): FurnitureItem[] {
       // rotation of forty radians from repeated key presses.
       rotation: normalizeAngle(clamp(raw.rotation, -1000, 1000, 0)),
       ...(typeof raw.colorwayId === 'string' ? { colorwayId: raw.colorwayId } : {}),
+      // A confirmed price. Clamped rather than trusted, since it arrives from a
+      // JSON file that may have been hand-edited.
+      ...(typeof raw.price === 'number' && Number.isFinite(raw.price) && raw.price >= 0
+        ? { price: Math.min(1_000_000, raw.price) }
+        : {}),
       ...(size ? { size } : {}),
     });
   });
 
   return items;
+}
+
+/** Coerces the clearance settings, clamping the walkway to something sane. */
+function safeClearance(value: unknown): DesignDocument['clearance'] {
+  const raw = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
+  return {
+    strict: raw.strict === true,
+    // Below half a metre nobody fits through; above two the guidance stops
+    // being about walking and starts rejecting normal rooms.
+    walkwayWidth: clamp(raw.walkwayWidth, 0.5, 2, CLEARANCE_DEFAULTS.walkway),
+  };
+}
+
+/**
+ * Coerces the currency label.
+ *
+ * A label only: no conversion happens anywhere, so this is restricted to a
+ * short string rather than validated against a currency list. Accepting "kr"
+ * or "zl" matters more than rejecting nonsense nobody will type.
+ */
+function safeCurrency(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 6) : 'EUR';
 }
 
 /** Wraps an angle into -PI..PI. */
@@ -353,6 +388,8 @@ export function sanitizeDocument(input: unknown): DesignDocument {
     showCeilings: raw.showCeilings === true,
     plan: safePlan(raw.plan),
     furniture: safeFurniture(raw.furniture),
+    clearance: safeClearance(raw.clearance),
+    currency: safeCurrency(raw.currency),
     lighting: {
       presetId:
         rawLighting.presetId === 'overcast' ||
