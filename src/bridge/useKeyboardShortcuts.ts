@@ -14,6 +14,7 @@
 import { useEffect } from 'react';
 
 import { designStore } from '@/state/store';
+import { editorStore, type EditTool } from '@/state/selection';
 import type { ViewpointId } from '@/controls/CameraController';
 
 const VIEWPOINT_KEYS: Record<string, ViewpointId> = {
@@ -21,6 +22,21 @@ const VIEWPOINT_KEYS: Record<string, ViewpointId> = {
   '2': 'corner',
   '3': 'interior',
   '4': 'plan',
+};
+
+/**
+ * Single-letter tool shortcuts.
+ *
+ * Chosen to match the toolbar order and to avoid collisions with the browser's
+ * own modified shortcuts. "N" rather than "I" for window because W is already
+ * the wall tool and I reads as "insert".
+ */
+const TOOL_KEYS: Record<string, EditTool> = {
+  v: 'select',
+  m: 'move',
+  w: 'draw',
+  d: 'door',
+  n: 'window',
 };
 
 /** Input types that swallow keystrokes as text and own their own undo stack. */
@@ -61,10 +77,27 @@ export function useKeyboardShortcuts(onViewpoint: (viewpoint: ViewpointId) => vo
         return;
       }
 
+      if (modifier) return;
+
       const viewpoint = VIEWPOINT_KEYS[event.key];
-      if (viewpoint && !modifier) {
+      if (viewpoint) {
         event.preventDefault();
         onViewpoint(viewpoint);
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+
+      const tool = TOOL_KEYS[key];
+      if (tool) {
+        event.preventDefault();
+        editorStore.setTool(tool);
+        return;
+      }
+
+      if (key === 'g') {
+        event.preventDefault();
+        editorStore.patch({ snapEnabled: !editorStore.getState().snapEnabled });
       }
     };
 

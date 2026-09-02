@@ -770,3 +770,188 @@ select {
   white-space: nowrap;
   border: 0;
 }
+
+/* ═══════════════════ Session 2: plan editing ═══════════════════ */
+
+/* Floating toolbar over the viewport. Placed top-left, where it does not
+   collide with the viewpoint buttons at bottom-left or the stats at
+   bottom-right. */
+.toolbar {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 2;
+  max-width: calc(100% - 24px);
+}
+
+.toolbar__tools {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: rgba(14, 16, 19, 0.86);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.toolbar__tool {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.toolbar__tool:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.toolbar__tool--active {
+  background: var(--accent);
+  color: #1a1408;
+}
+
+.toolbar__icon {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.toolbar__tool--active .toolbar__icon {
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.toolbar__divider {
+  width: 1px;
+  margin: 4px 3px;
+  background: var(--border-strong);
+}
+
+.toolbar__status {
+  align-self: flex-start;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(14, 16, 19, 0.8);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  max-width: 320px;
+  line-height: 1.45;
+}
+
+/* Hide tool labels on narrow screens; the icons and tooltips carry it. */
+@media (max-width: 620px) {
+  .toolbar__label {
+    display: none;
+  }
+  .toolbar__status {
+    display: none;
+  }
+}
+
+/* Text and number inputs in the inspector. */
+.number-input,
+.text-input {
+  width: 100%;
+  padding: 7px 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.text-input {
+  font-family: var(--font-ui);
+}
+
+.number-input:hover,
+.text-input:hover {
+  border-color: var(--border-strong);
+}
+
+.number-input:focus,
+.text-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.number-input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* The list of detected rooms. */
+.room-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.room-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  text-align: left;
+  transition: background 120ms ease;
+}
+
+.room-list__item:hover {
+  background: var(--surface-hover);
+}
+
+.room-list__item--active {
+  background: var(--surface-hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.room-list__name {
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-list__area {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* Opening presets reuse the material tile, but have a glyph instead of a
+   generated texture preview. */
+.material-tile__glyph {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  width: 100%;
+  padding: 5px;
+  color: var(--text-secondary);
+  background: var(--surface-3);
+}
+
+.material-tile--active .material-tile__glyph {
+  color: var(--accent);
+}

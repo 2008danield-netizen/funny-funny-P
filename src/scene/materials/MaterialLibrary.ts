@@ -20,7 +20,7 @@ import type { SurfaceMaps } from './generators';
 import { generateConcrete } from './generators';
 import { getFloorPreset } from './presets';
 import { createCanvas, heightToNormalMap } from './textureUtils';
-import type { FloorSpec, WallSpec } from '@/state/types';
+import type { FloorSpec, WallFaceSpec } from '@/state/types';
 
 /** Resolution of generated maps. 1024 resolves plank grain without a long stall. */
 const TEXTURE_SIZE = 1024;
@@ -133,16 +133,14 @@ export class MaterialLibrary {
    * Applies a floor spec to a material, swapping textures only if the preset
    * actually changed.
    *
-   * `roomWidth`/`roomDepth` set the texture repeat so that the pattern stays a
-   * fixed real-world size regardless of room dimensions — planks must not
-   * stretch when the room is resized.
+   * Since session 2 the floor geometry carries UVs measured in METRES of world
+   * space rather than normalised 0..1 (see `floorBuilder`), so the repeat is a
+   * pure function of the material's own tile size. Two consequences, both of
+   * them wanted: planks never stretch when a room is reshaped, and floorboards
+   * run continuously from one room into the next instead of restarting at the
+   * doorway.
    */
-  applyFloorSpec(
-    material: THREE.MeshStandardMaterial,
-    spec: FloorSpec,
-    roomWidth: number,
-    roomDepth: number,
-  ): void {
+  applyFloorSpec(material: THREE.MeshStandardMaterial, spec: FloorSpec): void {
     const surface = this.getSurface(spec.presetId);
 
     // `userData.presetId` tracks what is currently bound so repeated edits to
@@ -159,13 +157,13 @@ export class MaterialLibrary {
       material.needsUpdate = true;
     }
 
-    // One repeat covers `tileMetres * textureScale` metres of floor.
+    // One repeat covers `tileMetres * textureScale` metres of floor. UVs are in
+    // metres, so the repeat is the reciprocal of that distance.
     const metresPerRepeat = surface.tileMetres * spec.textureScale;
-    const repeatX = roomWidth / metresPerRepeat;
-    const repeatY = roomDepth / metresPerRepeat;
+    const repeat = 1 / metresPerRepeat;
 
     for (const texture of [material.map, material.roughnessMap, material.normalMap]) {
-      if (texture) texture.repeat.set(repeatX, repeatY);
+      if (texture) texture.repeat.set(repeat, repeat);
     }
 
     material.color.set(spec.color);
@@ -187,23 +185,20 @@ export class MaterialLibrary {
   }
 
   /**
-   * Applies colour and finish to a wall, and scales its plaster texture to the
-   * wall's real dimensions so the grain size is consistent across walls.
+   * Applies colour and finish to one face of a wall.
+   *
+   * Wall geometry carries UVs in metres (see `wallBuilder`), so the plaster
+   * texture is scaled purely by its own tile size. That keeps the grain
+   * identical on a 1 m stub and a 9 m run, which is not true if the repeat is
+   * derived from the wall's dimensions.
    */
-  applyWallSpec(
-    material: THREE.MeshStandardMaterial,
-    spec: WallSpec,
-    wallWidth: number,
-    wallHeight: number,
-  ): void {
+  applyWallSpec(material: THREE.MeshStandardMaterial, spec: WallFaceSpec): void {
     material.color.set(spec.color);
     material.roughness = spec.roughness;
 
-    const plaster = this.getPlaster();
-    const repeatX = wallWidth / plaster.tileMetres;
-    const repeatY = wallHeight / plaster.tileMetres;
+    const repeat = 1 / this.getPlaster().tileMetres;
     for (const texture of [material.roughnessMap, material.normalMap]) {
-      if (texture) texture.repeat.set(repeatX, repeatY);
+      if (texture) texture.repeat.set(repeat, repeat);
     }
   }
 

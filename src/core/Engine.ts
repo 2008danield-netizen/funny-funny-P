@@ -1,5 +1,5 @@
 /**
- * The 3D engine: owns the scene graph and the render loop.
+ * The 3D engine: owns the scene graph, the render loop and the editing tools.
  *
  * This class is the boundary between React and Three.js. React mounts it into a
  * DOM node and otherwise leaves it alone — the engine subscribes to the design
@@ -10,20 +10,22 @@
  *
  * Data flow:
  *
- *     UI panel → designStore.edit() → store listener → Engine.applyDocument()
- *                                                   → Room / Lighting update
- *                                   → React re-render (panels only)
+ *     UI panel  ─edit()─▶ designStore ─notify─▶ Engine ──▶ Building / Lighting
+ *     Viewport  ────────▶ EditController ─edit()─▶ designStore  (same loop)
+ *                                       └──────▶ editorStore ──▶ selection
  */
 
 import * as THREE from 'three';
 
 import { Renderer } from './Renderer';
 import { CameraController, type ViewpointId } from '@/controls/CameraController';
+import { EditController } from '@/interaction/EditController';
 import { Lighting } from '@/scene/Lighting';
-import { Room } from '@/scene/Room';
+import { Building } from '@/scene/Building';
 import { MaterialLibrary } from '@/scene/materials/MaterialLibrary';
 import { designStore } from '@/state/store';
-import type { DesignDocument } from '@/state/types';
+import { editorStore } from '@/state/selection';
+import type { DesignDocument, Point2 } from '@/state/types';
 
 /** Reported once per second to the UI's performance readout. */
 export interface EngineStats {
@@ -38,12 +40,14 @@ export class Engine {
   private scene: THREE.Scene;
   private cameraController: CameraController;
   private materials: MaterialLibrary;
-  private room: Room;
+  private building: Building;
   private lighting: Lighting;
+  private editController: EditController;
 
   private clock = new THREE.Clock();
   private animationFrame: number | null = null;
-  private unsubscribeStore: (() => void) | null = null;
+  private unsubscribeDesign: (() => void) | null = null;
+  private unsubscribeEditor: (() => void) | null = null;
 
   /** Accumulators for the once-per-second stats report. */
   private frameCount = 0;
@@ -70,15 +74,26 @@ export class Engine {
     this.lighting = new Lighting(this.scene, this.renderer.webgl);
     this.scene.add(this.lighting.group);
 
-    this.room = new Room(this.materials);
-    this.scene.add(this.room.group);
+    this.building = new Building(this.materials);
+    this.scene.add(this.building.group);
+
+    // The edit controller drives OrbitControls' `enabled` flag directly so that
+    // a drag on a wall does not also orbit the camera.
+    this.editController = new EditController(
+      this.renderer.canvas,
+      this.cameraController.camera,
+      this.building,
+      this.cameraController.controls,
+    );
 
     // Apply current state immediately, then track future changes.
     this.applyDocument(designStore.getState());
-    this.unsubscribeStore = designStore.subscribe((doc) => this.applyDocument(doc));
+    this.applyEditorState();
+    this.unsubscribeDesign = designStore.subscribe((doc) => this.applyDocument(doc));
+    this.unsubscribeEditor = editorStore.subscribe(() => this.applyEditorState());
 
-    // Frame the room before the first frame is presented.
-    this.cameraController.goTo('overview', designStore.getState().room);
+    // Frame the plan before the first frame is presented.
+    this.goToViewpoint('overview');
 
     this.start();
   }
@@ -90,12 +105,35 @@ export class Engine {
 
   /** Moves the camera to a named viewpoint. */
   goToViewpoint(viewpoint: ViewpointId): void {
-    this.cameraController.goTo(viewpoint, designStore.getState().room);
+    const plan = designStore.getState().plan;
+    this.cameraController.goTo(viewpoint, plan, this.focusPoint());
+  }
+
+  /**
+   * The point viewpoints should centre on: the middle of the biggest room.
+   *
+   * For a single-room plan this is the room's centre, same as before. For a
+   * multi-room plan it keeps "Inside" from dropping the camera into a wall
+   * between two rooms, which is where the plan's geometric centre often lands.
+   */
+  private focusPoint(): Point2 | undefined {
+    const regions = this.building.getRegions();
+    return regions.length > 0 ? regions[0]!.interiorPoint : undefined;
   }
 
   /** Toggles automatic hiding of walls between the camera and the interior. */
   setAutoHideWalls(enabled: boolean): void {
-    this.room.setAutoHideWalls(enabled);
+    this.building.setAutoHideWalls(enabled);
+  }
+
+  /** Inserts a corner at the middle of the selected wall. */
+  splitSelectedWall(): void {
+    this.editController.splitSelectedWall();
+  }
+
+  /** Abandons a wall that is part-way through being drawn. */
+  cancelDrawing(): void {
+    this.editController.cancelDrawing();
   }
 
   /**
@@ -115,17 +153,31 @@ export class Engine {
 
     // Reference comparison is valid because the store treats documents as
     // immutable — an unchanged sub-object is guaranteed to be the same object.
-    if (!previous || previous.room !== doc.room) {
-      this.room.update(doc.room);
-      this.cameraController.configureForRoom(doc.room);
+    const planChanged = !previous || previous.plan !== doc.plan;
+    const ceilingsChanged = !previous || previous.showCeilings !== doc.showCeilings;
+
+    if (planChanged || ceilingsChanged) {
+      this.building.update(doc.plan, doc.showCeilings);
+    }
+    if (planChanged) {
+      this.cameraController.configureForPlan(doc.plan);
     }
 
-    if (!previous || previous.lighting !== doc.lighting || previous.room !== doc.room) {
-      this.lighting.apply(doc.lighting, doc.room);
+    if (!previous || previous.lighting !== doc.lighting || planChanged) {
+      this.lighting.apply(doc.lighting, doc.plan);
       this.renderer.webgl.shadowMap.enabled = doc.lighting.shadowsEnabled;
     }
 
     this.appliedDocument = doc;
+  }
+
+  /** Mirrors editor state (tool, selection, hover) into the scene. */
+  private applyEditorState(): void {
+    const state = editorStore.getState();
+    // Handles and the grid appear for any tool that manipulates the plan.
+    this.building.setEditMode(state.tool !== 'select');
+    this.building.setSelection(state.selection);
+    this.building.setHover(state.hover);
   }
 
   private start(): void {
@@ -135,7 +187,7 @@ export class Engine {
       const delta = this.clock.getDelta();
 
       this.cameraController.update(delta);
-      this.room.updateForCamera(this.cameraController.camera);
+      this.building.updateForCamera(this.cameraController.camera);
 
       this.renderer.webgl.render(this.scene, this.cameraController.camera);
 
@@ -174,11 +226,14 @@ export class Engine {
     if (this.animationFrame !== null) cancelAnimationFrame(this.animationFrame);
     this.animationFrame = null;
 
-    this.unsubscribeStore?.();
-    this.unsubscribeStore = null;
+    this.unsubscribeDesign?.();
+    this.unsubscribeEditor?.();
+    this.unsubscribeDesign = null;
+    this.unsubscribeEditor = null;
     this.onStats = null;
 
-    this.room.dispose();
+    this.editController.dispose();
+    this.building.dispose();
     this.lighting.dispose();
     this.materials.dispose();
     this.cameraController.dispose();

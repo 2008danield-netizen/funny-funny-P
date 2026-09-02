@@ -31,8 +31,8 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
-import type { LightingPresetId, LightingSpec, RoomModel } from '@/state/types';
-import { boundingRadius } from './roomGeometry';
+import type { LightingPresetId, LightingSpec, PlanModel } from '@/state/types';
+import { planBounds } from './planGraph';
 
 interface LightingPreset {
   label: string;
@@ -52,7 +52,16 @@ interface LightingPreset {
   fillIntensity: number;
   /** Multiplier on the environment map's contribution. */
   environmentIntensity: number;
-  /** Viewport background colour behind the room. */
+  /**
+   * Viewport background colour behind the building.
+   *
+   * Since session 2 this is also WHAT YOU SEE THROUGH A WINDOW, which changes
+   * what it has to be. A near-black backdrop looked good behind an unglazed box,
+   * but glazing against it reads as a black hole punched in the wall rather than
+   * as a window. Each preset therefore uses a muted sky tone: light enough to
+   * sit convincingly outside the glass, dark enough that the room stays the
+   * brightest thing on screen.
+   */
   background: number;
   /** Softness of the shadow edge, in shadow-map texels. */
   shadowRadius: number;
@@ -72,7 +81,7 @@ export const LIGHTING_PRESETS: Record<LightingPresetId, LightingPreset> = {
     fillColor: 0xc7d6ea,
     fillIntensity: 0.22,
     environmentIntensity: 0.55,
-    background: 0x11141a,
+    background: 0x3a4655,
     shadowRadius: 3,
   },
   overcast: {
@@ -88,7 +97,7 @@ export const LIGHTING_PRESETS: Record<LightingPresetId, LightingPreset> = {
     fillColor: 0xdde2e8,
     fillIntensity: 0.3,
     environmentIntensity: 0.7,
-    background: 0x161a1f,
+    background: 0x424851,
     shadowRadius: 8,
   },
   evening: {
@@ -104,7 +113,7 @@ export const LIGHTING_PRESETS: Record<LightingPresetId, LightingPreset> = {
     fillColor: 0x5a6b8c,
     fillIntensity: 0.2,
     environmentIntensity: 0.3,
-    background: 0x0d0f13,
+    background: 0x2b2533,
     shadowRadius: 4,
   },
   studio: {
@@ -120,7 +129,7 @@ export const LIGHTING_PRESETS: Record<LightingPresetId, LightingPreset> = {
     fillColor: 0xffffff,
     fillIntensity: 0.45,
     environmentIntensity: 0.75,
-    background: 0x1b1e24,
+    background: 0x30353d,
     shadowRadius: 5,
   },
 };
@@ -173,7 +182,7 @@ export class Lighting {
   }
 
   /** Applies a lighting spec, refitting shadows to the room's size. */
-  apply(spec: LightingSpec, room: RoomModel): void {
+  apply(spec: LightingSpec, plan: PlanModel): void {
     const preset = LIGHTING_PRESETS[spec.presetId];
     const gain = spec.intensity;
 
@@ -193,8 +202,8 @@ export class Lighting {
     this.scene.environmentIntensity = preset.environmentIntensity * gain;
     this.scene.background = new THREE.Color(preset.background);
 
-    this.positionLights(preset, room);
-    this.fitShadowCamera(room);
+    this.positionLights(preset, plan);
+    this.fitShadowCamera(plan);
   }
 
   /**
@@ -204,8 +213,9 @@ export class Lighting {
    * frustum (which is orthographic and positioned at the light) always fully
    * contains the room.
    */
-  private positionLights(preset: LightingPreset, room: RoomModel): void {
-    const distance = Math.max(8, boundingRadius(room) * 4);
+  private positionLights(preset: LightingPreset, plan: PlanModel): void {
+    const bounds = planBounds(plan);
+    const distance = Math.max(8, bounds.radius * 4);
 
     const elevation = THREE.MathUtils.degToRad(preset.sunElevation);
     const azimuth = THREE.MathUtils.degToRad(preset.sunAzimuth);
@@ -216,8 +226,11 @@ export class Lighting {
       Math.sin(elevation) * distance,
       -Math.cos(azimuth) * horizontal,
     );
-    // Aim slightly above the floor so shadows fall across the room, not past it.
-    this.sun.target.position.set(0, room.height * 0.25, 0);
+    // Aim slightly above the floor, at the middle of the plan, so shadows fall
+    // across the building rather than past it.
+    this.sun.position.x += bounds.center.x;
+    this.sun.position.z += bounds.center.z;
+    this.sun.target.position.set(bounds.center.x, bounds.height * 0.25, bounds.center.z);
     this.sun.target.updateMatrixWorld();
 
     // The fill sits opposite the sun and lower, mimicking light bounced back
@@ -230,10 +243,10 @@ export class Lighting {
   }
 
   /** Sizes the orthographic shadow frustum to just contain the room. */
-  private fitShadowCamera(room: RoomModel): void {
-    // A little headroom beyond the room so shadows cast onto exterior geometry
-    // (and the site ground plane) are not clipped at the frustum edge.
-    const extent = boundingRadius(room) * 1.35;
+  private fitShadowCamera(plan: PlanModel): void {
+    // A little headroom beyond the building so shadows cast onto exterior
+    // geometry (and the site ground plane) are not clipped at the frustum edge.
+    const extent = planBounds(plan).radius * 1.35;
     const camera = this.sun.shadow.camera;
 
     camera.left = -extent;

@@ -1,10 +1,12 @@
 /**
- * Ceiling and lighting — the two settings that change how every other surface
- * in the room reads, which is why they share a panel.
+ * Lighting mood and ceiling visibility.
+ *
+ * Ceiling COLOUR moved into the room inspector in session 2, since a multi-room
+ * plan can have a different ceiling per room. What stays here is the global
+ * show/hide, which is a way of looking at the plan rather than a property of it.
  */
 
 import { Panel } from '../components/Panel';
-import { ColorInput } from '../components/ColorInput';
 import { Segmented } from '../components/Segmented';
 import { Slider } from '../components/Slider';
 import { Toggle } from '../components/Toggle';
@@ -18,13 +20,13 @@ const LIGHTING_OPTIONS = (Object.keys(LIGHTING_PRESETS) as LightingPresetId[]).m
   title: LIGHTING_PRESETS[id].description,
 }));
 
-export function SurfacesPanel() {
-  const ceiling = useDesignSlice((doc) => doc.room.ceiling);
+export function LightingPanel() {
   const lighting = useDesignSlice((doc) => doc.lighting);
+  const showCeilings = useDesignSlice((doc) => doc.showCeilings);
   const edit = useDesignEdit();
 
   return (
-    <Panel title="Ceiling & Light" badge={LIGHTING_PRESETS[lighting.presetId].label}>
+    <Panel title="Light" badge={LIGHTING_PRESETS[lighting.presetId].label}>
       <Segmented
         label="Lighting"
         options={LIGHTING_OPTIONS}
@@ -61,31 +63,20 @@ export function SurfacesPanel() {
       />
 
       <Toggle
-        label="Show ceiling"
-        checked={ceiling.visible}
+        label="Show ceilings"
+        checked={showCeilings}
         onChange={(checked) =>
           edit((draft) => {
-            draft.room.ceiling.visible = checked;
+            draft.showCeilings = checked;
           })
         }
       />
 
-      {ceiling.visible && (
-        <ColorInput
-          label="Ceiling colour"
-          value={ceiling.color}
-          onChange={(hex) =>
-            edit((draft) => {
-              draft.room.ceiling.color = hex;
-            }, { history: 'coalesce', coalesceKey: 'ceiling.color' })
-          }
-        />
-      )}
-
       <p className="field__hint">
-        The ceiling is hidden by default so you can look down into the room.
-        Turn it on before switching to the inside view — it changes how light
-        bounces around the space.
+        Ceilings are hidden by default so you can look down into the plan. Turn
+        them on before switching to the inside view — they change how light
+        bounces around a room. Each room's ceiling colour is set in its own
+        inspector.
       </p>
     </Panel>
   );

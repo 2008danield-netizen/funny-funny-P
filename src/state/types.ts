@@ -9,46 +9,55 @@
  *     IKEA and every other furniture catalogue publishes metric data, so metres
  *     is the format that needs no conversion at the point it matters most.
  *
- *  2. The world is Y-UP. The floor sits at y = 0 and the ceiling at y = height.
- *     The room is centred on the world origin, so a 4m × 3m room spans
- *     x ∈ [-2, 2] and z ∈ [-1.5, 1.5]. Centring (rather than one corner at the
- *     origin) keeps orbit controls, resizing and future room-rotation sane.
+ *  2. The world is Y-UP. The floor sits at y = 0. Walls are described purely in
+ *     plan: a wall is a line between two vertices on the y = 0 plane, extruded
+ *     upwards. Nothing is "centred on the origin" any more — since session 2 the
+ *     plan can be any shape, so the origin is simply a point the plan sits near.
  *
  *  3. This object must stay JSON-serialisable — no class instances, no Three.js
  *     objects, no functions. It is the thing we autosave, export, hand to the AI
  *     advisor and will eventually sync to a server. Anything that cannot survive
  *     `JSON.parse(JSON.stringify(doc))` does not belong in here.
+ *
+ *  4. IDs ARE STABLE AND OPAQUE. Never address a wall or vertex by array index.
+ *     Inserting a corner must not shuffle the colours the user already chose, and
+ *     index-based addressing is exactly how that regression happens.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-/** Bumped whenever the shape below changes incompatibly; `migrate()` handles old docs. */
-export const SCHEMA_VERSION = 1;
+/**
+ * Bumped whenever the shape below changes incompatibly.
+ *
+ * v1 — a single rectangular room described by width/depth/height.
+ * v2 — an arbitrary wall graph supporting multi-room plans and openings.
+ *      `state/migrate.ts` upgrades v1 documents by tracing a rectangle.
+ */
+export const SCHEMA_VERSION = 2;
 
 /** Which measurement system the UI displays. Storage is always metric. */
 export type UnitSystem = 'metric' | 'imperial';
 
+/** A point on the floor plane. */
+export interface Point2 {
+  x: number;
+  z: number;
+}
+
+/* ──────────────────────────── The wall graph ─────────────────────────── */
+
 /**
- * The four walls of a rectangular room, named by compass direction.
+ * A corner in the plan.
  *
- * NOTE FOR FUTURE SESSIONS: when arbitrary room shapes arrive, these IDs become
- * one special case of a general edge list. Everything downstream already
- * addresses walls by opaque ID rather than array index, so the migration is
- * contained to `scene/roomGeometry.ts`.
+ * Vertices are shared between walls: dragging one corner moves every wall that
+ * meets there, which is what makes a floor plan behave like a floor plan rather
+ * than like four independent sticks.
  */
-export type WallId = 'north' | 'east' | 'south' | 'west';
+export interface Vertex extends Point2 {
+  id: string;
+}
 
-export const WALL_IDS: readonly WallId[] = ['north', 'east', 'south', 'west'] as const;
-
-/** Human-facing labels for each wall, used by the UI. */
-export const WALL_LABELS: Record<WallId, string> = {
-  north: 'North',
-  east: 'East',
-  south: 'South',
-  west: 'West',
-};
-
-/** Per-wall appearance. Geometry is derived from the room box, not stored here. */
-export interface WallSpec {
+/** How one side of a wall is painted. */
+export interface WallFaceSpec {
   /** Hex colour string, e.g. "#e8e4dc". */
   color: string;
   /**
@@ -57,6 +66,64 @@ export interface WallSpec {
    */
   roughness: number;
 }
+
+export type OpeningKind = 'door' | 'window';
+
+/** Which side of a wall a door opens towards. See `Wall.faces` for a/b. */
+export type WallSide = 'a' | 'b';
+
+/**
+ * A door or window cut through a wall.
+ *
+ * Positioned along the wall rather than in world space, so an opening stays put
+ * (relative to its wall) when the wall is moved or its vertices are dragged.
+ */
+export interface Opening {
+  id: string;
+  kind: OpeningKind;
+  /** ID of an entry in `scene/openings/presets.ts`. */
+  presetId: string;
+  /** Distance from the wall's start vertex to the opening's centre, in metres. */
+  offset: number;
+  width: number;
+  height: number;
+  /** Height of the opening's bottom edge above the floor. Zero for doors. */
+  sillHeight: number;
+  /** Which end of the wall the door is hinged on. Ignored for windows. */
+  hinge: 'start' | 'end';
+  /** Which side of the wall the door swings towards. Ignored for windows. */
+  swing: WallSide;
+}
+
+/**
+ * A wall: a line between two vertices, extruded to `height`.
+ *
+ * A wall has two faces. Face "a" is the side the wall's left-hand normal points
+ * towards (see `wallBasis` in `scene/planGraph.ts`); face "b" is the other. In a
+ * multi-room plan those two faces can belong to two different rooms, which is
+ * why each is painted independently.
+ */
+export interface Wall {
+  id: string;
+  /** Vertex ID this wall runs from. */
+  start: string;
+  /** Vertex ID this wall runs to. */
+  end: string;
+  thickness: number;
+  height: number;
+  /**
+   * Per-face paint overrides.
+   *
+   * Usually absent: a face with no override inherits the wall colour of the room
+   * it looks into, which is how people actually think ("paint the bedroom sage")
+   * and avoids having to click every wall of a room individually. An override is
+   * what creates an accent wall.
+   */
+  faces: { a?: WallFaceSpec; b?: WallFaceSpec };
+  openings: Opening[];
+}
+
+/* ──────────────────────────── Room appearance ────────────────────────── */
 
 /** The floor's surface: a procedural material preset tinted by a colour. */
 export interface FloorSpec {
@@ -68,14 +135,42 @@ export interface FloorSpec {
   textureScale: number;
 }
 
-/** The ceiling. Kept simple — it is mostly a light bounce surface. */
-export interface CeilingSpec {
-  color: string;
-  /** Hidden by default so the camera can look into the room from above. */
-  visible: boolean;
+/**
+ * Everything about one enclosed room.
+ *
+ * Rooms are DERIVED from the wall graph, not stored as geometry — the set of
+ * enclosed regions is recomputed whenever walls change (see `findRegions`).
+ * This record only holds the appearance the user chose, keyed by a region key
+ * that stays stable as long as the same walls enclose the space.
+ */
+export interface RoomSpec {
+  /** User-facing name, e.g. "Living Room". */
+  name: string;
+  floor: FloorSpec;
+  /** Default paint for every wall face looking into this room. */
+  wall: WallFaceSpec;
+  /** Ceiling colour for this room. */
+  ceilingColor: string;
 }
 
-/** Lighting mood. Presets drive colour temperature and intensity together. */
+/** The complete plan: its graph, and the appearance of the rooms it encloses. */
+export interface PlanModel {
+  vertices: Vertex[];
+  walls: Wall[];
+  /**
+   * Room appearance keyed by region key (see `regionKey` in `scene/planGraph.ts`).
+   * Regions with no entry fall back to `defaultRoom`.
+   */
+  rooms: Record<string, RoomSpec>;
+  /** Appearance applied to any newly enclosed region. */
+  defaultRoom: RoomSpec;
+  /** Height and thickness given to walls the user draws next. */
+  defaultWallHeight: number;
+  defaultWallThickness: number;
+}
+
+/* ───────────────────────────────── Lighting ──────────────────────────── */
+
 export type LightingPresetId = 'daylight' | 'overcast' | 'evening' | 'studio';
 
 export interface LightingSpec {
@@ -86,21 +181,7 @@ export interface LightingSpec {
   shadowsEnabled: boolean;
 }
 
-/** The room shell: dimensions plus the surfaces that enclose it. */
-export interface RoomModel {
-  /** Interior width along the X axis, in metres. */
-  width: number;
-  /** Interior depth along the Z axis, in metres. */
-  depth: number;
-  /** Floor-to-ceiling height along the Y axis, in metres. */
-  height: number;
-  /** Thickness of the wall slabs, in metres. Visible at door/window openings later. */
-  wallThickness: number;
-
-  walls: Record<WallId, WallSpec>;
-  floor: FloorSpec;
-  ceiling: CeilingSpec;
-}
+/* ───────────────────────────── The document ──────────────────────────── */
 
 /** The complete, serialisable state of one design. */
 export interface DesignDocument {
@@ -110,8 +191,11 @@ export interface DesignDocument {
   /** ISO timestamp of the last modification. */
   updatedAt: string;
 
-  room: RoomModel;
+  plan: PlanModel;
   lighting: LightingSpec;
+
+  /** Ceilings hidden by default so the orbit camera can look into the plan. */
+  showCeilings: boolean;
 
   /** Display preference. Does not affect stored values. */
   units: UnitSystem;
@@ -119,16 +203,29 @@ export interface DesignDocument {
   /*
    * FUTURE SESSIONS ADD THEIR STATE HERE, for example:
    *   furniture: FurnitureInstance[];   // session 3
-   *   openings: Opening[];              // doors and windows
    *   advisorNotes: AdvisorNote[];      // session 5
    * Adding an optional field is backward-compatible and needs no schema bump.
    */
 }
 
-/** Constraints enforced by the UI and by `sanitizeRoom()`. All metres. */
-export const ROOM_LIMITS = {
-  width: { min: 1.5, max: 20, step: 0.05 },
-  depth: { min: 1.5, max: 20, step: 0.05 },
-  height: { min: 2.0, max: 6, step: 0.05 },
-  wallThickness: { min: 0.05, max: 0.5, step: 0.01 },
+/* ────────────────────────────── Constraints ──────────────────────────── */
+
+/** Limits enforced by the UI and by the sanitiser. All metres. */
+export const PLAN_LIMITS = {
+  wallHeight: { min: 2.0, max: 6, step: 0.05 },
+  wallThickness: { min: 0.05, max: 0.6, step: 0.01 },
+  /** Walls shorter than this are treated as degenerate and removed. */
+  minWallLength: 0.15,
+  /** How far apart two vertices must be before they are considered distinct. */
+  vertexMergeDistance: 0.02,
+  /** Extent of the editable plan area from the origin, in metres. */
+  planExtent: 40,
+} as const;
+
+export const OPENING_LIMITS = {
+  width: { min: 0.4, max: 4, step: 0.01 },
+  height: { min: 0.3, max: 3.5, step: 0.01 },
+  sillHeight: { min: 0, max: 2.5, step: 0.01 },
+  /** Minimum wall left standing at either side of an opening. */
+  edgeMargin: 0.06,
 } as const;

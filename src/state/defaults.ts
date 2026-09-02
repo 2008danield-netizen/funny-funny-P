@@ -5,68 +5,79 @@
  */
 
 import {
+  OPENING_LIMITS,
+  PLAN_LIMITS,
   SCHEMA_VERSION,
-  ROOM_LIMITS,
-  WALL_IDS,
   type DesignDocument,
-  type RoomModel,
-  type WallId,
-  type WallSpec,
+  type FloorSpec,
+  type Opening,
+  type PlanModel,
+  type RoomSpec,
+  type Vertex,
+  type Wall,
+  type WallFaceSpec,
 } from './types';
+import { migrateDocument } from './migrate';
+import { addRectangle, normalizePlan } from './planOps';
 
-/** Warm off-white — reads as "freshly painted" rather than clinical white. */
-const DEFAULT_WALL_COLOR = '#ece7df';
+/** Warm off-white -- reads as "freshly painted" rather than clinical white. */
+export const DEFAULT_WALL_COLOR = '#ece7df';
 
 /** Matte emulsion. Most interior walls are far rougher than people expect. */
-const DEFAULT_WALL_ROUGHNESS = 0.88;
+export const DEFAULT_WALL_ROUGHNESS = 0.88;
 
-function defaultWall(): WallSpec {
+export function defaultWallFace(): WallFaceSpec {
   return { color: DEFAULT_WALL_COLOR, roughness: DEFAULT_WALL_ROUGHNESS };
 }
 
-/** A 4.2 m × 3.4 m room with a 2.6 m ceiling — a realistic living room. */
-export function createDefaultRoom(): RoomModel {
+export function defaultFloor(): FloorSpec {
+  return { presetId: 'oak-plank', color: '#ffffff', textureScale: 1 };
+}
+
+export function defaultRoomSpec(name = 'Room'): RoomSpec {
   return {
-    width: 4.2,
-    depth: 3.4,
-    height: 2.6,
-    wallThickness: 0.12,
-    walls: {
-      north: defaultWall(),
-      east: defaultWall(),
-      south: defaultWall(),
-      west: defaultWall(),
-    },
-    floor: {
-      presetId: 'oak-plank',
-      color: '#ffffff',
-      textureScale: 1.0,
-    },
-    ceiling: {
-      color: '#f7f5f2',
-      // Hidden by default: an opaque ceiling blocks the orbit camera's view in
-      // from above, which is how people naturally inspect a room plan.
-      visible: false,
-    },
+    name,
+    floor: defaultFloor(),
+    wall: defaultWallFace(),
+    ceilingColor: '#f7f5f2',
   };
+}
+
+/** A single 4.2 m x 3.4 m room with a 2.6 m ceiling -- a realistic living room. */
+export function createDefaultPlan(): PlanModel {
+  const plan: PlanModel = {
+    vertices: [],
+    walls: [],
+    rooms: {},
+    defaultRoom: defaultRoomSpec('Living Room'),
+    defaultWallHeight: 2.6,
+    defaultWallThickness: 0.12,
+  };
+  addRectangle(plan, { x: 0, z: 0 }, 4.2, 3.4);
+  return plan;
 }
 
 export function createDefaultDocument(): DesignDocument {
   return {
     schemaVersion: SCHEMA_VERSION,
-    name: 'Untitled Room',
+    name: 'Untitled Home',
     updatedAt: new Date().toISOString(),
-    room: createDefaultRoom(),
+    plan: createDefaultPlan(),
     lighting: {
       presetId: 'daylight',
       intensity: 1,
       shadowsEnabled: true,
     },
+    // Hidden by default: opaque ceilings block the orbit camera's view in from
+    // above, which is how people naturally inspect a floor plan.
+    showCeilings: false,
     units: 'metric',
   };
 }
 
-/** Clamps a number into a range, falling back to `fallback` for NaN/undefined. */
+/* ------------------------------ Validation ---------------------------- */
+
+/** Clamps a number into a range, falling back for NaN/undefined. */
 function clamp(value: unknown, min: number, max: number, fallback: number): number {
   const n = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
   return Math.min(max, Math.max(min, n));
@@ -77,62 +88,203 @@ function safeColor(value: unknown, fallback: string): string {
   return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
 }
 
+function safeString(value: unknown, fallback: string, maxLength = 120): string {
+  return typeof value === 'string' && value.trim() ? value.slice(0, maxLength) : fallback;
+}
+
+function safeFace(value: unknown): WallFaceSpec | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  return {
+    color: safeColor(raw.color, DEFAULT_WALL_COLOR),
+    roughness: clamp(raw.roughness, 0, 1, DEFAULT_WALL_ROUGHNESS),
+  };
+}
+
+function safeFloor(value: unknown): FloorSpec {
+  const base = defaultFloor();
+  if (typeof value !== 'object' || value === null) return base;
+  const raw = value as Record<string, unknown>;
+  return {
+    // The preset ID is checked against the real registry by the material
+    // library, which falls back safely if it no longer exists.
+    presetId: safeString(raw.presetId, base.presetId, 60),
+    color: safeColor(raw.color, base.color),
+    textureScale: clamp(raw.textureScale, 0.25, 4, base.textureScale),
+  };
+}
+
+function safeRoomSpec(value: unknown, fallbackName: string): RoomSpec {
+  const base = defaultRoomSpec(fallbackName);
+  if (typeof value !== 'object' || value === null) return base;
+  const raw = value as Record<string, unknown>;
+  return {
+    name: safeString(raw.name, base.name, 60),
+    floor: safeFloor(raw.floor),
+    wall: safeFace(raw.wall) ?? base.wall,
+    ceilingColor: safeColor(raw.ceilingColor, base.ceilingColor),
+  };
+}
+
+function safeOpening(value: unknown, index: number): Opening | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Record<string, unknown>;
+
+  const kind = raw.kind === 'window' ? 'window' : 'door';
+  return {
+    id: safeString(raw.id, `o${index + 1}`, 40),
+    kind,
+    presetId: safeString(raw.presetId, kind === 'window' ? 'window-casement' : 'door-single', 60),
+    offset: clamp(raw.offset, 0, PLAN_LIMITS.planExtent * 4, 1),
+    width: clamp(raw.width, OPENING_LIMITS.width.min, OPENING_LIMITS.width.max, 0.9),
+    height: clamp(raw.height, OPENING_LIMITS.height.min, OPENING_LIMITS.height.max, 2.04),
+    sillHeight: clamp(raw.sillHeight, OPENING_LIMITS.sillHeight.min, OPENING_LIMITS.sillHeight.max, 0),
+    hinge: raw.hinge === 'end' ? 'end' : 'start',
+    swing: raw.swing === 'b' ? 'b' : 'a',
+  };
+}
+
+/**
+ * Coerces an arbitrary parsed object into a valid PlanModel.
+ *
+ * Walls referring to missing vertices are dropped rather than repaired: a wall
+ * with no endpoint has no meaningful position to guess at, and leaving it in
+ * would crash geometry building.
+ */
+function safePlan(value: unknown): PlanModel {
+  if (typeof value !== 'object' || value === null) return createDefaultPlan();
+  const raw = value as Record<string, unknown>;
+
+  const limit = PLAN_LIMITS.planExtent;
+  const vertices: Vertex[] = [];
+  const seenVertexIds = new Set<string>();
+
+  if (Array.isArray(raw.vertices)) {
+    raw.vertices.forEach((entry, index) => {
+      if (typeof entry !== 'object' || entry === null) return;
+      const item = entry as Record<string, unknown>;
+      const id = safeString(item.id, `v${index + 1}`, 40);
+      if (seenVertexIds.has(id)) return;
+      seenVertexIds.add(id);
+      vertices.push({
+        id,
+        x: clamp(item.x, -limit, limit, 0),
+        z: clamp(item.z, -limit, limit, 0),
+      });
+    });
+  }
+
+  const defaultHeight = clamp(
+    raw.defaultWallHeight,
+    PLAN_LIMITS.wallHeight.min,
+    PLAN_LIMITS.wallHeight.max,
+    2.6,
+  );
+  const defaultThickness = clamp(
+    raw.defaultWallThickness,
+    PLAN_LIMITS.wallThickness.min,
+    PLAN_LIMITS.wallThickness.max,
+    0.12,
+  );
+
+  const walls: Wall[] = [];
+  const seenWallIds = new Set<string>();
+
+  if (Array.isArray(raw.walls)) {
+    raw.walls.forEach((entry, index) => {
+      if (typeof entry !== 'object' || entry === null) return;
+      const item = entry as Record<string, unknown>;
+
+      const id = safeString(item.id, `w${index + 1}`, 40);
+      const start = typeof item.start === 'string' ? item.start : '';
+      const end = typeof item.end === 'string' ? item.end : '';
+      if (seenWallIds.has(id)) return;
+      if (!seenVertexIds.has(start) || !seenVertexIds.has(end) || start === end) return;
+      seenWallIds.add(id);
+
+      const faces = (item.faces ?? {}) as Record<string, unknown>;
+      const openings: Opening[] = [];
+      if (Array.isArray(item.openings)) {
+        item.openings.forEach((opening, openingIndex) => {
+          const parsed = safeOpening(opening, openingIndex);
+          if (parsed) openings.push(parsed);
+        });
+      }
+
+      walls.push({
+        id,
+        start,
+        end,
+        thickness: clamp(
+          item.thickness,
+          PLAN_LIMITS.wallThickness.min,
+          PLAN_LIMITS.wallThickness.max,
+          defaultThickness,
+        ),
+        height: clamp(
+          item.height,
+          PLAN_LIMITS.wallHeight.min,
+          PLAN_LIMITS.wallHeight.max,
+          defaultHeight,
+        ),
+        faces: {
+          ...(safeFace(faces.a) ? { a: safeFace(faces.a) } : {}),
+          ...(safeFace(faces.b) ? { b: safeFace(faces.b) } : {}),
+        },
+        openings,
+      });
+    });
+  }
+
+  const rooms: Record<string, RoomSpec> = {};
+  if (typeof raw.rooms === 'object' && raw.rooms !== null) {
+    for (const [key, spec] of Object.entries(raw.rooms as Record<string, unknown>)) {
+      if (typeof key !== 'string' || key.length > 800) continue;
+      rooms[key] = safeRoomSpec(spec, 'Room');
+    }
+  }
+
+  const plan: PlanModel = {
+    vertices,
+    walls,
+    rooms,
+    defaultRoom: safeRoomSpec(raw.defaultRoom, 'Room'),
+    defaultWallHeight: defaultHeight,
+    defaultWallThickness: defaultThickness,
+  };
+
+  normalizePlan(plan);
+
+  // A plan with nothing in it leaves the user staring at an empty grid with no
+  // obvious way forward, so fall back to the starter room.
+  if (plan.walls.length === 0) return createDefaultPlan();
+  return plan;
+}
+
 /**
  * Coerces an arbitrary parsed object into a valid DesignDocument.
  *
- * This is deliberately forgiving rather than strict: a document saved by an
- * older build should keep whatever it can and quietly gain defaults for the
- * rest, instead of throwing the user's work away. Every field is re-validated
- * because the input may be a hand-edited JSON file.
+ * Deliberately forgiving rather than strict: a document saved by an older build
+ * should keep whatever it can and quietly gain defaults for the rest, instead
+ * of throwing the user's work away. Every field is re-validated because the
+ * input may be a hand-edited JSON file.
  */
 export function sanitizeDocument(input: unknown): DesignDocument {
   const base = createDefaultDocument();
   if (typeof input !== 'object' || input === null) return base;
 
-  const raw = input as Record<string, unknown>;
-  const rawRoom = (raw.room ?? {}) as Record<string, unknown>;
-  const rawWalls = (rawRoom.walls ?? {}) as Record<string, unknown>;
-  const rawFloor = (rawRoom.floor ?? {}) as Record<string, unknown>;
-  const rawCeiling = (rawRoom.ceiling ?? {}) as Record<string, unknown>;
+  // Older schemas are upgraded before validation, so a v1 autosave keeps the
+  // room the user built rather than being discarded as unrecognised.
+  const raw = migrateDocument(input as Record<string, unknown>);
   const rawLighting = (raw.lighting ?? {}) as Record<string, unknown>;
-
-  const walls = {} as Record<WallId, WallSpec>;
-  for (const id of WALL_IDS) {
-    const wall = (rawWalls[id] ?? {}) as Record<string, unknown>;
-    walls[id] = {
-      color: safeColor(wall.color, DEFAULT_WALL_COLOR),
-      roughness: clamp(wall.roughness, 0, 1, DEFAULT_WALL_ROUGHNESS),
-    };
-  }
 
   return {
     schemaVersion: SCHEMA_VERSION,
-    name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.slice(0, 120) : base.name,
+    name: safeString(raw.name, base.name),
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : base.updatedAt,
     units: raw.units === 'imperial' ? 'imperial' : 'metric',
-    room: {
-      width: clamp(rawRoom.width, ROOM_LIMITS.width.min, ROOM_LIMITS.width.max, base.room.width),
-      depth: clamp(rawRoom.depth, ROOM_LIMITS.depth.min, ROOM_LIMITS.depth.max, base.room.depth),
-      height: clamp(rawRoom.height, ROOM_LIMITS.height.min, ROOM_LIMITS.height.max, base.room.height),
-      wallThickness: clamp(
-        rawRoom.wallThickness,
-        ROOM_LIMITS.wallThickness.min,
-        ROOM_LIMITS.wallThickness.max,
-        base.room.wallThickness,
-      ),
-      walls,
-      floor: {
-        // The preset ID is checked against the real registry by the material
-        // library, which falls back safely if it no longer exists.
-        presetId: typeof rawFloor.presetId === 'string' ? rawFloor.presetId : base.room.floor.presetId,
-        color: safeColor(rawFloor.color, base.room.floor.color),
-        textureScale: clamp(rawFloor.textureScale, 0.25, 4, base.room.floor.textureScale),
-      },
-      ceiling: {
-        color: safeColor(rawCeiling.color, base.room.ceiling.color),
-        visible: rawCeiling.visible === true,
-      },
-    },
+    showCeilings: raw.showCeilings === true,
+    plan: safePlan(raw.plan),
     lighting: {
       presetId:
         rawLighting.presetId === 'overcast' ||

@@ -2,18 +2,18 @@
  * Application shell.
  *
  * Owns the layout, the engine reference, and the wiring between UI panels that
- * need to talk to the 3D engine (screenshots, wall auto-hide, viewpoints).
- * Design state itself does not flow through here — panels read and write the
- * store directly, which keeps this component from re-rendering on every edit.
+ * need to talk to the 3D engine (screenshots, wall auto-hide, viewpoints, wall
+ * splitting). Design state does not flow through here — panels read and write
+ * the store directly, which keeps this component from re-rendering on every edit.
  */
 
 import { useCallback, useRef, useState } from 'react';
 
 import { Viewport } from './Viewport';
-import { RoomPanel } from './panels/RoomPanel';
-import { WallsPanel } from './panels/WallsPanel';
-import { FloorPanel } from './panels/FloorPanel';
-import { SurfacesPanel } from './panels/SurfacesPanel';
+import { Toolbar } from './Toolbar';
+import { PlanPanel } from './panels/PlanPanel';
+import { InspectorPanel } from './panels/InspectorPanel';
+import { LightingPanel } from './panels/LightingPanel';
 import { ViewPanel } from './panels/ViewPanel';
 import { ProjectPanel } from './panels/ProjectPanel';
 import { useAutosave } from '@/bridge/useAutosave';
@@ -52,6 +52,10 @@ export function App() {
     [],
   );
 
+  const handleSplitWall = useCallback(() => {
+    engineRef.current?.splitSelectedWall();
+  }, []);
+
   return (
     <div className="app">
       <header className="topbar">
@@ -79,22 +83,22 @@ export function App() {
           <button
             type="button"
             className="btn btn--icon"
-            title="Undo (Ctrl/⌘ + Z)"
+            title="Undo (Ctrl/Cmd + Z)"
             aria-label="Undo"
             disabled={!canUndo}
             onClick={() => designStore.undo()}
           >
-            ↶
+            &#8630;
           </button>
           <button
             type="button"
             className="btn btn--icon"
-            title="Redo (Ctrl/⌘ + Shift + Z)"
+            title="Redo (Ctrl/Cmd + Shift + Z)"
             aria-label="Redo"
             disabled={!canRedo}
             onClick={() => designStore.redo()}
           >
-            ↷
+            &#8631;
           </button>
           <button
             type="button"
@@ -108,14 +112,16 @@ export function App() {
       </header>
 
       <div className={`app__body ${sidebarOpen ? '' : 'app__body--collapsed'}`}>
-        <Viewport onEngineReady={handleEngineReady} />
+        <Viewport onEngineReady={handleEngineReady} toolbar={<Toolbar />} />
 
         {sidebarOpen && (
           <aside className="sidebar">
-            <RoomPanel />
-            <WallsPanel />
-            <FloorPanel />
-            <SurfacesPanel />
+            {/* The inspector sits at the top: in a direct-manipulation editor
+                the selection is what the user is thinking about, so its
+                properties should never require scrolling to reach. */}
+            <InspectorPanel onSplitWall={handleSplitWall} />
+            <PlanPanel />
+            <LightingPanel />
             <ViewPanel
               onAutoHideWallsChange={(enabled) => engineRef.current?.setAutoHideWalls(enabled)}
             />

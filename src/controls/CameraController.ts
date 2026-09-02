@@ -19,8 +19,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
-import type { RoomModel } from '@/state/types';
-import { boundingRadius } from '@/scene/roomGeometry';
+import type { PlanModel, Point2 } from '@/state/types';
+import { planBounds } from '@/scene/planGraph';
 
 export type ViewpointId = 'overview' | 'plan' | 'interior' | 'corner';
 
@@ -75,19 +75,26 @@ export class CameraController {
     this.controls.target.set(0, 1.2, 0);
   }
 
-  /** Adapts distance limits and target height to a room's size. */
-  configureForRoom(room: RoomModel): void {
-    const radius = boundingRadius(room);
+  /** Adapts distance limits and target height to the plan's size. */
+  configureForPlan(plan: PlanModel): void {
+    const bounds = planBounds(plan);
     this.controls.minDistance = 0.4;
-    this.controls.maxDistance = radius * 8;
-    // Keep the orbit pivot near seated eye level rather than on the floor —
+    this.controls.maxDistance = bounds.radius * 8;
+    // Keep the orbit pivot near seated eye level rather than on the floor -
     // orbiting around the floor centre makes the room appear to swing.
-    this.controls.target.y = Math.min(this.controls.target.y, room.height * 0.55);
+    this.controls.target.y = Math.min(this.controls.target.y, bounds.height * 0.55);
   }
 
-  /** Starts an eased transition to a named viewpoint. */
-  goTo(viewpoint: ViewpointId, room: RoomModel): void {
-    const { position, target } = this.resolveViewpoint(viewpoint, room);
+  /**
+   * Starts an eased transition to a named viewpoint.
+   *
+   * `focus` is the point the viewpoint should centre on - normally the centroid
+   * of the largest room, so that "Inside" puts the camera in the main space of a
+   * multi-room plan rather than at the geometric centre of the whole building,
+   * which may well be inside a wall.
+   */
+  goTo(viewpoint: ViewpointId, plan: PlanModel, focus?: Point2): void {
+    const { position, target } = this.resolveViewpoint(viewpoint, plan, focus);
     this.flight = {
       fromPosition: this.camera.position.clone(),
       toPosition: position,
@@ -99,12 +106,16 @@ export class CameraController {
     this.controls.enabled = false;
   }
 
-  /** Computes the camera pose for a viewpoint, scaled to the room. */
+  /** Computes the camera pose for a viewpoint, scaled to the plan. */
   private resolveViewpoint(
     viewpoint: ViewpointId,
-    room: RoomModel,
+    plan: PlanModel,
+    focus?: Point2,
   ): { position: THREE.Vector3; target: THREE.Vector3 } {
-    const radius = boundingRadius(room);
+    const bounds = planBounds(plan);
+    const radius = bounds.radius;
+    const centre = focus ?? bounds.center;
+    const height = bounds.height;
 
     switch (viewpoint) {
       case 'plan':
@@ -112,29 +123,43 @@ export class CameraController {
           // Straight down. A tiny Z offset keeps the view direction from being
           // exactly parallel to the up vector, which makes the orbit basis
           // degenerate and causes the camera to spin unpredictably.
-          position: new THREE.Vector3(0, radius * 3.2, 0.001),
-          target: new THREE.Vector3(0, 0, 0),
+          position: new THREE.Vector3(bounds.center.x, radius * 3.2, bounds.center.z + 0.001),
+          target: new THREE.Vector3(bounds.center.x, 0, bounds.center.z),
         };
 
-      case 'interior':
+      case 'interior': {
+        // Stand off-centre in the focus room and look across it, which shows
+        // several walls and the floor at once rather than staring at one wall.
+        const offset = Math.min(radius * 0.35, 1.6);
         return {
-          // Stand near the south-east quarter looking across the room, which
-          // shows three walls and the floor at once.
-          position: new THREE.Vector3(room.width * 0.3, EYE_HEIGHT, room.depth * 0.3),
-          target: new THREE.Vector3(-room.width * 0.35, EYE_HEIGHT * 0.85, -room.depth * 0.35),
+          position: new THREE.Vector3(centre.x + offset, EYE_HEIGHT, centre.z + offset),
+          target: new THREE.Vector3(
+            centre.x - offset * 1.6,
+            EYE_HEIGHT * 0.85,
+            centre.z - offset * 1.6,
+          ),
         };
+      }
 
       case 'corner':
         return {
-          position: new THREE.Vector3(radius * 1.5, room.height * 0.75, radius * 1.5),
-          target: new THREE.Vector3(0, room.height * 0.4, 0),
+          position: new THREE.Vector3(
+            bounds.center.x + radius * 1.5,
+            height * 0.75,
+            bounds.center.z + radius * 1.5,
+          ),
+          target: new THREE.Vector3(bounds.center.x, height * 0.4, bounds.center.z),
         };
 
       case 'overview':
       default:
         return {
-          position: new THREE.Vector3(radius * 1.5, radius * 1.5, radius * 2),
-          target: new THREE.Vector3(0, room.height * 0.4, 0),
+          position: new THREE.Vector3(
+            bounds.center.x + radius * 1.5,
+            radius * 1.5,
+            bounds.center.z + radius * 2,
+          ),
+          target: new THREE.Vector3(bounds.center.x, height * 0.4, bounds.center.z),
         };
     }
   }
