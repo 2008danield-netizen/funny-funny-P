@@ -6,12 +6,13 @@ walk through it — in the browser, with no install.
 
 **Live app:** https://2008danield-netizen.github.io/VR-home-design-project/
 
-> **Status: session 7 — it has an outside.** Roofs that follow the real
-> footprint — hip, gable, shed and flat, with ridges, hips and valleys worked
-> out from the walls rather than drawn by hand — plus dormers, skylights,
-> exterior cladding, and a site with ground that slopes, a plot line and
-> setbacks. Everything is checked against the International Residential Code
-> with the section number printed beside every finding. Next come the services:
+> **Status: session 8 — it can be your actual house.** Bring in the floor plan
+> you already have — a PDF from an agent or an architect, a scan, or a
+> photograph of a printed sheet — set its scale from one length you know, and
+> the app finds the walls for you to accept. Everything from the previous seven
+> sessions then applies to a real building: rooms, furniture, storeys and
+> stairs, a roof that follows the footprint, and the code checks with the
+> section number printed beside every finding. Next come the services:
 > electrical, water, drainage and heating.
 
 ---
@@ -142,6 +143,25 @@ cursor exactly at any camera angle. Combined with the top-down **Plan** viewpoin
 (press `4`), editing is as precise as a dedicated 2D plan editor. Every dimension
 also has a numeric field in the inspector for when you need exactly 3.6 m.
 
+**Trace the plan you already have.**
+Nobody draws their own house from memory. Import a PDF page, an image, or a
+photograph of a printed sheet; if it is a photograph, mark the four corners and
+it is redrawn as though the camera had been square on. Then click the two ends
+of something whose length you know — an outside wall, or a dimension already
+printed on the plan — and everything after that is in real metres.
+
+**And let it find the walls.**
+A Hough transform over the ink finds the lines, which survives dashes, speckle
+and the arrows drawn across a wall. A wall on a plan is drawn as its two faces,
+so parallel pairs the right distance apart are recombined into one centreline
+with a real thickness — otherwise tracing gives you two walls per wall and every
+room measures wrong. What comes back is *proposed*, never applied: you tick the
+ones that are right and they arrive as a single change, so one undo takes the
+whole trace back out. Accepting turns walls that are nearly on the grid exactly
+onto it — a two-degree scan otherwise gives a house with no square corners
+anywhere — and joins corners that nearly meet, which is what makes the rooms
+close.
+
 **A roof that follows the plan.**
 Hip, gable, shed and flat. The ridges, hips and valleys are not drawn — they are
 computed from the walls by a straight skeleton, so an L-shaped house gets its
@@ -262,6 +282,8 @@ src/
 │   ├── levels.ts       Storeys: elevations (derived), stairwells, naming
 │   ├── buildingOps.ts  Adding and removing storeys and staircases
 │   ├── planOps.ts      Structural edits: draw, split, delete, heal, normalise
+│   ├── traceOps.ts     Turning a trace into a wall graph, as one undo step
+│   ├── imageStore.ts   Plan images in IndexedDB, kept out of the document
 │   ├── furnitureOps.ts Placing, moving, rotating — all through the solver
 │   ├── selection.ts    Tool and selection state (view state, never saved)
 │   ├── migrate.ts      Schema upgrades — session 1 designs still open
@@ -279,6 +301,13 @@ src/
 │
 ├── code/             The building code, with its section numbers
 │   └── irc.ts          IRC limits: every one cites where it comes from
+│
+├── plan/             Getting somebody's real floor plan into the app
+│   ├── underlay.ts     Image pixels to metres: placement, calibration, alignment
+│   ├── perspective.ts  Straightening a photographed sheet (projective transform)
+│   ├── detect.ts       Ink, Hough lines, segments, and pairing faces into walls
+│   ├── pdf.ts          A PDF page, rendered on demand
+│   └── pixels.ts       The one place that reads an image's pixels
 │
 ├── building/         The building itself, above the level of one plan
 │   ├── stairs.ts       Stair geometry: flights, turns, winders, spirals
@@ -322,6 +351,7 @@ src/
 │   ├── ClearanceOverlay.ts  Zones drawn flat on the floor
 │   ├── Staircases.ts   Stair meshes, extruded from the derived geometry
 │   ├── Roofs.ts        Roof planes with their openings cut out, in world space
+│   ├── PlanUnderlay.ts The scan being traced, and the walls proposed on it
 │   ├── Ground.ts       The terrain surface, the plot line, the north arrow
 │   ├── GhostLevel.ts   The storey below, as an outline to align to
 │   ├── wallBuilder.ts  Wall extrusion with holes; door and window furniture
@@ -429,7 +459,9 @@ src/
 npm test
 ```
 
-396 tests covering the parts where a bug is invisible on screen: the straight
+464 tests covering the parts where a bug is invisible on screen: placing and
+scaling a traced plan, straightening a photographed one, the wall detector, the
+straight
 skeleton and every roof form it produces, dormers and skylights meeting the roof
 they are cut into, the roof code checks and their citations, terrain, setbacks
 and earthworks, the exterior takeoff, stair geometry and every IRC check, storey elevations and the v5 migration, room detection
@@ -483,6 +515,14 @@ small house, imperial formatting that turned -0.3 m into "-1 ft 3/16 in", gable
 rakes measured along the bottom of the gable instead of up the slope, and the
 roof being solved several times per keystroke.
 
+The detector's fixtures are all plans the test file DRAWS, so the right answer
+is known exactly and a failure says which part of the pipeline moved: four walls
+of a room, a wall drawn as two faces that must come back as one wall with a
+thickness, a doorway that must not cut a wall in half, a real gap that must, a
+diagonal, a blank sheet, and a page of scanner speckle. A test against a real
+scan would be untestable in the useful sense — nobody could say whether a change
+made it better or worse.
+
 The roof tests check properties rather than pictures, because a roof built from
 a bad skeleton still renders — it just has a ridge in the wrong place, and it
 looks like a roof until you compare it with the plan underneath. So they assert
@@ -505,8 +545,7 @@ their valleys across each other.
 - ~~**Session 5** — the design advisor and the room generator.~~ ✅
 - ~~**Session 6** — storeys, staircases and the IRC.~~ ✅
 - ~~**Session 7** — roofs, dormers, skylights, cladding and the site.~~ ✅
-- **Session 8 — trace real floor plans, per storey.** Nobody draws a whole house
-  from memory. This is where somebody's actual home gets into the app.
+- ~~**Session 8** — tracing a real floor plan: import, straighten, scale, detect.~~ ✅
 - **Session 9 — the services foundation, and electrical.** The routed-network
   primitive built once, then receptacles, switches, fittings, circuits, the
   panel, cable safe-zones and per-circuit load, to the NEC.
