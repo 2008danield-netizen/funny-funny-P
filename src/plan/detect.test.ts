@@ -222,6 +222,34 @@ describe('finding walls', () => {
     expect(diagonal).toBeDefined();
   });
 
+  it('does not propose a wall for every diagonal through a wall', () => {
+    /*
+     * The regression that cost the most to find. A wall drawn as two lines a
+     * few pixels apart, searched with any tolerance comparable to that gap,
+     * reads as one solid band — and then every shallow diagonal drifting from
+     * one face to the other has ink under its whole length and comes back as a
+     * wall. A seven-wall plan proposed two hundred.
+     */
+    const image = sheet(600, 400);
+    twoFacedWall(image, 60, 60, 540, 60, 8);
+    twoFacedWall(image, 60, 340, 540, 340, 8);
+    twoFacedWall(image, 60, 60, 60, 340, 8);
+    twoFacedWall(image, 540, 60, 540, 340, 8);
+    twoFacedWall(image, 300, 60, 300, 340, 6);
+
+    const walls = detectWalls(image, {
+      workingSize: 600,
+      minLength: 100,
+      minThickness: 5,
+      maxThickness: 30,
+    });
+
+    // Five walls drawn. A little slack for an unpaired stray, and nowhere near
+    // the dozens that a fused band produces.
+    expect(walls.length).toBeLessThan(12);
+    expect(walls.filter((wall) => wall.thicknessPixels !== null).length).toBeGreaterThanOrEqual(4);
+  });
+
   it('proposes nothing from a blank sheet', () => {
     expect(detectWalls(sheet(200, 200), { workingSize: 200 })).toEqual([]);
   });

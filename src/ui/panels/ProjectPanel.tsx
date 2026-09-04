@@ -63,7 +63,20 @@ export function ProjectPanel({ onScreenshot }: ProjectPanelProps) {
   return (
     <Panel title="Project" defaultOpen={false}>
       <div className="button-row">
-        <button type="button" className="btn" onClick={() => exportDocument(doc)}>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => {
+            // Exporting now reads the traced plan images out of the browser's
+            // image store, which is asynchronous. Any failure is reported
+            // rather than swallowed: a save the user thinks happened and did
+            // not is the worst kind.
+            void exportDocument(doc).catch((error: unknown) => {
+              console.error('[havavamama] Export failed:', error);
+              flash('That export did not finish. Nothing was saved.');
+            });
+          }}
+        >
           Export
         </button>
         <button type="button" className="btn" onClick={() => fileInput.current?.click()}>

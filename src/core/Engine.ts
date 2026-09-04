@@ -27,6 +27,8 @@ import { ClearanceOverlay } from '@/scene/ClearanceOverlay';
 import { Staircases } from '@/scene/Staircases';
 import { GhostLevel } from '@/scene/GhostLevel';
 import { Roofs } from '@/scene/Roofs';
+import { PlanUnderlay } from '@/scene/PlanUnderlay';
+import { getImage } from '@/state/imageStore';
 import { Ground } from '@/scene/Ground';
 import { stairGeometry } from '@/building/stairs';
 import { activeLevel, elevationOf, floorHoles, levelBelow } from '@/state/levels';
@@ -56,6 +58,10 @@ export class Engine {
   private ghost: GhostLevel;
   private roofs: Roofs;
   private ground: Ground;
+  private planUnderlay: PlanUnderlay;
+
+  /** Data URLs for plan images, once they have been read out of the store. */
+  private underlayImages = new Map<string, string | null>();
   private lighting: Lighting;
 
   /**
@@ -114,6 +120,11 @@ export class Engine {
     this.levelGroup.add(this.staircases.group);
     this.ghost = new GhostLevel();
     this.levelGroup.add(this.ghost.group);
+
+    // Inside the storey group: a traced plan belongs to one storey and rides
+    // at its height, exactly like the ghost of the storey below.
+    this.planUnderlay = new PlanUnderlay();
+    this.levelGroup.add(this.planUnderlay.group);
 
     /*
      * Roofs and ground hang off the SCENE, not off the active storey's group.
@@ -203,6 +214,35 @@ export class Engine {
     return this.renderer.canvas.toDataURL('image/png');
   }
 
+  /**
+   * Shows the plan image being traced on this storey.
+   *
+   * Reading the image out of the store is asynchronous and the scene is not, so
+   * the result is remembered: the first call for a given image starts the read
+   * and shows nothing, and the one that follows it — the next document change,
+   * or the callback below — shows it. An image the store does not have is
+   * remembered as missing, so a document naming a plan this browser has never
+   * seen does not start a fresh read on every frame.
+   */
+  private applyUnderlay(underlay: DesignDocument['levels'][number]['underlay']): void {
+    if (!underlay) {
+      this.planUnderlay.update(null, null);
+      return;
+    }
+
+    const known = this.underlayImages.get(underlay.imageId);
+    if (known === undefined) {
+      this.underlayImages.set(underlay.imageId, null);
+      void getImage(underlay.imageId).then((stored) => {
+        this.underlayImages.set(underlay.imageId, stored?.dataUrl ?? null);
+        if (stored) this.planUnderlay.update(underlay, stored.dataUrl);
+      });
+      return;
+    }
+
+    this.planUnderlay.update(underlay, known);
+  }
+
   /** Pushes a design document into the scene. */
   private applyDocument(doc: DesignDocument): void {
     const previous = this.appliedDocument;
@@ -251,6 +291,8 @@ export class Engine {
       this.ground.update(doc);
     }
 
+    this.applyUnderlay(level.underlay);
+
     // The storey below, as an outline to line new walls up against.
     if (levelSwitched || planChanged || previous?.levels !== doc.levels) {
       this.ghost.update(levelBelow(doc, level.id)?.plan ?? null);
@@ -291,6 +333,7 @@ export class Engine {
   /** Mirrors editor state (tool, selection, hover) into the scene. */
   private applyEditorState(): void {
     const state = editorStore.getState();
+    this.planUnderlay.setProposals(state.traceCandidates, new Set(state.acceptedTraceIds));
     this.clearanceOverlay.setVisible(state.showClearance);
     if (state.showClearance) this.refreshClearance();
     // Corner handles and the grid belong to the plan tools; showing them while
@@ -363,6 +406,7 @@ export class Engine {
     this.clearanceOverlay.dispose();
     this.staircases.dispose();
     this.ghost.dispose();
+    this.planUnderlay.dispose();
     this.roofs.dispose();
     this.ground.dispose();
     this.furnishings.dispose();

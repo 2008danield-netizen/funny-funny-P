@@ -14,6 +14,7 @@ import { Toolbar } from './Toolbar';
 import { PlanPanel } from './panels/PlanPanel';
 import { StoreyPanel } from './panels/StoreyPanel';
 import { RoofPanel } from './panels/RoofPanel';
+import { TracePanel } from './panels/TracePanel';
 import { SitePanel } from './panels/SitePanel';
 import { CataloguePanel } from './panels/CataloguePanel';
 import { AdvisorPanel } from './panels/AdvisorPanel';
@@ -138,6 +139,7 @@ export function App() {
             <IssuesPanel />
             <ShoppingListPanel />
             <StoreyPanel />
+            <TracePanel />
             <RoofPanel />
             <SitePanel />
             <PlanPanel />

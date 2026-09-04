@@ -83,6 +83,17 @@ export interface DetectionOptions {
   maxThickness: number;
   /** Cap on how many walls to propose. */
   maxWalls: number;
+  /**
+   * How much of a line's length must actually have ink under it, 0-1.
+   *
+   * This is the difference between a wall and a coincidence. A Hough
+   * accumulator will happily report a line running diagonally across a floor
+   * plan that clips a corner here and a doorframe there — hundreds of them, on
+   * a busy drawing — and every one of those is long, well-voted and completely
+   * spurious. What separates them from a wall is that a wall has ink along
+   * nearly all of its length, and they do not.
+   */
+  minCoverage: number;
 }
 
 export const DETECTION_DEFAULTS: DetectionOptions = {
@@ -92,6 +103,7 @@ export const DETECTION_DEFAULTS: DetectionOptions = {
   minThickness: 3,
   maxThickness: 40,
   maxWalls: 200,
+  minCoverage: 0.6,
 };
 
 /* --------------------------------- Step 1 --------------------------------- */
@@ -319,7 +331,20 @@ export function segmentsAlong(
   height: number,
   minLength: number,
   maxGap: number,
-  tolerance = 2,
+  /**
+   * How far off the line ink still counts, in pixels.
+   *
+   * This has to be SMALLER than the gap between the two faces of the thinnest
+   * wall, and the reason is worth spelling out because the failure is so
+   * counter-intuitive. A wall drawn as two lines seven pixels apart, searched
+   * with a tolerance of two, reads as one solid band twelve pixels tall — and
+   * then every shallow diagonal drifting from one face to the other has ink
+   * under its whole length and comes back as a wall. On a plan with a few
+   * partitions that is not a handful of false positives, it is two hundred.
+   *
+   * `detectWalls` derives it from the thinnest wall it was told to look for.
+   */
+  tolerance = 0,
 ): Segment[] {
   const cos = Math.cos(line.theta);
   const sin = Math.sin(line.theta);
@@ -401,6 +426,64 @@ function angleBetween(a: number, b: number): number {
   let difference = Math.abs(a - b) % Math.PI;
   if (difference > Math.PI / 2) difference = Math.PI - difference;
   return difference;
+}
+
+
+/**
+ * Drops segments that are really the same wall found twice.
+ *
+ * A long wall does not light up ONE cell of the accumulator: it lights up a
+ * ridge of them, and suppressing a small window around each peak is not enough
+ * to catch a nine-hundred-pixel wall found again at a fifth of a degree off. The
+ * duplicates are geometrically almost identical and there can be dozens per
+ * wall, which is the difference between a list of seven proposals somebody
+ * reads and a list of two hundred nobody does.
+ *
+ * Longest first, and anything that lies along one already kept — nearly the
+ * same angle, nearly the same line, and mostly inside its span — is dropped.
+ * Dropped rather than merged: extending the keeper to cover both would reach
+ * across the gaps that `segmentsAlong` deliberately broke, and quietly turn two
+ * walls with a door between them into one.
+ */
+export function mergeDuplicates(
+  segments: readonly Segment[],
+  angleTolerance = 0.06,
+  distanceTolerance = 5,
+): Segment[] {
+  const byLength = [...segments].sort((a, b) => lengthOf(b) - lengthOf(a));
+  const kept: Segment[] = [];
+
+  for (const segment of byLength) {
+    const angle = angleOf(segment);
+    const length = lengthOf(segment);
+    if (length < 1e-6) continue;
+
+    const duplicate = kept.some((other) => {
+      if (angleBetween(angle, angleOf(other)) > angleTolerance) return false;
+
+      const direction = { x: Math.cos(angleOf(other)), z: Math.sin(angleOf(other)) };
+      const normal = { x: -direction.z, z: direction.x };
+      const across = (point: Point2) =>
+        (point.x - other.from.x) * normal.x + (point.z - other.from.z) * normal.z;
+
+      // Both ends have to lie along the same line, not just the middle: a
+      // segment crossing the keeper at a shallow angle passes a midpoint test.
+      if (Math.abs(across(segment.from)) > distanceTolerance) return false;
+      if (Math.abs(across(segment.to)) > distanceTolerance) return false;
+
+      const along = (point: Point2) =>
+        (point.x - other.from.x) * direction.x + (point.z - other.from.z) * direction.z;
+      const start = Math.min(along(segment.from), along(segment.to));
+      const end = Math.max(along(segment.from), along(segment.to));
+      const overlap = Math.min(end, lengthOf(other)) - Math.max(start, 0);
+
+      return overlap > length * 0.6;
+    });
+
+    if (!duplicate) kept.push(segment);
+  }
+
+  return kept;
 }
 
 /**
@@ -532,6 +615,12 @@ export function detectWalls(
   const minLength = Math.max(6, settings.minLength * factor);
   const maxGap = Math.max(2, settings.maxGap * factor);
 
+  // Comfortably inside half the thinnest wall — see the note on the parameter.
+  const tolerance = Math.max(
+    0,
+    Math.min(2, Math.floor((settings.minThickness * factor) / 3) - 1),
+  );
+
   const lines = houghLines(
     mask,
     pixels.width,
@@ -544,20 +633,72 @@ export function detectWalls(
 
   const segments: Segment[] = [];
   for (const line of lines) {
-    segments.push(
-      ...segmentsAlong(line, mask, pixels.width, pixels.height, minLength, maxGap),
-    );
+    for (const segment of segmentsAlong(
+      line,
+      mask,
+      pixels.width,
+      pixels.height,
+      minLength,
+      maxGap,
+      tolerance,
+    )) {
+      // The coverage filter, and it does most of the work: without it a busy
+      // drawing proposes two hundred walls, nearly all of them diagonals that
+      // happen to clip a few doorframes on their way across the page.
+      if (segment.coverage < settings.minCoverage) continue;
+      segments.push(segment);
+    }
   }
 
-  const walls = pairFaces(
-    segments,
-    Math.max(2, settings.minThickness * factor),
+  const minThickness = Math.max(2, settings.minThickness * factor);
+  const paired = pairFaces(
+    mergeDuplicates(segments),
+    minThickness,
     Math.max(4, settings.maxThickness * factor),
   );
 
-  // Back into the original image's pixels.
+  /*
+   * And once more on the walls themselves.
+   *
+   * Deduplicating the face lines is not enough: two spurious fragments running
+   * near a real wall can be parallel and the right distance apart, and pair
+   * with each other into a short wall lying on top of the real one. Two
+   * genuinely different walls are never closer than one wall's thickness — if
+   * they were, they would be one wall — so anything nearer than that to a
+   * longer wall, and mostly inside it, is the same wall found twice.
+   */
+  const walls = mergeDuplicates(
+    paired.map((wall) => ({ from: wall.from, to: wall.to, coverage: wall.confidence })),
+    0.12,
+    minThickness,
+    // Half again the thinnest wall: enough to catch a fragment lying askew
+    // along a real wall, and still less than the gap between two walls that
+    // are genuinely separate.
+  ).map(
+    (kept) =>
+      paired.find((wall) => wall.from === kept.from && wall.to === kept.to) ?? {
+        from: kept.from,
+        to: kept.to,
+        thicknessPixels: null,
+        confidence: kept.coverage,
+      },
+  );
+
+  /*
+   * Back into the original image's pixels — and a last length filter.
+   *
+   * Pairing trims a wall to the part its two faces agree on, which can leave a
+   * centreline shorter than the shortest wall worth proposing even though both
+   * faces were long enough. Offering those is how a list of seven walls becomes
+   * a list of forty.
+   */
   const scale = 1 / factor;
   return walls
+    .filter(
+      (wall) =>
+        Math.hypot(wall.to.x - wall.from.x, wall.to.z - wall.from.z) * scale >=
+        settings.minLength,
+    )
     .map((wall) => ({
       ...wall,
       from: { x: wall.from.x * scale, z: wall.from.z * scale },

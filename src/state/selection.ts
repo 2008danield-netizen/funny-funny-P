@@ -11,6 +11,8 @@
  * and neither owns the other.
  */
 
+import type { TraceCandidate } from './traceOps';
+
 export type SelectionKind = 'wall' | 'vertex' | 'opening' | 'floor' | 'furniture' | 'stair';
 
 export interface Selection {
@@ -62,6 +64,17 @@ export interface EditorState {
 
   /** Whether clearance zones are drawn on the floor. */
   showClearance: boolean;
+
+  /**
+   * Walls the detector has proposed on the traced plan, and which are ticked.
+   *
+   * View state, deliberately: a proposal is not part of the design until it is
+   * accepted, and a list of maybes has no business surviving a reload or
+   * landing in somebody's exported file. Accepting them writes real walls
+   * through the ordinary edit path and this list is thrown away.
+   */
+  traceCandidates: TraceCandidate[];
+  acceptedTraceIds: string[];
 }
 
 const EMPTY: Selection = { kind: null, id: null };
@@ -75,6 +88,8 @@ function initialState(): EditorState {
     // 5 cm: fine enough to place a wall precisely, coarse enough that dragging
     // lands on round numbers rather than 2.3847 m.
     gridSize: 0.05,
+    traceCandidates: [],
+    acceptedTraceIds: [],
     doorPresetId: 'door-single',
     windowPresetId: 'window-casement',
     readout: null,

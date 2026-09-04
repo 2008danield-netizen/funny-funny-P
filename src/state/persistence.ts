@@ -7,6 +7,7 @@
  */
 
 import { sanitizeDocument } from './defaults';
+import { getImage, putImage } from './imageStore';
 import type { DesignDocument } from './types';
 
 const STORAGE_KEY = 'havavamama.design.v1';
@@ -57,9 +58,61 @@ function toFileStem(name: string): string {
   return stem || 'havavamama-design';
 }
 
-/** Downloads the document as a formatted `.json` file. */
-export function exportDocument(doc: DesignDocument): void {
-  const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+/**
+ * The shape of an exported file.
+ *
+ * A design used to BE the document, and files written that way must keep
+ * opening — so a bare document is still accepted on the way in. What is written
+ * out now is a small envelope around it carrying the traced plan images as
+ * well, because a design that arrives without the scan somebody traced it from
+ * is a design nobody can carry on with.
+ */
+interface DesignBundle {
+  /** Marks the envelope, and leaves room to change it later. */
+  havavamama: number;
+  document: DesignDocument;
+  /** Plan images, keyed the way the underlays name them. */
+  images: Record<string, { dataUrl: string; width: number; height: number }>;
+}
+
+const BUNDLE_VERSION = 1;
+
+/** Every image key the document refers to. */
+export function imageIdsIn(doc: DesignDocument): string[] {
+  const ids = new Set<string>();
+  for (const level of doc.levels) {
+    if (level.underlay?.imageId) ids.add(level.underlay.imageId);
+  }
+  return [...ids];
+}
+
+/**
+ * Gathers the images a document needs, ready to write into a file.
+ *
+ * An image this browser has never seen is simply left out rather than failing
+ * the export: somebody who opened a colleague's design on a machine that never
+ * had the scan should still be able to save their own work.
+ */
+async function gatherImages(doc: DesignDocument): Promise<DesignBundle['images']> {
+  const images: DesignBundle['images'] = {};
+
+  for (const id of imageIdsIn(doc)) {
+    const stored = await getImage(id);
+    if (!stored) continue;
+    images[id] = { dataUrl: stored.dataUrl, width: stored.width, height: stored.height };
+  }
+  return images;
+}
+
+/** Downloads the document as a formatted `.json` file, images and all. */
+export async function exportDocument(doc: DesignDocument): Promise<void> {
+  const bundle: DesignBundle = {
+    havavamama: BUNDLE_VERSION,
+    document: doc,
+    images: await gatherImages(doc),
+  };
+
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
 
   const link = document.createElement('a');
@@ -82,7 +135,40 @@ export function exportDocument(doc: DesignDocument): void {
  */
 export async function importDocument(file: File): Promise<DesignDocument> {
   const text = await file.text();
-  return sanitizeDocument(JSON.parse(text));
+  const parsed: unknown = JSON.parse(text);
+
+  const bundle = asBundle(parsed);
+  if (!bundle) return sanitizeDocument(parsed);
+
+  /*
+   * The images go back into the store under the SAME keys, which is what makes
+   * the underlays in the document resolve. Restored before the document is
+   * returned, so the first render already has them.
+   */
+  for (const [id, image] of Object.entries(bundle.images)) {
+    if (typeof image?.dataUrl !== 'string') continue;
+    await putImage(image.dataUrl, Number(image.width) || 1, Number(image.height) || 1, id);
+  }
+
+  return sanitizeDocument(bundle.document);
+}
+
+/** Recognises the envelope, and says no to anything else. */
+function asBundle(value: unknown): DesignBundle | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Record<string, unknown>;
+
+  if (typeof raw.havavamama !== 'number') return null;
+  if (typeof raw.document !== 'object' || raw.document === null) return null;
+
+  return {
+    havavamama: raw.havavamama,
+    document: raw.document as DesignDocument,
+    images:
+      typeof raw.images === 'object' && raw.images !== null
+        ? (raw.images as DesignBundle['images'])
+        : {},
+  };
 }
 
 /**
