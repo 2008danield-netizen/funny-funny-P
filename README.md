@@ -503,7 +503,10 @@ square metres of floor, an outer-boundary tracer that reversed its wall list
 without re-aligning it and so handed every eave its neighbour's thickness, and a
 loop of walls drawn inside another that was treated as a second building — which
 would have clad an internal room on its outside and given it a little roof of
-its own indoors.
+its own indoors — and a wall detector that proposed two hundred walls for a
+seven-wall plan, because a search tolerance comparable to the gap between a
+wall's two faces fuses them into one solid band, and then every shallow diagonal
+through that band reads as a continuous line.
 
 Session 7 also swept every earlier session's headline feature end to end in a
 real browser — draw a wall and undo it, furnish a room from the advisor, add a
