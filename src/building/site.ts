@@ -20,7 +20,7 @@
 
 import { offsetPolygonEdges } from './skeleton';
 import { footprintsOf } from './footprint';
-import type { Level, Point2, Site, Terrain } from '@/state/types';
+import type { Level, Point2, Site } from '@/state/types';
 
 /**
  * The height of the ground at a point, in metres relative to the ground floor.
@@ -289,11 +289,6 @@ export function facingOf(site: Site, outwardNormal: Point2): string {
 }
 
 /* -------------------------------- Internals ------------------------------- */
-
-/** A default terrain, for callers that need one without a document. */
-export function flatTerrain(): Terrain {
-  return { kind: 'flat', fall: 0, fallDirection: 0, spots: [], datum: 0 };
-}
 
 function shoelace(polygon: readonly Point2[]): number {
   let sum = 0;

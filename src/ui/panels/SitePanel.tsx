@@ -10,6 +10,8 @@
  * numbers are entered rather than in a footnote nobody reads.
  */
 
+import { useMemo } from 'react';
+
 import { Panel } from '../components/Panel';
 import { ColorInput } from '../components/ColorInput';
 import { Segmented } from '../components/Segmented';
@@ -18,7 +20,7 @@ import { Toggle } from '../components/Toggle';
 import { useDesign, useDesignEdit } from '@/bridge/useDesign';
 import { setRectangularPlot } from '@/state/buildingOps';
 import { buildableArea, compassPoint, earthworks, lotCoverage, plotArea } from '@/building/site';
-import { exteriorTakeoff } from '@/building/exterior';
+import { useExteriorTakeoff } from '@/bridge/useAnalysis';
 import { CLADDING_PRESETS } from '@/scene/materials/cladding';
 import { activeLevel } from '@/state/levels';
 import { asFeetInches } from '@/code/irc';
@@ -41,8 +43,13 @@ export function SitePanel() {
   const level = activeLevel(doc);
   const terrain = doc.site.terrain;
   const plot = plotArea(doc.site);
-  const takeoff = exteriorTakeoff(doc);
-  const ground = earthworks(doc.site, level);
+  const takeoff = useExteriorTakeoff();
+  /*
+   * Earthworks samples the ground on a grid under the whole building, so it is
+   * held rather than re-run on every render — dragging the fall slider would
+   * otherwise re-sample the site on every animation frame.
+   */
+  const ground = useMemo(() => earthworks(doc.site, level), [doc.site, level]);
 
   const length = (metres: number) =>
     doc.units === 'imperial' ? asFeetInches(metres) : formatLength(metres, 'metric');
@@ -173,9 +180,13 @@ export function SitePanel() {
 
       {(ground.cut > 0.05 || ground.fill > 0.05) && (
         <p className="field__hint">
-          Levelling a pad under this building means digging out {volume(ground.cut)} and bringing
-          in {volume(ground.fill)}. The ground under it runs from {length(ground.highest)} above
-          the floor to {length(Math.abs(ground.lowest))} below it.
+          Levelling a pad under this building means{' '}
+          {ground.cut > 0.05 && <>digging out {volume(ground.cut)}</>}
+          {ground.cut > 0.05 && ground.fill > 0.05 && ' and '}
+          {ground.fill > 0.05 && <>bringing in {volume(ground.fill)}</>}. The ground under it runs
+          between {length(Math.abs(ground.highest))}{' '}
+          {ground.highest >= 0 ? 'above' : 'below'} the floor and{' '}
+          {length(Math.abs(ground.lowest))} {ground.lowest >= 0 ? 'above' : 'below'} it.
         </p>
       )}
 
@@ -308,7 +319,9 @@ export function SitePanel() {
                     {line.quantity.toFixed(line.unit === 'm' ? 1 : 0)} {line.unit}
                   </td>
                   <td className="takeoff__total">
-                    {line.total === null ? '—' : `${doc.currency}${Math.round(line.total)}`}
+                    {line.total === null
+                      ? '—'
+                      : `${doc.currency} ${Math.round(line.total).toLocaleString()}`}
                   </td>
                 </tr>
               ))}
@@ -317,7 +330,7 @@ export function SitePanel() {
           <p className="field__hint">
             {takeoff.total === null
               ? 'Nothing priced yet.'
-              : `About ${doc.currency}${Math.round(takeoff.total)} for the parts that carry a rate.`}{' '}
+              : `About ${doc.currency} ${Math.round(takeoff.total).toLocaleString()} for the parts that carry a rate.`}{' '}
             The areas are arithmetic off the same geometry the roof is drawn from and can be
             trusted. The rates are rough estimates written from general knowledge — not quotes —
             and the lines showing a dash have no rate at all, which is why the total is marked

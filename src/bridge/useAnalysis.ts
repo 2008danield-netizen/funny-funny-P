@@ -25,6 +25,8 @@ import { useMemo } from 'react';
 
 import { analyseClearance, type ClearanceReport } from '@/clearance/analyze';
 import { adviseDesign } from '@/advisor/advise';
+import { checkAllRoofs, type RoofReport } from '@/building/roofCode';
+import { exteriorTakeoff, type ExteriorTakeoff } from '@/building/exterior';
 import type { AdvisorReport } from '@/advisor/types';
 import { activeLevel } from '@/state/levels';
 import type { DesignDocument, Level } from '@/state/types';
@@ -60,6 +62,48 @@ export function adviceFor(doc: DesignDocument, level: Level): AdvisorReport {
   advisorCache = adviseDesign(doc, level, clearanceFor(doc, level));
   advisorKey = { doc, level };
   return advisorCache;
+}
+
+/*
+ * The roofs, and what the outside of the building adds up to.
+ *
+ * Both are expensive for the same reason: working a roof out runs the straight
+ * skeleton over the whole footprint, and the roof panel, the site panel and the
+ * takeoff all want the answer. Without this they would each solve every roof
+ * again on every keystroke in any of them.
+ */
+let roofKey: DesignDocument | null = null;
+let roofCache: RoofReport[] | null = null;
+
+/** Every roof on the building, checked, computed at most once per version. */
+export function roofReportsFor(doc: DesignDocument): RoofReport[] {
+  if (roofKey === doc && roofCache) return roofCache;
+  roofCache = checkAllRoofs(doc);
+  roofKey = doc;
+  return roofCache;
+}
+
+let takeoffKey: DesignDocument | null = null;
+let takeoffCache: ExteriorTakeoff | null = null;
+
+/** The exterior takeoff, computed at most once per version. */
+export function takeoffFor(doc: DesignDocument): ExteriorTakeoff {
+  if (takeoffKey === doc && takeoffCache) return takeoffCache;
+  takeoffCache = exteriorTakeoff(doc);
+  takeoffKey = doc;
+  return takeoffCache;
+}
+
+/** Subscribes to the roof reports for the whole building. */
+export function useRoofReports(): RoofReport[] {
+  const doc = useDesign();
+  return useMemo(() => roofReportsFor(doc), [doc]);
+}
+
+/** Subscribes to the exterior takeoff. */
+export function useExteriorTakeoff(): ExteriorTakeoff {
+  const doc = useDesign();
+  return useMemo(() => takeoffFor(doc), [doc]);
 }
 
 /** Subscribes to the clearance report for the storey being edited. */

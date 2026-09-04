@@ -18,9 +18,10 @@ import { describe, expect, it } from 'vitest';
 
 import { createDefaultDocument, defaultRoofFor } from '@/state/defaults';
 import { addRectangle, normalizePlan } from '@/state/planOps';
-import { addLevel } from '@/state/buildingOps';
+import { addDormer, addLevel } from '@/state/buildingOps';
 import type { DesignDocument, Point2, Roof } from '@/state/types';
 
+import { dormerGeometry } from './dormer';
 import { footprintsOf, eaveOutline } from './footprint';
 import { planeAt, roofArea, roofGeometry, roofHeightAt, roofPlanArea } from './roof';
 
@@ -336,6 +337,33 @@ describe('a roof on an upper storey', () => {
     const expected =
       doc.levels[0]!.wallHeight + upper.slabThickness + upper.wallHeight;
     expect(geometry.eaveHeight).toBeCloseTo(expected, 6);
+  });
+});
+
+describe('adding a dormer', () => {
+  it('sizes it to the roof it is going into', () => {
+    const doc = box(14, 10);
+    const roof = roofOn(doc, { id: 'r1', kind: 'gable', pitch: 0.5, overhang: 0.4 });
+    doc.roofs = [roof];
+
+    const id = addDormer(doc, 'r1');
+    expect(id).not.toBeNull();
+
+    // And it arrives WITHOUT a complaint, which is the whole point: a dormer
+    // that always reports a problem teaches people to ignore the problems.
+    const geometry = roofGeometry(doc, doc.roofs[0]!)!;
+    const built = dormerGeometry(geometry, doc.roofs[0]!.dormers[0]!);
+    expect(built.problems).toEqual([]);
+  });
+
+  it('refuses when the roof has no room for one', () => {
+    // A small building at a shallow pitch: the shortest dormer worth building
+    // would still climb over the ridge, so the honest answer is no.
+    const doc = box(5, 4);
+    doc.roofs = [roofOn(doc, { id: 'r1', kind: 'hip', pitch: 0.5, overhang: 0.4 })];
+
+    expect(addDormer(doc, 'r1')).toBeNull();
+    expect(doc.roofs[0]!.dormers).toHaveLength(0);
   });
 });
 

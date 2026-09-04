@@ -496,12 +496,15 @@ function classifyEdges(
   for (let i = 0; i < eaves.length; i++) {
     const here = eaves[i]!;
     const next = eaves[(i + 1) % eaves.length]!;
+    // The bottom of a gable end carries nothing — no gutter, because no roof
+    // drains onto it, and no barge board, because the roof is not there. It is
+    // simply where the wall meets the floor of the storey below.
+    if (gabled.has(i)) continue;
+
     edges.push({
       from: { x: here.x, y: eaveHeight, z: here.z },
       to: { x: next.x, y: eaveHeight, z: next.z },
-      // The bottom edge of a gable is not an eave: no gutter goes there,
-      // because no roof drains onto it.
-      kind: gabled.has(i) ? 'rake' : 'eave',
+      kind: 'eave',
     });
   }
 
@@ -510,9 +513,22 @@ function classifyEdges(
     const toY = eaveHeight + arc.toTime * pitch;
     if (Math.hypot(arc.to.x - arc.from.x, arc.to.z - arc.from.z) < 1e-6) continue;
 
-    // An arc along a gabled eave is that gable's rake, and is already drawn as
-    // part of the eave loop above.
-    if (gabled.has(arc.left) || gabled.has(arc.right)) continue;
+    /*
+     * An arc bordering a gabled eave is that gable's RAKE — the sloping edge
+     * the barge board runs along, from the eave corner up to the apex. It is
+     * not the horizontal line at the bottom of the gable, which is what an
+     * earlier version of this measured and which is neither an eave nor a rake.
+     * The difference matters: a rake is longer than its plan run by the slope,
+     * and somebody is going to buy timber by this number.
+     */
+    if (gabled.has(arc.left) || gabled.has(arc.right)) {
+      edges.push({
+        from: { x: arc.from.x, y: fromY, z: arc.from.z },
+        to: { x: arc.to.x, y: toY, z: arc.to.z },
+        kind: 'rake',
+      });
+      continue;
+    }
 
     const lowEnd = Math.min(arc.fromTime, arc.toTime);
     let kind: RoofEdgeKind = 'ridge';

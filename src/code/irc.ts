@@ -462,7 +462,16 @@ export function asPitch(pitch: number): string {
  * same units.
  */
 export function asFeetInches(metres: number): string {
-  const totalInches = metres / 0.0254;
+  /*
+   * The sign is taken off first and put back at the end.
+   *
+   * Flooring a negative number rounds it AWAY from zero, so -0.3 m came out as
+   * "-1 ft 3/16 in" rather than "-11 13/16 in" — a foot too far, and in the
+   * wrong direction. Negative lengths are ordinary here: ground below a floor,
+   * a measurement short of a limit, a level below the datum.
+   */
+  const negative = metres < 0;
+  const totalInches = Math.abs(metres) / 0.0254;
   const sixteenths = Math.round(totalInches * 16);
 
   const wholeFeet = Math.floor(sixteenths / (12 * 16));
@@ -484,9 +493,10 @@ export function asFeetInches(metres: number): string {
         ? `${fraction} in`
         : `${wholeInches} in`;
 
-  if (wholeFeet === 0) return inchPart;
-  if (remainder === 0) return `${wholeFeet} ft`;
-  return `${wholeFeet} ft ${inchPart}`;
+  const sign = negative ? '-' : '';
+  if (wholeFeet === 0) return `${sign}${inchPart}`;
+  if (remainder === 0) return `${sign}${wholeFeet} ft`;
+  return `${sign}${wholeFeet} ft ${inchPart}`;
 }
 
 /** "8 1/8 in exceeds the 7 3/4 in allowed by IRC R311.7.5.1". */

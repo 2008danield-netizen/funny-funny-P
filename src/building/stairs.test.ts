@@ -524,6 +524,18 @@ describe('imperial formatting', () => {
     expect(asFeetInches(inches(10))).toBe('10 in');
   });
 
+  it('writes a negative length as a negative length', () => {
+    /*
+     * Ground below a floor, a level below the datum, a measurement short of a
+     * limit — negative lengths are ordinary here. Flooring a negative rounds it
+     * AWAY from zero, so -0.3 m used to come out as "-1 ft 3/16 in": a foot too
+     * far, and in the wrong direction.
+     */
+    expect(asFeetInches(-0.3)).toBe('-11 13/16 in');
+    expect(asFeetInches(-(feet(6) + inches(8)))).toBe('-6 ft 8 in');
+    expect(asFeetInches(-inches(36))).toBe('-3 ft');
+  });
+
   it('reduces fractions rather than leaving them over sixteen', () => {
     expect(asFeetInches(inches(0.5))).toBe('1/2 in');
     expect(asFeetInches(inches(0.25))).toBe('1/4 in');

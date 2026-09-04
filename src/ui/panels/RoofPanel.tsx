@@ -14,6 +14,8 @@ import { Panel } from '../components/Panel';
 import { ColorInput } from '../components/ColorInput';
 import { Segmented } from '../components/Segmented';
 import { Slider } from '../components/Slider';
+import { useState } from 'react';
+
 import { useDesign, useDesignEdit } from '@/bridge/useDesign';
 import {
   addDormer,
@@ -30,7 +32,7 @@ import {
 import { footprintsOf } from '@/building/footprint';
 import { roofArea } from '@/building/roof';
 import { roofOpenings } from '@/building/dormer';
-import { checkRoof } from '@/building/roofCode';
+import { useRoofReports } from '@/bridge/useAnalysis';
 import { asFeetInches, asPitch } from '@/code/irc';
 import { levelById } from '@/state/levels';
 import { formatArea, formatLength } from '@/state/units';
@@ -63,6 +65,8 @@ const COVERINGS: ReadonlyArray<{ id: RoofCovering; label: string }> = [
 export function RoofPanel() {
   const doc = useDesign();
   const edit = useDesignEdit();
+  const reports = useRoofReports();
+  const [notice, setNotice] = useState('');
 
   const length = (metres: number) =>
     doc.units === 'imperial' ? asFeetInches(metres) : formatLength(metres, 'metric');
@@ -85,7 +89,7 @@ export function RoofPanel() {
       </button>
 
       {doc.roofs.map((roof) => {
-        const report = checkRoof(doc, roof);
+        const report = reports.find((entry) => entry.roofId === roof.id) ?? null;
         const geometry = report?.geometry;
         const level = levelById(doc, roof.overLevelId);
         const openings = geometry ? roofOpenings(geometry, roof) : null;
@@ -212,11 +216,22 @@ export function RoofPanel() {
                 <button
                   type="button"
                   className="btn btn--ghost"
-                  onClick={() => edit((draft) => void addDormer(draft, roof.id))}
+                  onClick={() =>
+                    edit((draft) => {
+                      const added = addDormer(draft, roof.id);
+                      setNotice(
+                        added
+                          ? ''
+                          : 'There is no room for a dormer on this roof. It needs enough slope above it for its own roof to run back into the main one — a steeper pitch, or a wider building.',
+                      );
+                    })
+                  }
                 >
                   Add
                 </button>
               </div>
+
+              {notice && <p className="roof__problem">{notice}</p>}
 
               {roof.dormers.map((dormer) => {
                 const built = openings?.dormers.find((entry) => entry.dormerId === dormer.id);

@@ -26,7 +26,7 @@ import { roofArea, roofGeometry, type RoofGeometry } from './roof';
 import { getCladdingPreset, ROOF_COVERING_COSTS } from '@/scene/materials/cladding';
 import { resolveWall, indexVertices } from '@/scene/planGraph';
 import type { PriceBasis } from '@/furniture/pricing';
-import type { Cladding, DesignDocument, Level } from '@/state/types';
+import type { DesignDocument, Level, Roof } from '@/state/types';
 
 export interface ExteriorLine {
   id: string;
@@ -128,10 +128,19 @@ export function exteriorTakeoff(doc: DesignDocument): ExteriorTakeoff {
   let gableArea = 0;
   const lineTotals: Record<string, number> = {};
 
-  for (const roof of doc.roofs) {
-    const geometry = roofGeometry(doc, roof);
-    if (!geometry) continue;
+  /*
+   * Each roof is solved ONCE and kept.
+   *
+   * Working a roof out means running the straight skeleton over the whole
+   * footprint, and this function is called from a React render — so solving
+   * each roof twice, once for the areas and once for the lines, doubles the
+   * cost of every keystroke in the panel for no gain at all.
+   */
+  const solved = doc.roofs
+    .map((roof) => ({ roof, geometry: roofGeometry(doc, roof) }))
+    .filter((entry): entry is { roof: Roof; geometry: RoofGeometry } => entry.geometry !== null);
 
+  for (const { geometry } of solved) {
     roofSlopedArea += roofArea(geometry);
     gableArea += gableAreaOf(geometry);
 
@@ -155,10 +164,7 @@ export function exteriorTakeoff(doc: DesignDocument): ExteriorTakeoff {
         : 'Outside walls net of their doors and windows.',
   });
 
-  for (const roof of doc.roofs) {
-    const geometry = roofGeometry(doc, roof);
-    if (!geometry) continue;
-
+  for (const { roof, geometry } of solved) {
     const covering = ROOF_COVERING_COSTS[roof.covering];
     const area = roofArea(geometry);
     lines.push({
@@ -221,9 +227,4 @@ export function exteriorTakeoff(doc: DesignDocument): ExteriorTakeoff {
     claddingArea: claddingTotal,
     roofArea: roofSlopedArea,
   };
-}
-
-/** What a finish is called, for the UI. */
-export function claddingLabel(cladding: Cladding): string {
-  return getCladdingPreset(cladding).label;
 }

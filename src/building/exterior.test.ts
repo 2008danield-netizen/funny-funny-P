@@ -107,6 +107,24 @@ describe('roof lines', () => {
     expect(lengths.ridge).toBeCloseTo(13, 4);
   });
 
+  it('measures a gable rake up the slope, not along the bottom of the gable', () => {
+    const doc = house(12, 8);
+    const geometry = roofGeometry(doc, {
+      ...defaultRoofFor(doc.levels[0]!.id),
+      kind: 'gable',
+      pitch: 0.5,
+      overhang: 0.4,
+    })!;
+
+    // Four rakes — two per gable end — each running 4.5 m in plan from the
+    // eave corner to the apex and climbing 2.25 with it. The horizontal line
+    // at the bottom of a gable is neither an eave nor a rake: nothing is
+    // fitted along it, and counting it would sell somebody the wrong timber.
+    const lengths = roofLineLengths(geometry);
+    expect(lengths.rake).toBeCloseTo(4 * Math.hypot(4.5, 2.25), 4);
+    expect(lengths.eave).toBeCloseTo(26, 4);
+  });
+
   it('measures a hip along the slope, not across the plan', () => {
     const doc = house(12, 8);
     const geometry = roofGeometry(doc, {

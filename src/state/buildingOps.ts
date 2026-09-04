@@ -340,11 +340,21 @@ export function addDormer(doc: DesignDocument, roofId: string): string | null {
 
   const eaveLength = Math.hypot(eaveB.x - eaveA.x, eaveB.z - eaveA.z);
   const width = clampTo(Math.min(1.6, eaveLength * 0.35), DORMER_LIMITS.width);
-  const faceHeight = clampTo(
-    // depth = (faceHeight + half the width at the dormer's pitch) / roof pitch
-    available * roof.pitch - (width / 2) * roof.pitch,
-    DORMER_LIMITS.faceHeight,
-  );
+
+  // depth = (faceHeight + half the width at the dormer's pitch) / roof pitch
+  const faceHeight = available * roof.pitch - (width / 2) * roof.pitch;
+
+  /*
+   * Some roofs have no room for a dormer at all, and saying so is the right
+   * answer.
+   *
+   * A dormer needs enough slope above it for its own roof to run back into the
+   * main one, and a small building with a shallow pitch simply does not have
+   * it: the shortest dormer worth building would still climb over the ridge.
+   * Adding one anyway and letting it report a problem is worse than refusing —
+   * it teaches people that the problems are noise.
+   */
+  if (faceHeight < DORMER_LIMITS.faceHeight.min) return null;
 
   const id = nextId(roof.dormers, 'dormer');
   roof.dormers.push({
