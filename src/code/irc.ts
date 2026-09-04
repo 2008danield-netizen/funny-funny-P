@@ -244,6 +244,214 @@ export const IRC_CEILINGS = {
   ),
 } as const;
 
+/* --------------------- R905 Roof coverings: minimum slope ------------------ */
+
+/**
+ * A minimum roof slope, as the code writes it.
+ *
+ * Slopes in the IRC are given as "units vertical in 12 units horizontal", which
+ * is a ratio and not a length — so this is its own type rather than a
+ * `CodeLimit`, whose `metres` would be meaningless here. `pitch` is rise over
+ * run, which is what the app stores; `asWritten` is the "4:12" a roofer says.
+ */
+export interface SlopeLimit {
+  section: string;
+  title: string;
+  /** Rise over run. A 4:12 roof is 0.3333. */
+  pitch: number;
+  /** e.g. "four units vertical in 12 units horizontal (4:12)". */
+  asWritten: string;
+}
+
+const slope = (
+  section: string,
+  title: string,
+  riseIn12: number,
+  asWritten: string,
+): SlopeLimit => ({ section, title, pitch: riseIn12 / 12, asWritten });
+
+/**
+ * The minimum slope each covering may be laid at, and why it matters.
+ *
+ * A roof covering is a system for shedding water, and every one of them has an
+ * angle below which water stops running off and starts sitting — then finding
+ * its way under the laps and into the house. These are the angles. They are the
+ * single most consequential set of numbers about a roof, and the one a person
+ * designing by eye is most likely to get wrong, because a shallow roof looks
+ * perfectly fine on a screen.
+ *
+ * Two of them have a second, lower figure attached: asphalt shingles and tile
+ * may go shallower than their normal minimum if the underlayment is doubled.
+ * That is a real allowance and worth surfacing, because it is the difference
+ * between "you cannot do this" and "you can, and here is what it costs".
+ */
+export const IRC_ROOF_SLOPES = {
+  asphaltShingle: slope(
+    'R905.2.2',
+    'Asphalt shingles',
+    2,
+    'two units vertical in 12 units horizontal (2:12)',
+  ),
+  /** R905.2.2 — below 4:12, R905.1.1 requires a doubled underlayment. */
+  asphaltShingleDoubleUnderlayment: slope(
+    'R905.2.2',
+    'Asphalt shingles without doubled underlayment',
+    4,
+    'four units vertical in 12 units horizontal (4:12)',
+  ),
+  clayOrConcreteTile: slope(
+    'R905.3.2',
+    'Clay and concrete roof tile',
+    2.5,
+    'two and one-half units vertical in 12 units horizontal (2 1/2:12)',
+  ),
+  /** R905.3.2 — below 4:12, the underlayment is doubled. */
+  tileDoubleUnderlayment: slope(
+    'R905.3.2',
+    'Roof tile without doubled underlayment',
+    4,
+    'four units vertical in 12 units horizontal (4:12)',
+  ),
+  metalShingle: slope(
+    'R905.4.2',
+    'Metal roof shingles',
+    3,
+    'three units vertical in 12 units horizontal (3:12)',
+  ),
+  slate: slope('R905.6.2', 'Slate shingles', 4, 'four units vertical in 12 units horizontal (4:12)'),
+  woodShingle: slope(
+    'R905.7.2',
+    'Wood shingles',
+    3,
+    'three units vertical in 12 units horizontal (3:12)',
+  ),
+  woodShake: slope(
+    'R905.8.2',
+    'Wood shakes',
+    4,
+    'four units vertical in 12 units horizontal (4:12)',
+  ),
+  standingSeamMetal: slope(
+    'R905.10.2',
+    'Standing-seam metal roof panels',
+    0.25,
+    'one-fourth unit vertical in 12 units horizontal (1/4:12)',
+  ),
+  membrane: slope(
+    'R905.11.1',
+    'Membrane roofing',
+    0.25,
+    'one-fourth unit vertical in 12 units horizontal (1/4:12), a 2-percent slope, for drainage',
+  ),
+} as const;
+
+/* ------------------------- R806/R807 The roof space ----------------------- */
+
+export const IRC_ATTIC = {
+  /**
+   * R806.2 — Minimum net free ventilating area.
+   *
+   * One square foot of opening for every 150 square feet of the space being
+   * ventilated. Stored as the RATIO rather than an area, because the required
+   * area depends on the roof it is under.
+   */
+  ventilationRatio: {
+    section: 'R806.2',
+    title: 'Attic ventilation',
+    ratio: 1 / 150,
+    asWritten: '1/150 of the area of the space ventilated',
+  },
+  /**
+   * R806.2 exception — 1/300 is permitted where a Class I or II vapour
+   * retarder is fitted on the warm side in Climate Zones 6, 7 and 8, or where
+   * between 40 and 50 percent of the ventilation is in the upper third of the
+   * space with the rest at the eaves.
+   */
+  ventilationRatioReduced: {
+    section: 'R806.2',
+    title: 'Attic ventilation, reduced',
+    ratio: 1 / 300,
+    asWritten: '1/300 where the conditions of the R806.2 exception are met',
+  },
+  /** R806.3 — 1 in of airspace between the insulation and the sheathing. */
+  minAirspace: limit('R806.3', 'Airspace above insulation', inches(1), '1 in'),
+  /** R807.1 — an attic bigger than this, and taller than 30 in, needs a hatch. */
+  accessRequiredArea: {
+    section: 'R807.1',
+    title: 'Attic access',
+    squareMetres: 30 * 0.3048 * 0.3048,
+    asWritten: '30 sq ft',
+  },
+  accessRequiredHeight: limit('R807.1', 'Attic height requiring access', inches(30), '30 in'),
+  accessWidth: limit('R807.1', 'Attic access opening, width', inches(22), '22 in'),
+  accessLength: limit('R807.1', 'Attic access opening, length', inches(30), '30 in'),
+  accessHeadroom: limit('R807.1', 'Headroom above the attic access', inches(30), '30 in'),
+} as const;
+
+/* ---------------------- R302.1 Distance to the lot line ------------------- */
+
+/**
+ * How close a house and its eaves may come to the property line.
+ *
+ * Fire spread between buildings, which is why it is in the building code at all
+ * — as opposed to the setbacks in a zoning ordinance, which are about light,
+ * air and the look of a street, are set locally, and are the user's to enter.
+ * Both are checked; only these come with a section number.
+ */
+export const IRC_LOT_LINE = {
+  /** Table R302.1(1) — below this, the exterior wall must be fire-rated. */
+  wallRated: limit('R302.1', 'Fire separation distance, exterior walls', feet(5), '5 ft'),
+  /** Table R302.1(1) — projections are not permitted at all inside 2 ft. */
+  projectionNone: limit('R302.1', 'Fire separation distance, projections', feet(2), '2 ft'),
+  /** Table R302.1(1) — an eave between 2 ft and 5 ft needs 1-hour protection. */
+  projectionRated: limit('R302.1', 'Projections requiring protection', feet(5), '5 ft'),
+  /** Table R302.1(1) — no openings at all inside 3 ft. */
+  openingsNone: limit('R302.1', 'Fire separation distance, openings', feet(3), '3 ft'),
+} as const;
+
+/* --------------------------- R308.6 Sloped glazing ------------------------ */
+
+export const IRC_SKYLIGHTS = {
+  /**
+   * R308.6.2 — what a skylight may be glazed with.
+   *
+   * Not a measurement: a list. Ordinary annealed glass is not on it, because
+   * overhead it breaks into pieces that fall on whoever is underneath.
+   */
+  permittedGlazing: {
+    section: 'R308.6.2',
+    title: 'Sloped glazing materials',
+    asWritten:
+      'laminated glass, fully tempered glass, heat-strengthened glass, wired glass or approved rigid plastic',
+  },
+  /**
+   * R308.6.8 — a curb, where the manufacturer calls for one.
+   *
+   * Quoted rather than enforced: the requirement is to follow the
+   * manufacturer's instructions, and this app does not know the unit.
+   */
+  curb: {
+    section: 'R308.6.8',
+    title: 'Skylight curbs',
+    asWritten: 'installed on a curb where the manufacturer requires one',
+  },
+} as const;
+
+/**
+ * "4:12" — a pitch as a roofer says it.
+ *
+ * Rounded to the nearest quarter unit, which is as fine as roof slopes are ever
+ * quoted, and written over 12 because that is the only denominator anybody uses.
+ */
+export function asPitch(pitch: number): string {
+  const rise = Math.round(pitch * 12 * 4) / 4;
+  const whole = Math.floor(rise);
+  const fraction = rise - whole;
+  const fractionText =
+    fraction === 0.25 ? ' 1/4' : fraction === 0.5 ? ' 1/2' : fraction === 0.75 ? ' 3/4' : '';
+  return `${whole}${fractionText}:12`;
+}
+
 /**
  * Formats a measurement the way an American builder would say it.
  *

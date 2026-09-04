@@ -871,7 +871,6 @@ function safeDormers(value: unknown): Dormer[] {
       kind: oneOf(raw.kind, ['gable', 'shed', 'hipped'] as const, 'gable'),
       at,
       width,
-      depth: clamp(raw.depth, DORMER_LIMITS.depth.min, DORMER_LIMITS.depth.max, 1.5),
       faceHeight,
       pitch: clamp(raw.pitch, DORMER_LIMITS.pitch.min, DORMER_LIMITS.pitch.max, 0.5),
       window,

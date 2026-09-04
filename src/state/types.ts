@@ -579,9 +579,15 @@ export interface Dormer {
   at: Point2;
   /** Width across the slope, in metres. */
   width: number;
-  /** How far it reaches back up the slope, measured in plan, in metres. */
-  depth: number;
-  /** Height of the front wall, from where it meets the roof to its own eave. */
+  /**
+   * Height of the front wall, from where it meets the roof to its own eave.
+   *
+   * How far the dormer reaches BACK up the slope is not stored, because it is
+   * not a free choice: a dormer's roof runs back until it dies into the roof it
+   * sits in, and where that happens follows from this height and the two
+   * pitches. Storing it as well would let the two disagree, and a dormer whose
+   * roof stops short of the one it is cut into is not a dormer, it is a hole.
+   */
   faceHeight: number;
   /** The dormer roof's own pitch, rise over run. Ignored for a hipped cheek. */
   pitch: number;
@@ -835,7 +841,6 @@ export const ROOF_LIMITS = {
 
 export const DORMER_LIMITS = {
   width: { min: 0.6, max: 6, step: 0.05 },
-  depth: { min: 0.6, max: 6, step: 0.05 },
   faceHeight: { min: 0.6, max: 3, step: 0.05 },
   pitch: { min: 0.0208, max: 2, step: 0.0208 },
 } as const;

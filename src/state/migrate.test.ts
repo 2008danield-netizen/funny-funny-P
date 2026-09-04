@@ -432,7 +432,7 @@ describe('roof and site validation', () => {
           kind: 'gable',
           at: { x: 1, z: 1 },
           width: 1.2,
-          depth: 1.2,
+
           faceHeight: 1,
           pitch: 0.5,
           // Absurd on purpose: a window bigger than the wall around it.
