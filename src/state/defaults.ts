@@ -15,6 +15,7 @@ import {
   SITE_LIMITS,
   SKYLIGHT_LIMITS,
   STAIR_LIMITS,
+  UNDERLAY_LIMITS,
   type Cladding,
   type DesignDocument,
   type Dormer,
@@ -38,6 +39,7 @@ import {
   type StairForm,
   type StairTurn,
   type Terrain,
+  type Underlay,
   type Vertex,
   type Wall,
   type WallFaceSpec,
@@ -95,6 +97,7 @@ export function createLevel(id: string, name: string, plan?: PlanModel): Level {
     // quote and the floor-to-floor rise a staircase actually has to climb.
     slabThickness: 0.25,
     plan: plan ?? createDefaultPlan(),
+    underlay: null,
     furniture: [],
     voids: [],
   };
@@ -523,6 +526,7 @@ export function safeLevels(
         0.25,
       ),
       plan: safePlan(raw.plan),
+      underlay: safeUnderlay(raw.underlay),
       furniture: safeFurniture(raw.furniture),
       voids: safeVoids(raw.voids),
     });
@@ -535,6 +539,64 @@ export function safeLevels(
     list,
     activeId: list.some((level) => level.id === wanted) ? wanted : list[0]!.id,
   };
+}
+
+/**
+ * Validates a traced plan's placement.
+ *
+ * An underlay with no image key is dropped rather than kept: it would draw
+ * nothing, sit in the panel offering controls for a picture that does not
+ * exist, and quietly stop the user from importing a real one.
+ */
+function safeUnderlay(value: unknown): Underlay | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Record<string, unknown>;
+
+  const imageId = typeof raw.imageId === 'string' ? raw.imageId.slice(0, 120) : '';
+  if (!imageId) return null;
+
+  const pixelWidth = Math.round(clamp(raw.pixelWidth, 1, 20000, 1000));
+  const pixelHeight = Math.round(clamp(raw.pixelHeight, 1, 20000, 1000));
+  const at = safePoint(raw.at) ?? { x: 0, z: 0 };
+
+  let calibration: Underlay['calibration'] = null;
+  if (typeof raw.calibration === 'object' && raw.calibration !== null) {
+    const entry = raw.calibration as Record<string, unknown>;
+    const from = safePixelPoint(entry.from, pixelWidth, pixelHeight);
+    const to = safePixelPoint(entry.to, pixelWidth, pixelHeight);
+    const metres = clamp(entry.metres, 0.01, 500, 1);
+    if (from && to) {
+      calibration = { from, to, metres, label: safeString(entry.label, 'a known length', 80) };
+    }
+  }
+
+  return {
+    imageId,
+    pixelWidth,
+    pixelHeight,
+    at,
+    metresPerPixel: clamp(
+      raw.metresPerPixel,
+      UNDERLAY_LIMITS.metresPerPixel.min,
+      UNDERLAY_LIMITS.metresPerPixel.max,
+      // An uncalibrated guess: a plan of a house on a sheet about 3000 px wide
+      // is roughly a centimetre to the pixel. Wrong, but the right order.
+      0.01,
+    ),
+    rotation: normalizeAngle(typeof raw.rotation === 'number' ? raw.rotation : 0),
+    opacity: clamp(raw.opacity, UNDERLAY_LIMITS.opacity.min, UNDERLAY_LIMITS.opacity.max, 0.5),
+    locked: raw.locked === true,
+    calibration,
+  };
+}
+
+/** A point in image pixels, kept inside the image. */
+function safePixelPoint(value: unknown, width: number, height: number): Point2 | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.x !== 'number' || typeof raw.z !== 'number') return null;
+  if (!Number.isFinite(raw.x) || !Number.isFinite(raw.z)) return null;
+  return { x: clamp(raw.x, 0, width, 0), z: clamp(raw.z, 0, height, 0) };
 }
 
 function safeVoids(value: unknown): FloorVoid[] {

@@ -299,6 +299,25 @@ function migrateV5ToV6(doc: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * v6 to v7 — each storey gains a plan to trace.
+ *
+ * Additive and empty: nobody has a traced plan yet, so every storey gets
+ * `underlay: null` and nothing changes on screen. The images themselves never
+ * lived in the document, so there is nothing to move.
+ */
+function migrateV6ToV7(doc: Record<string, unknown>): Record<string, unknown> {
+  const levels = Array.isArray(doc.levels) ? doc.levels : [];
+
+  return {
+    ...doc,
+    schemaVersion: 7,
+    levels: levels.map((level) =>
+      typeof level === 'object' && level !== null ? { ...level, underlay: null } : level,
+    ),
+  };
+}
+
+/**
  * Brings a document up to the current schema.
  *
  * Migrations are applied in sequence, so a v1 document passes through every
@@ -328,6 +347,9 @@ export function migrateDocument(input: Record<string, unknown>): Record<string, 
   }
   if (declared < 6) {
     doc = migrateV5ToV6(doc);
+  }
+  if (declared < 7) {
+    doc = migrateV6ToV7(doc);
   }
 
   return doc;

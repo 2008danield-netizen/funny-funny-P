@@ -85,6 +85,10 @@ export function addLevel(
     wallHeight: below.wallHeight,
     slabThickness: below.slabThickness,
     plan: emptyPlan(below),
+    // A new storey starts with no plan behind it. The one below may have a
+    // scan, but an upper floor is a different drawing on a different sheet,
+    // and inheriting it would put the ground floor's rooms under the first.
+    underlay: null,
     furniture: [],
     voids: [],
   };

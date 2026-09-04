@@ -38,8 +38,10 @@
  *      networks (electrical, water, drainage, heating).
  * v6 — the outside of the building: roofs that follow the footprint, dormers,
  *      skylights, exterior cladding, and a site with real ground under it.
+ * v7 — a traced plan under each storey: the image somebody actually has of
+ *      their house, scaled, placed, and drawn over.
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /** Which measurement system the UI displays. Storage is always metric. */
 export type UnitSystem = 'metric' | 'imperial';
@@ -263,6 +265,8 @@ export interface Level {
   /** Thickness of the floor structure at this level's base, in metres. */
   slabThickness: number;
   plan: PlanModel;
+  /** The floor plan image being traced on this storey, if there is one. */
+  underlay: Underlay | null;
   furniture: FurnitureItem[];
   /**
    * Holes cut through this level's floor that the user made deliberately —
@@ -375,6 +379,63 @@ export interface Stair {
   nosing: number;
   /** Whether a handrail is modelled. Required by code above 3 risers. */
   handrail: 'none' | 'left' | 'right' | 'both';
+}
+
+/* ───────────────────────────── Tracing a plan ─────────────────────────── */
+
+/**
+ * A floor plan image sitting under a storey, to draw over.
+ *
+ * Nobody draws their own house from memory. What they have is a PDF from an
+ * estate agent, a scan from a council archive, or a photograph of a piece of
+ * paper — and the job of this app is to get from that to a model, not to ask
+ * them to measure every room with a tape.
+ *
+ * The IMAGE ITSELF IS NOT IN HERE. A scan is megabytes, the document is
+ * autosaved to `localStorage` on every edit, and a document that cannot be
+ * saved breaks the one promise this app makes. So the pixels live in the
+ * browser's IndexedDB (see `state/imageStore.ts`) and this holds only the key —
+ * which also keeps the document small enough to stay comfortable to read, diff
+ * and hand to an AI. Exporting bundles the images back in, so a design file is
+ * still one thing you can send somebody.
+ */
+export interface Underlay {
+  /** Key into the image store. Empty when the image has gone missing. */
+  imageId: string;
+  /** Pixel size of the stored image, so placement needs no image load. */
+  pixelWidth: number;
+  pixelHeight: number;
+  /** Where the centre of the image sits in the world, in metres. */
+  at: Point2;
+  /**
+   * Metres per pixel.
+   *
+   * The single number that makes a picture into a measurement. Until it is
+   * set from a known distance the plan is only approximately sized, and the
+   * app says so rather than letting somebody trace a house 15 percent out.
+   */
+  metresPerPixel: number;
+  /** Rotation about its centre, in radians. */
+  rotation: number;
+  /** 0-1. Faded back so the walls drawn over it stay readable. */
+  opacity: number;
+  /** Locked underlays cannot be dragged, which is what you want once it fits. */
+  locked: boolean;
+  /**
+   * How the scale was set: two points on the image and the real distance
+   * between them. Kept so the app can show its working and redo it.
+   *
+   * Null means nobody has calibrated yet, and the scale is a guess.
+   */
+  calibration: {
+    /** Both in IMAGE PIXELS, so they survive the underlay being moved. */
+    from: Point2;
+    to: Point2;
+    /** The real-world distance between them, in metres. */
+    metres: number;
+    /** What the user said it was, e.g. "the front wall". */
+    label: string;
+  } | null;
 }
 
 /* ------------------------- Reserved for later sessions -------------------- */
@@ -858,6 +919,20 @@ export const SKYLIGHT_LIMITS = {
   width: { min: 0.3, max: 3, step: 0.05 },
   length: { min: 0.3, max: 4, step: 0.05 },
   curb: { min: 0, max: 0.4, step: 0.01 },
+} as const;
+
+export const UNDERLAY_LIMITS = {
+  /**
+   * Metres per pixel.
+   *
+   * The floor is a tenth of a millimetre per pixel — finer than any scan of a
+   * building is — and the ceiling is a metre per pixel, which is a satellite
+   * photograph. Anything outside that is a calibration mistake, not a plan.
+   */
+  metresPerPixel: { min: 0.0001, max: 1 },
+  opacity: { min: 0.05, max: 1, step: 0.05 },
+  /** Longest side an imported image is kept at, in pixels. */
+  maxPixels: 3200,
 } as const;
 
 export const SITE_LIMITS = {
