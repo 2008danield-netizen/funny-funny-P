@@ -473,6 +473,16 @@ loop of walls drawn inside another that was treated as a second building — whi
 would have clad an internal room on its outside and given it a little roof of
 its own indoors.
 
+Session 7 also swept every earlier session's headline feature end to end in a
+real browser — draw a wall and undo it, furnish a room from the advisor, add a
+storey and a staircase, add a roof and a skylight, draw a plot, then reload and
+check it all came back. Fourteen checks, no console errors, and the document
+returns at v6 with its storeys, stairs, furniture and plot intact. It found four
+things the unit tests could not: a dormer that arrived already complaining on a
+small house, imperial formatting that turned -0.3 m into "-1 ft 3/16 in", gable
+rakes measured along the bottom of the gable instead of up the slope, and the
+roof being solved several times per keystroke.
+
 The roof tests check properties rather than pictures, because a roof built from
 a bad skeleton still renders — it just has a ridge in the wrong place, and it
 looks like a roof until you compare it with the plan underneath. So they assert
