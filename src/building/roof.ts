@@ -21,7 +21,13 @@
  */
 
 import { eaveOutline, footprintFor, type Footprint } from './footprint';
-import { prepare, signedArea, straightSkeleton, type SkeletonFace } from './skeleton';
+import {
+  offsetPolygonEdges,
+  prepare,
+  signedArea,
+  straightSkeleton,
+  type SkeletonFace,
+} from './skeleton';
 import { elevationOf, levelById } from '@/state/levels';
 import type { DesignDocument, Point2, Roof } from '@/state/types';
 
@@ -76,6 +82,16 @@ export interface RoofGeometry {
   roofId: string;
   /** The eave outline in plan, anticlockwise. */
   eaves: Point2[];
+  /**
+   * The outside face of the walls, in plan, aligned with `eaves`.
+   *
+   * The strip between the two is the SOFFIT — the underside of the overhang.
+   * Without it a roof is a lid held up over nothing, and from any angle below
+   * the eaves you look straight up into an unlit void where the ceiling of the
+   * overhang should be. It is one of those details nobody notices until it is
+   * missing, at which point the whole building looks unfinished.
+   */
+  wallLine: Point2[];
   /** Height of the eave line above the site datum, in metres. */
   eaveHeight: number;
   /** Height of the highest point above the eave line, in metres. */
@@ -112,6 +128,7 @@ export function roofGeometry(doc: DesignDocument, roof: Roof): RoofGeometry | nu
   const empty = (): RoofGeometry => ({
     roofId: roof.id,
     eaves: [],
+    wallLine: [],
     eaveHeight: 0,
     rise: 0,
     planes: [],
@@ -144,12 +161,16 @@ export function roofGeometry(doc: DesignDocument, roof: Roof): RoofGeometry | nu
   const plate = footprint.wallHeight.reduce((tallest, height) => Math.max(tallest, height), 0);
   const eaveHeight = elevationOf(doc, level.id) + (plate > 0 ? plate : level.wallHeight);
 
+  // The wall face, for the soffit. Offset from the same centreline as the
+  // eaves so the two outlines have the same corners in the same order.
+  const wallLine = offsetPolygonEdges(footprint.outline, footprint.halfThickness);
+
   const geometry =
     roof.kind === 'shed' || roof.kind === 'flat'
       ? singlePlane(roof, footprint, eaves, eaveHeight, problems)
       : skeletonRoof(roof, footprint, eaves, eaveHeight, problems);
 
-  return geometry ?? empty();
+  return { ...(geometry ?? empty()), wallLine };
 }
 
 /* ----------------------------- Hips and gables ---------------------------- */
@@ -219,6 +240,7 @@ function skeletonRoof(
   return {
     roofId: roof.id,
     eaves,
+    wallLine: [],
     eaveHeight,
     rise,
     planes,
@@ -390,6 +412,7 @@ function singlePlane(
   return {
     roofId: roof.id,
     eaves,
+    wallLine: [],
     eaveHeight,
     rise: Math.max(...points.map((point) => point.y)) - eaveHeight,
     planes: [

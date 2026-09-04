@@ -259,7 +259,7 @@ export function dormerGeometry(geometry: RoofGeometry, dormer: Dormer): DormerGe
     front: { points: front },
     cheeks,
     planes,
-    window: windowPanel(dormer, left, right, across, base),
+    window: windowPanel(dormer, left, right, across, uphill, base),
     ridge,
     problems,
   };
@@ -271,12 +271,23 @@ function windowPanel(
   left: Point2,
   right: Point2,
   across: Point2,
+  uphill: Point2,
   base: number,
 ): Panel | null {
   const pane = dormer.window;
   if (!pane) return null;
 
-  const centre = { x: (left.x + right.x) / 2, z: (left.z + right.z) / 2 };
+  /*
+   * Stood a centimetre proud of the wall it is set in, along the direction the
+   * face looks — which is DOWN the slope, not upwards. Offsetting it vertically
+   * instead simply slides it up the wall and leaves the two surfaces in the
+   * same plane, flickering against each other.
+   */
+  const proud = { x: -uphill.x * 0.01, z: -uphill.z * 0.01 };
+  const centre = {
+    x: (left.x + right.x) / 2 + proud.x,
+    z: (left.z + right.z) / 2 + proud.z,
+  };
   const a = step(centre, across, -pane.width / 2);
   const b = step(centre, across, pane.width / 2);
   const sill = base + pane.sillHeight;

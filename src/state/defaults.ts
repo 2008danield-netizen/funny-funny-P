@@ -109,8 +109,16 @@ export const DEFAULT_CLADDING_COLOUR = '#e4ded2';
 /** Trim is painted lighter than the wall on almost every house ever built. */
 export const DEFAULT_TRIM_COLOUR = '#f7f5f0';
 
+/**
+ * Flat ground, one foot below the finished floor.
+ *
+ * Not zero. A house sits UP on its foundation — a step or two at the front door
+ * is so normal that its absence is what looks wrong — and ground at exactly
+ * floor level also puts two surfaces in the same plane, which reads on screen
+ * as a torn, flickering edge all the way round the building.
+ */
 export function defaultTerrain(): Terrain {
-  return { kind: 'flat', fall: 0, fallDirection: 0, spots: [], datum: 0 };
+  return { kind: 'flat', fall: 0, fallDirection: 0, spots: [], datum: -0.3 };
 }
 
 export function defaultSite(): Site {
@@ -168,6 +176,7 @@ export function createDefaultDocument(): DesignDocument {
     activeLevelId: 'lv1',
     stairs: [],
     roofs: [],
+    showRoofs: true,
     site: defaultSite(),
     exterior: defaultExterior(),
     services: [],
@@ -984,6 +993,7 @@ export function sanitizeDocument(input: unknown): DesignDocument {
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : base.updatedAt,
     units: raw.units === 'imperial' ? 'imperial' : 'metric',
     showCeilings: raw.showCeilings === true,
+    showRoofs: raw.showRoofs !== false,
     levels: levels.list,
     activeLevelId: levels.activeId,
     stairs: safeStairs(raw.stairs, levels.list),

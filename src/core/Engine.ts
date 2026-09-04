@@ -26,6 +26,8 @@ import { Furnishings } from '@/scene/Furnishings';
 import { ClearanceOverlay } from '@/scene/ClearanceOverlay';
 import { Staircases } from '@/scene/Staircases';
 import { GhostLevel } from '@/scene/GhostLevel';
+import { Roofs } from '@/scene/Roofs';
+import { Ground } from '@/scene/Ground';
 import { stairGeometry } from '@/building/stairs';
 import { activeLevel, elevationOf, floorHoles, levelBelow } from '@/state/levels';
 import { analyseClearance } from '@/clearance/analyze';
@@ -52,6 +54,8 @@ export class Engine {
   private clearanceOverlay: ClearanceOverlay;
   private staircases: Staircases;
   private ghost: GhostLevel;
+  private roofs: Roofs;
+  private ground: Ground;
   private lighting: Lighting;
 
   /**
@@ -110,6 +114,18 @@ export class Engine {
     this.levelGroup.add(this.staircases.group);
     this.ghost = new GhostLevel();
     this.levelGroup.add(this.ghost.group);
+
+    /*
+     * Roofs and ground hang off the SCENE, not off the active storey's group.
+     * Both are described in world heights — a roof sits on top of the storey it
+     * covers, and the ground is where it is — so putting them inside a group
+     * that moves with the active level would slide them up and down every time
+     * the user changed floors.
+     */
+    this.roofs = new Roofs();
+    this.scene.add(this.roofs.group);
+    this.ground = new Ground();
+    this.scene.add(this.ground.group);
 
     // The edit controller drives OrbitControls' `enabled` flag directly so that
     // a drag on a wall does not also orbit the camera.
@@ -207,14 +223,32 @@ export class Engine {
 
     const holes = floorHoles(doc, level.id, (stair) => stairGeometry(doc, stair).wellOpening);
 
-    if (planChanged || ceilingsChanged || previous?.stairs !== doc.stairs) {
-      this.building.update(level.plan, doc.showCeilings, holes);
+    if (
+      planChanged ||
+      ceilingsChanged ||
+      previous?.stairs !== doc.stairs ||
+      previous?.exterior !== doc.exterior
+    ) {
+      this.building.update(level.plan, doc.showCeilings, holes, doc.exterior);
     }
     if (levelSwitched || !previousLevel || previousLevel.furniture !== level.furniture) {
       this.furnishings.update(level.furniture);
     }
     if (levelSwitched || previous?.stairs !== doc.stairs || planChanged) {
       this.staircases.update(doc, level.id);
+    }
+
+    if (
+      !previous ||
+      previous.roofs !== doc.roofs ||
+      previous.levels !== doc.levels ||
+      previous.exterior !== doc.exterior
+    ) {
+      this.roofs.update(doc);
+    }
+    this.roofs.setVisible(doc.showRoofs);
+    if (!previous || previous.site !== doc.site || previous.levels !== doc.levels) {
+      this.ground.update(doc);
     }
 
     // The storey below, as an outline to line new walls up against.
@@ -329,6 +363,8 @@ export class Engine {
     this.clearanceOverlay.dispose();
     this.staircases.dispose();
     this.ghost.dispose();
+    this.roofs.dispose();
+    this.ground.dispose();
     this.furnishings.dispose();
     this.building.dispose();
     this.lighting.dispose();

@@ -6,12 +6,13 @@ walk through it — in the browser, with no install.
 
 **Live app:** https://2008danield-netizen.github.io/VR-home-design-project/
 
-> **Status: session 6 — it is a building now, not a room.** Storeys, staircases
-> and the holes they come up through, all checked against the International
-> Residential Code with the section number printed beside every finding. This is
-> the session that turns an interior-design tool into the start of a building-
-> design one; roofs and the exterior are next, then the services — electrical,
-> water, drainage and heating.
+> **Status: session 7 — it has an outside.** Roofs that follow the real
+> footprint — hip, gable, shed and flat, with ridges, hips and valleys worked
+> out from the walls rather than drawn by hand — plus dormers, skylights,
+> exterior cladding, and a site with ground that slopes, a plot line and
+> setbacks. Everything is checked against the International Residential Code
+> with the section number printed beside every finding. Next come the services:
+> electrical, water, drainage and heating.
 
 ---
 
@@ -141,6 +142,36 @@ cursor exactly at any camera angle. Combined with the top-down **Plan** viewpoin
 (press `4`), editing is as precise as a dedicated 2D plan editor. Every dimension
 also has a numeric field in the inspector for when you need exactly 3.6 m.
 
+**A roof that follows the plan.**
+Hip, gable, shed and flat. The ridges, hips and valleys are not drawn — they are
+computed from the walls by a straight skeleton, so an L-shaped house gets its
+valley and a cross-shaped one gets all four, and the roof still fits after you
+drag a wall. Pitch, overhang, covering and colour; gable any end you like, or
+let the app gable the ends of the main ridge, which is what most people mean.
+Eaves stand off the outside of each wall by that wall's own thickness.
+
+**Dormers and skylights.**
+Gable, shed and hipped dormers, each with its own window; fixed or venting
+skylights on a curb. How far a dormer reaches back up the slope is *not* a
+setting — a dormer's roof runs back until it dies into the roof it is cut into,
+and where that happens follows from the face height and the two pitches. Put one
+somewhere it cannot be built and the app says so instead of drawing it anyway.
+
+**The site.**
+Ground that is flat, falls one way, or is interpolated between surveyed spot
+heights — with the cut and fill volumes for levelling a pad under the building,
+because a sloping plot costs money and that is worth knowing early. A plot
+boundary, a north point that everything else is measured from, and zoning
+setbacks with the buildable area drawn on the ground. Lot coverage, in percent.
+
+**The outside of the building.**
+Seven exterior finishes — lap siding, board and batten, shingle, brick, stone,
+stucco and fibre cement — at real exposures, so a rendered elevation is the same
+size as the building. Any wall can differ from the rest. Then the takeoff a
+builder would price from: wall area net of its openings, gable ends, roof
+measured on the slope rather than in plan, and the eave, ridge, hip, valley and
+rake lengths that fascia and flashing are sold by.
+
 **Never lose work.** Continuous autosave, full undo/redo, JSON export/import, PNG
 screenshots — and designs saved by session 1 are migrated forward automatically.
 
@@ -251,7 +282,14 @@ src/
 │
 ├── building/         The building itself, above the level of one plan
 │   ├── stairs.ts       Stair geometry: flights, turns, winders, spirals
-│   └── stairCode.ts    Checking one against the IRC, citing every section
+│   ├── stairCode.ts    Checking one against the IRC, citing every section
+│   ├── skeleton.ts     The straight skeleton — where every ridge and valley goes
+│   ├── footprint.ts    The outline a roof sits on, derived from the walls
+│   ├── roof.ts         Hip, gable, shed and flat, in three dimensions
+│   ├── dormer.ts       Dormers and skylights, and the holes they cut
+│   ├── roofCode.ts     Slope, ventilation, access and the plot line, cited
+│   ├── site.ts         Ground, plot, setbacks, earthworks, the compass
+│   └── exterior.ts     What the outside is made of, and how much of it
 │
 ├── advisor/          Does the room WORK, and is it any good?
 │   ├── types.ts        Findings, fixes, and every guideline number in one place
@@ -283,6 +321,8 @@ src/
 │   ├── Furnishings.ts  Furniture meshes, shape cache, collision tinting
 │   ├── ClearanceOverlay.ts  Zones drawn flat on the floor
 │   ├── Staircases.ts   Stair meshes, extruded from the derived geometry
+│   ├── Roofs.ts        Roof planes with their openings cut out, in world space
+│   ├── Ground.ts       The terrain surface, the plot line, the north arrow
 │   ├── GhostLevel.ts   The storey below, as an outline to align to
 │   ├── wallBuilder.ts  Wall extrusion with holes; door and window furniture
 │   ├── floorBuilder.ts Polygon floors, ceilings and skirting ribbons
@@ -389,8 +429,10 @@ src/
 npm test
 ```
 
-237 tests covering the parts where a bug is invisible on screen: stair geometry
-and every IRC check, storey elevations and the v5 migration, room detection
+396 tests covering the parts where a bug is invisible on screen: the straight
+skeleton and every roof form it produces, dormers and skylights meeting the roof
+they are cut into, the roof code checks and their citations, terrain, setbacks
+and earthworks, the exterior takeoff, stair geometry and every IRC check, storey elevations and the v5 migration, room detection
 (L-shapes, partitions, disconnected structures, winding, stable identity),
 collision (penetration depth, sliding, wall-snap orientation, wedged pieces),
 furniture placement end to end, clearance zones and circulation analysis,
@@ -423,9 +465,24 @@ gap *anywhere* — which is always the few centimetres beside a skirting board �
 a design score whose curve made five small notes outrank a room you could not
 walk into, a colour check that called an off-white "warm" because HSL saturation
 blows up near white, a generator that laid the rug before the armchair existed
-and was then told off by its own rug rule, and a circulation fixture that had
+and was then told off by its own rug rule, a circulation fixture that had
 been passing for three sessions on a fallback value while quietly marooning five
-square metres of floor.
+square metres of floor, an outer-boundary tracer that reversed its wall list
+without re-aligning it and so handed every eave its neighbour's thickness, and a
+loop of walls drawn inside another that was treated as a second building — which
+would have clad an internal room on its outside and given it a little roof of
+its own indoors.
+
+The roof tests check properties rather than pictures, because a roof built from
+a bad skeleton still renders — it just has a ridge in the wrong place, and it
+looks like a roof until you compare it with the plan underneath. So they assert
+that every eave gets exactly one face, that the faces tile the footprint
+exactly, that every point's height equals its distance from its own eave (which
+is what makes the whole roof one pitch), and that nothing escapes the outline.
+The shapes that broke the solver during development are all kept as fixtures:
+the cross that pinches shut across the middle, the T whose ridges and valleys
+all arrive at one point, and the stepped plan whose two inside corners throw
+their valleys across each other.
 
 ---
 
@@ -437,9 +494,7 @@ square metres of floor.
 - ~~**Session 4** — clearance, ergonomics and the shopping list.~~ ✅
 - ~~**Session 5** — the design advisor and the room generator.~~ ✅
 - ~~**Session 6** — storeys, staircases and the IRC.~~ ✅
-- **Session 7 — roof and exterior.** Pitched, hipped and flat roofs, eaves and
-  gables. Cladding, render and brick. The view from outside. Site, plot boundary
-  and orientation.
+- ~~**Session 7** — roofs, dormers, skylights, cladding and the site.~~ ✅
 - **Session 8 — trace real floor plans, per storey.** Nobody draws a whole house
   from memory. This is where somebody's actual home gets into the app.
 - **Session 9 — the services foundation, and electrical.** The routed-network

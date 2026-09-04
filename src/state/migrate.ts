@@ -279,11 +279,12 @@ function migrateV5ToV6(doc: Record<string, unknown>): Record<string, unknown> {
   return {
     ...doc,
     schemaVersion: 6,
+    showRoofs: true,
     site: {
       northAngle: typeof site.northAngle === 'number' ? site.northAngle : 0,
       boundary: Array.isArray(site.boundary) ? site.boundary : [],
       sewerConnection: site.sewerConnection ?? null,
-      terrain: { kind: 'flat', fall: 0, fallDirection: 0, spots: [], datum: 0 },
+      terrain: { kind: 'flat', fall: 0, fallDirection: 0, spots: [], datum: -0.3 },
       ground: 'grass',
       setbacks: null,
     },

@@ -9,6 +9,9 @@
 
 import { getOpeningPreset } from '@/scene/openings/presets';
 import { defaultStairFor, stairGeometry } from '@/building/stairs';
+import { footprintsOf } from '@/building/footprint';
+import { roofGeometry } from '@/building/roof';
+import { defaultRoofFor } from './defaults';
 import {
   activeLevel,
   defaultLevelName,
@@ -18,7 +21,16 @@ import {
   riseAbove,
 } from './levels';
 import { normalizePlan } from './planOps';
-import { LEVEL_LIMITS, type DesignDocument, type Level, type Point2 } from './types';
+import {
+  DORMER_LIMITS,
+  LEVEL_LIMITS,
+  type DesignDocument,
+  type Dormer,
+  type Level,
+  type Point2,
+  type Roof,
+  type Skylight,
+} from './types';
 
 /* --------------------------------- Levels --------------------------------- */
 
@@ -227,3 +239,230 @@ export function ghostPlan(doc: DesignDocument) {
 
 /** Re-exported so the stair tool can size a door opening consistently. */
 export { getOpeningPreset };
+
+/* ---------------------------------- Roofs --------------------------------- */
+
+/**
+ * Puts a roof over a storey.
+ *
+ * Over the TOP storey by default, because that is where a roof goes; putting
+ * one over a middle floor is legal and occasionally right — a single-storey
+ * wing off a two-storey house — but it is never what somebody means by "add a
+ * roof" without saying more.
+ *
+ * Refuses a second roof over the same storey unless the first one is anchored
+ * to a different structure, since two roofs over one building is not a design,
+ * it is two roofs in the same place.
+ */
+export function addRoof(doc: DesignDocument, levelId?: string): string | null {
+  const level = levelId ? doc.levels.find((entry) => entry.id === levelId) : doc.levels.at(-1);
+  if (!level) return null;
+
+  const existing = doc.roofs.filter((roof) => roof.overLevelId === level.id);
+  const structures = footprintsOf(level);
+  if (structures.length === 0) return null;
+  if (existing.length >= structures.length) return null;
+
+  // Anchor it to the first structure that has not got a roof yet.
+  const taken = new Set(existing.map((roof) => roof.anchorWallId));
+  const free = structures.find((footprint) => !footprint.wallIds.flat().some((id) => taken.has(id)));
+
+  const id = nextId(doc.roofs, 'roof');
+  doc.roofs.push({
+    ...defaultRoofFor(level.id, id),
+    // The first roof on a plan takes the largest structure implicitly, so it
+    // does not need naming — and is then not disturbed by a wall being added.
+    anchorWallId: existing.length === 0 ? null : (free?.wallIds[0]?.[0] ?? null),
+  });
+  return id;
+}
+
+export function removeRoof(doc: DesignDocument, id: string): void {
+  doc.roofs = doc.roofs.filter((roof) => roof.id !== id);
+}
+
+export function updateRoof(doc: DesignDocument, id: string, changes: Partial<Roof>): void {
+  const roof = doc.roofs.find((entry) => entry.id === id);
+  if (!roof) return;
+  Object.assign(roof, changes);
+}
+
+/** Turns one eave's gable on or off, by the wall that carries it. */
+export function toggleGable(doc: DesignDocument, roofId: string, wallId: string): void {
+  const roof = doc.roofs.find((entry) => entry.id === roofId);
+  if (!roof) return;
+
+  roof.gableWallIds = roof.gableWallIds.includes(wallId)
+    ? roof.gableWallIds.filter((id) => id !== wallId)
+    : [...roof.gableWallIds, wallId];
+}
+
+/**
+ * Adds a dormer, placed where there is room for one.
+ *
+ * Low on the largest slope, because that is where a dormer goes and because
+ * putting it high on the slope is the one placement that cannot work — its roof
+ * would have to climb over the ridge to meet anything.
+ */
+export function addDormer(doc: DesignDocument, roofId: string): string | null {
+  const roof = doc.roofs.find((entry) => entry.id === roofId);
+  if (!roof) return null;
+
+  const geometry = roofGeometry(doc, roof);
+  if (!geometry || geometry.planes.length === 0) return null;
+
+  const largest = geometry.planes.reduce((best, plane) =>
+    plane.planArea > best.planArea ? plane : best,
+  );
+
+  const eaveA = largest.points[0]!;
+  const eaveB = largest.points[1]!;
+  const middle = { x: (eaveA.x + eaveB.x) / 2, z: (eaveA.z + eaveB.z) / 2 };
+  const inward = uphillOf(largest.normal);
+
+  /*
+   * Sized to fit the roof it is going into, rather than to a fixed default.
+   *
+   * A dormer reaches back up the slope by an amount it works out for itself —
+   * the taller its face, the further — so a 1 m face that is perfectly ordinary
+   * on a big house climbs straight over the ridge of a small one. The run
+   * available is measured first, the dormer is stood a quarter of the way up
+   * it, and the face height is then whatever leaves the dormer dying into the
+   * roof with room to spare.
+   *
+   * Getting this right matters more than it looks: the alternative is that
+   * every dormer anybody adds arrives already reporting a problem, which
+   * teaches people to ignore the problems.
+   */
+  const slopeRun = geometry.rise / Math.max(0.05, roof.pitch);
+  const stand = slopeRun * 0.25;
+  const available = Math.max(0.5, slopeRun - stand) * 0.75;
+
+  const eaveLength = Math.hypot(eaveB.x - eaveA.x, eaveB.z - eaveA.z);
+  const width = clampTo(Math.min(1.6, eaveLength * 0.35), DORMER_LIMITS.width);
+  const faceHeight = clampTo(
+    // depth = (faceHeight + half the width at the dormer's pitch) / roof pitch
+    available * roof.pitch - (width / 2) * roof.pitch,
+    DORMER_LIMITS.faceHeight,
+  );
+
+  const id = nextId(roof.dormers, 'dormer');
+  roof.dormers.push({
+    id,
+    kind: 'gable',
+    at: { x: middle.x + inward.x * stand, z: middle.z + inward.z * stand },
+    width,
+    faceHeight,
+    pitch: roof.pitch,
+    window:
+      faceHeight > 0.7
+        ? { width: Math.max(0.4, width - 0.5), height: faceHeight - 0.35, sillHeight: 0.15 }
+        : null,
+  });
+  return id;
+}
+
+function clampTo(value: number, limits: { min: number; max: number }): number {
+  return Math.min(limits.max, Math.max(limits.min, value));
+}
+
+export function removeDormer(doc: DesignDocument, roofId: string, dormerId: string): void {
+  const roof = doc.roofs.find((entry) => entry.id === roofId);
+  if (!roof) return;
+  roof.dormers = roof.dormers.filter((dormer) => dormer.id !== dormerId);
+}
+
+export function updateDormer(
+  doc: DesignDocument,
+  roofId: string,
+  dormerId: string,
+  changes: Partial<Dormer>,
+): void {
+  const dormer = doc.roofs
+    .find((entry) => entry.id === roofId)
+    ?.dormers.find((entry) => entry.id === dormerId);
+  if (dormer) Object.assign(dormer, changes);
+}
+
+/** Adds a skylight, in the middle of the largest slope. */
+export function addSkylight(doc: DesignDocument, roofId: string): string | null {
+  const roof = doc.roofs.find((entry) => entry.id === roofId);
+  if (!roof) return null;
+
+  const geometry = roofGeometry(doc, roof);
+  if (!geometry || geometry.planes.length === 0) return null;
+
+  const largest = geometry.planes.reduce((best, plane) =>
+    plane.planArea > best.planArea ? plane : best,
+  );
+
+  let x = 0;
+  let z = 0;
+  for (const point of largest.points) {
+    x += point.x;
+    z += point.z;
+  }
+
+  const id = nextId(roof.skylights, 'skylight');
+  roof.skylights.push({
+    id,
+    at: { x: x / largest.points.length, z: z / largest.points.length },
+    width: 0.8,
+    length: 1.2,
+    kind: 'fixed',
+    glazing: 'laminated',
+    curb: 0.15,
+  });
+  return id;
+}
+
+export function removeSkylight(doc: DesignDocument, roofId: string, skylightId: string): void {
+  const roof = doc.roofs.find((entry) => entry.id === roofId);
+  if (!roof) return;
+  roof.skylights = roof.skylights.filter((skylight) => skylight.id !== skylightId);
+}
+
+export function updateSkylight(
+  doc: DesignDocument,
+  roofId: string,
+  skylightId: string,
+  changes: Partial<Skylight>,
+): void {
+  const skylight = doc.roofs
+    .find((entry) => entry.id === roofId)
+    ?.skylights.find((entry) => entry.id === skylightId);
+  if (skylight) Object.assign(skylight, changes);
+}
+
+/** Up the slope, in plan, from a roof plane's normal. */
+function uphillOf(normal: { x: number; y: number; z: number }): Point2 {
+  const horizontal = Math.hypot(normal.x, normal.z);
+  if (horizontal < 1e-9) return { x: 0, z: 1 };
+  return { x: -normal.x / horizontal, z: -normal.z / horizontal };
+}
+
+/* --------------------------------- The site ------------------------------- */
+
+/**
+ * Draws a rectangular plot around the building.
+ *
+ * Not a substitute for a real boundary — plots are rarely rectangles and never
+ * centred on the house — but it is the fastest way to get a plot line on the
+ * drawing so that setbacks and lot coverage mean something. A user with a
+ * survey can move the corners afterwards.
+ */
+export function setRectangularPlot(doc: DesignDocument, width: number, depth: number): void {
+  const halfWidth = Math.max(1, width) / 2;
+  const halfDepth = Math.max(1, depth) / 2;
+
+  doc.site.boundary = [
+    { x: -halfWidth, z: -halfDepth },
+    { x: halfWidth, z: -halfDepth },
+    { x: halfWidth, z: halfDepth },
+    { x: -halfWidth, z: halfDepth },
+  ];
+
+  // The front is the edge the arrangement suggests: the one at -z, which is the
+  // bottom of the screen in plan and where a street would be drawn.
+  if (doc.site.setbacks) doc.site.setbacks.frontAt = { x: 0, z: -halfDepth };
+}

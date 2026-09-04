@@ -1759,3 +1759,140 @@ select {
   line-height: 1.45;
   color: var(--text-muted);
 }
+
+/* A finding that passed. Present because a check that says nothing is
+   indistinguishable from a check that was never run, and "the pitch suits this
+   covering" is worth reading. */
+.stairs__finding--pass {
+  border-left-color: #5f8a63;
+  background: rgba(95, 138, 99, 0.06);
+}
+
+/* ─────────────────────────────── Roof ─────────────────────────────── */
+
+.roof {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.roof__header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.roof__name {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.roof__meta {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.roof__gables {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip {
+  padding: 3px 9px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.chip:hover { background: var(--surface-hover); }
+
+.chip--on {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.roof__openings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.roof__openings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.roof__opening {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+
+/* Something that cannot be built, said plainly and in the place the control
+   that caused it lives. */
+.roof__problem {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: #d08a7e;
+}
+
+/* A dropdown, for lists too long to be segmented buttons. */
+.select {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  color: var(--text-primary);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+/* ─────────────────────────────── Takeoff ──────────────────────────── */
+
+.takeoff {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.takeoff__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.takeoff__table td {
+  padding: 3px 0;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.takeoff__quantity,
+.takeoff__total {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.takeoff__quantity { color: var(--text-muted); }
+.takeoff__total { color: var(--text-primary); }

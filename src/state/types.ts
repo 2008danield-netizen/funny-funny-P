@@ -745,6 +745,15 @@ export interface DesignDocument {
 
   /** Ceilings hidden by default so the orbit camera can look into the plan. */
   showCeilings: boolean;
+  /**
+   * Whether the roofs are drawn.
+   *
+   * On by default, unlike ceilings — a roof only exists because somebody added
+   * one, and hiding what they just asked for would be strange. Turning it off
+   * is how you look down into the storey below, which is the one thing a roof
+   * makes impossible.
+   */
+  showRoofs: boolean;
 
   /** Display preference. Does not affect stored values. */
   units: UnitSystem;

@@ -33,7 +33,7 @@ import {
 import { WALL_MATERIAL_SLOT, buildOpeningFurniture, buildWallGeometry, wallMatrix } from './wallBuilder';
 import { resolveRoomSpec } from '@/state/planOps';
 import type { Selection } from '@/state/selection';
-import type { FloorVoid, PlanModel, Point2, WallFaceSpec } from '@/state/types';
+import type { Exterior, FloorVoid, PlanModel, Point2, WallFaceSpec } from '@/state/types';
 
 /** Height of the skirting board, in metres. */
 const SKIRTING_HEIGHT = 0.09;
@@ -102,12 +102,26 @@ export class Building {
   private rooms = new Map<string, RoomEntry>();
   private handles = new Map<string, THREE.Mesh>();
 
-  private site: THREE.Mesh;
   private grid: THREE.GridHelper;
 
   /** Shared materials for parts the user does not paint. */
   private trimMaterial: THREE.MeshStandardMaterial;
   private exteriorMaterial: THREE.MeshStandardMaterial;
+
+  /**
+   * The finish on the outside of the building.
+   *
+   * Held rather than passed through every call because appearance is applied on
+   * every update and the exterior rarely changes; the default is the same one a
+   * new document starts with, so a caller that never sets it still gets siding
+   * rather than a grey box.
+   */
+  private exterior: Exterior = {
+    cladding: 'lap-siding',
+    claddingColour: '#e4ded2',
+    trimColour: '#f7f5f0',
+    overrides: {},
+  };
   private frameMaterial: THREE.MeshStandardMaterial;
   private glassMaterial: THREE.MeshPhysicalMaterial;
   private handleMaterial: THREE.MeshStandardMaterial;
@@ -166,21 +180,6 @@ export class Building {
     });
     this.handleActiveMaterial = this.handleMaterial.clone();
     this.handleActiveMaterial.color.set(0xd8a34a);
-
-    /* ---- Site ground ----
-     * A neutral plane just below the floor, catching the sun's shadow outside
-     * the building's footprint. Kept very dark deliberately: a mid-grey plane
-     * this large picks up enough light to become the brightest thing on screen
-     * and reads as a backdrop rather than as ground. */
-    this.site = new THREE.Mesh(
-      new THREE.PlaneGeometry(120, 120),
-      materials.createPlainMaterial('#15181d', 1),
-    );
-    this.site.rotation.x = -Math.PI / 2;
-    this.site.position.y = -0.02;
-    this.site.receiveShadow = true;
-    this.site.name = 'Site';
-    this.group.add(this.site);
 
     /* ---- Editing grid ----
      * Only shown while editing. A metre grid is what makes dragging a wall feel
@@ -277,7 +276,14 @@ export class Building {
    * the floor geometry exactly as a moved wall does, and a signature that
    * ignored them would leave a staircase rising into a solid slab.
    */
-  update(plan: PlanModel, showCeilings: boolean, holes: readonly FloorVoid[] = []): void {
+  update(
+    plan: PlanModel,
+    showCeilings: boolean,
+    holes: readonly FloorVoid[] = [],
+    exterior?: Exterior,
+  ): void {
+    if (exterior) this.exterior = exterior;
+
     const signature = `${structuralSignature(plan)}|${voidSignature(holes)}`;
     if (signature !== this.builtSignature) {
       this.holes = holes;
@@ -573,8 +579,8 @@ export class Building {
       const sides = facing.get(wallId) ?? {};
       const wall = entry.segment.wall;
 
-      this.paintWallFace(entry.faceA, wall.faces.a, sides.a, plan);
-      this.paintWallFace(entry.faceB, wall.faces.b, sides.b, plan);
+      this.paintWallFace(entry.faceA, wall.faces.a, sides.a, plan, wallId);
+      this.paintWallFace(entry.faceB, wall.faces.b, sides.b, plan, wallId);
 
       // The top of a wall and the reveals inside its openings take the trim
       // colour rather than either room's paint, matching how a real reveal is
@@ -603,6 +609,7 @@ export class Building {
     override: WallFaceSpec | undefined,
     region: Region | undefined,
     plan: PlanModel,
+    wallId: string,
   ): void {
     if (override) {
       this.materials.applyWallSpec(material, override);
@@ -612,10 +619,17 @@ export class Building {
       this.materials.applyWallSpec(material, resolveRoomSpec(plan, region.key).wall);
       return;
     }
-    this.materials.applyWallSpec(material, {
-      color: `#${this.exteriorMaterial.color.getHexString()}`,
-      roughness: 0.95,
-    });
+    /*
+     * An outside face with no room behind it is CLAD, not painted. Which is the
+     * whole difference between a model of the inside of a house and a model of
+     * a house: from the orbit view, the outside is most of what anybody sees.
+     */
+    const exception = this.exterior.overrides[wallId];
+    this.materials.applyCladding(
+      material,
+      exception?.cladding ?? this.exterior.cladding,
+      exception?.colour ?? this.exterior.claddingColour,
+    );
   }
 
   /** Applies selection and hover tinting via material emissive. */
@@ -768,8 +782,6 @@ export class Building {
     for (const handle of this.handles.values()) handle.geometry.dispose();
     this.handles.clear();
 
-    this.site.geometry.dispose();
-    (this.site.material as THREE.Material).dispose();
     this.grid.geometry.dispose();
     (this.grid.material as THREE.Material).dispose();
 

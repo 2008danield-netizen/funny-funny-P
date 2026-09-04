@@ -13,6 +13,8 @@ import { Viewport } from './Viewport';
 import { Toolbar } from './Toolbar';
 import { PlanPanel } from './panels/PlanPanel';
 import { StoreyPanel } from './panels/StoreyPanel';
+import { RoofPanel } from './panels/RoofPanel';
+import { SitePanel } from './panels/SitePanel';
 import { CataloguePanel } from './panels/CataloguePanel';
 import { AdvisorPanel } from './panels/AdvisorPanel';
 import { IssuesPanel } from './panels/IssuesPanel';
@@ -136,6 +138,8 @@ export function App() {
             <IssuesPanel />
             <ShoppingListPanel />
             <StoreyPanel />
+            <RoofPanel />
+            <SitePanel />
             <PlanPanel />
             <LightingPanel />
             <ViewPanel

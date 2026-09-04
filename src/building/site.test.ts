@@ -41,6 +41,12 @@ function siteWith(changes: Partial<Site>): Site {
 }
 
 describe('the ground surface', () => {
+  it('puts the ground a foot below the floor by default', () => {
+    // A house sits up on its foundation; ground at exactly floor level is both
+    // wrong and, on screen, a flickering torn edge round the whole building.
+    expect(groundHeightAt(defaultSite(), { x: 0, z: 0 })).toBeCloseTo(-0.3, 9);
+  });
+
   it('is the datum everywhere when it is flat', () => {
     const site = siteWith({ terrain: { ...defaultSite().terrain, datum: -0.3 } });
     expect(groundHeightAt(site, { x: 0, z: 0 })).toBeCloseTo(-0.3, 9);
@@ -163,11 +169,20 @@ describe('the plot', () => {
 describe('earthworks', () => {
   it('is nothing at all on flat ground at the pad level', () => {
     const level = levelWith(10, 8);
-    const result = earthworks(defaultSite(), level);
+    const site = siteWith({ terrain: { ...defaultSite().terrain, datum: 0 } });
+    const result = earthworks(site, level);
 
     expect(result.cut).toBeCloseTo(0, 6);
     expect(result.fill).toBeCloseTo(0, 6);
     expect(result.area).toBeCloseTo(80, 0);
+  });
+
+  it('is all fill on the default site, which sits a foot above grade', () => {
+    const level = levelWith(10, 8);
+    const result = earthworks(defaultSite(), level);
+
+    expect(result.cut).toBeCloseTo(0, 6);
+    expect(result.fill).toBeCloseTo(80 * 0.3, 0);
   });
 
   it('cuts the high side and fills the low one, in the right proportions', () => {

@@ -19,8 +19,9 @@ import * as THREE from 'three';
 import type { SurfaceMaps } from './generators';
 import { generateConcrete } from './generators';
 import { getFloorPreset } from './presets';
+import { getCladdingPreset } from './cladding';
 import { createCanvas, heightToNormalMap } from './textureUtils';
-import type { FloorSpec, WallFaceSpec } from '@/state/types';
+import type { Cladding, FloorSpec, WallFaceSpec } from '@/state/types';
 
 /** Resolution of generated maps. 1024 resolves plank grain without a long stall. */
 const TEXTURE_SIZE = 1024;
@@ -56,6 +57,9 @@ export class MaterialLibrary {
 
   /** The shared fine-plaster surface applied to every wall. */
   private plaster: SurfaceCanvases | null = null;
+
+  /** Generated cladding surfaces, keyed by finish. */
+  private claddingCache = new Map<string, SurfaceCanvases>();
 
   /** Every texture handed out, so it can be released on teardown. */
   private textures = new Set<THREE.Texture>();
@@ -193,6 +197,20 @@ export class MaterialLibrary {
    * derived from the wall's dimensions.
    */
   applyWallSpec(material: THREE.MeshStandardMaterial, spec: WallFaceSpec): void {
+    // A face that was showing cladding and is now painted has to give its
+    // cladding textures back and take plaster again — otherwise a wall that
+    // stops being an outside wall keeps its brick, tinted with the paint.
+    if (material.userData.claddingId) {
+      this.releaseFloorTextures(material);
+      const plaster = this.getPlaster();
+      material.map = null;
+      material.roughnessMap = this.makeTexture(plaster.roughness, THREE.NoColorSpace);
+      material.normalMap = this.makeTexture(plaster.normal, THREE.NoColorSpace);
+      material.normalScale.set(0.18, 0.18);
+      material.userData.claddingId = undefined;
+      material.needsUpdate = true;
+    }
+
     material.color.set(spec.color);
     material.roughness = spec.roughness;
 
@@ -200,6 +218,49 @@ export class MaterialLibrary {
     for (const texture of [material.roughnessMap, material.normalMap]) {
       if (texture) texture.repeat.set(repeat, repeat);
     }
+  }
+
+  /**
+   * The material for one exterior finish.
+   *
+   * Cladding textures are drawn in near-white and tinted by the colour the user
+   * picked, exactly like the plaster on an interior wall, so one generated
+   * surface serves every paint. UVs on wall geometry are in metres, so the
+   * repeat is a pure function of the preset's own tile size — which is what
+   * keeps a brick the size of a brick on a 2 m stub and a 15 m elevation alike.
+   */
+  createCladdingMaterial(): THREE.MeshStandardMaterial {
+    return new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0 });
+  }
+
+  /** Binds a cladding finish and its colour to a material, in place. */
+  applyCladding(
+    material: THREE.MeshStandardMaterial,
+    cladding: Cladding,
+    colour: string,
+  ): void {
+    if (material.userData.claddingId !== cladding) {
+      this.releaseFloorTextures(material);
+
+      const preset = getCladdingPreset(cladding);
+      const cached = this.claddingCache.get(cladding) ?? bakeSurface(preset.build(TEXTURE_SIZE));
+      this.claddingCache.set(cladding, cached);
+
+      material.map = this.makeTexture(cached.albedo, THREE.SRGBColorSpace);
+      material.roughnessMap = this.makeTexture(cached.roughness, THREE.NoColorSpace);
+      material.normalMap = this.makeTexture(cached.normal, THREE.NoColorSpace);
+      material.userData.claddingId = cladding;
+      material.userData.tileMetres = cached.tileMetres;
+      material.needsUpdate = true;
+    }
+
+    const repeat = 1 / (material.userData.tileMetres as number);
+    for (const texture of [material.map, material.roughnessMap, material.normalMap]) {
+      if (texture) texture.repeat.set(repeat, repeat);
+    }
+
+    material.color.set(colour);
+    material.normalScale.set(1, 1);
   }
 
   /** A plain matte material, used for the ceiling and wall exteriors. */
