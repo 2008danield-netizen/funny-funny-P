@@ -100,6 +100,17 @@ describe('the footprint a roof sits on', () => {
     expect(footprint.wallIds.some((ids) => ids.length === 2)).toBe(true);
   });
 
+  it('treats a loop of walls drawn inside another as a room, not a building', () => {
+    // The wall graph cannot tell the two apart — they are simply two components
+    // that do not touch — so an internal room would otherwise be clad on its
+    // outside and given a little roof of its own inside the house.
+    const doc = box(12, 8);
+    addRectangle(doc.levels[0]!.plan, { x: 0, z: 0 }, 4, 3);
+    normalizePlan(doc.levels[0]!.plan);
+
+    expect(footprintsOf(doc.levels[0]!)).toHaveLength(1);
+  });
+
   it('straightens out two rectangles drawn overlapping', () => {
     // How most people draw an L: two rectangles sharing part of a side. The
     // traced boundary walks out along the shared line and straight back down

@@ -419,3 +419,210 @@ export function generateMarble(size: number, options: MarbleOptions): SurfaceMap
 
   return { albedo, roughness, height, normalStrength: 0.7, tileMetres: options.tileMetres };
 }
+
+/* ──────────────────────────── Siding ───────────────────────────── */
+
+export interface SidingOptions {
+  /** 'horizontal' for lap siding, 'vertical' for board and batten. */
+  orientation: 'horizontal' | 'vertical';
+  /** Face width of one board, in metres. */
+  boardWidth: number;
+  /** Width of the batten covering each joint, in metres. Zero for lap siding. */
+  battenWidth: number;
+  /** How deep the shadow at each joint reads, 0-1. */
+  reveal: number;
+  /** 0-1 visible grain. Painted fibre cement is near zero, cedar much higher. */
+  grain: number;
+  baseRoughness: number;
+  seed: number;
+  tileMetres: number;
+}
+
+/**
+ * Board cladding: lap siding, or board and batten.
+ *
+ * Both are the same object seen two ways — a run of boards with a shadow line
+ * at every joint — so one generator does both, turned ninety degrees. What
+ * makes cladding read as cladding at a distance is not the grain, it is that
+ * shadow line: it is the only thing that survives to a hundred pixels, and it
+ * is what tells the eye the wall is made of parts.
+ *
+ * Drawn in near-white and tinted by the material's own colour, so one texture
+ * serves every paint the user picks.
+ */
+export function generateSiding(size: number, options: SidingOptions): SurfaceMaps {
+  const albedo = new ImageData(size, size);
+  const roughness = new ImageData(size, size);
+  const noise = new ValueNoise2D(NOISE_PERIOD, options.seed);
+  const random = mulberry32(options.seed ^ 0x5b17);
+
+  const boards = Math.max(1, Math.round(options.tileMetres / options.boardWidth));
+  const battenFraction = Math.min(0.6, options.battenWidth / options.boardWidth);
+
+  // A little tone per board, so a wall is not one flat sheet of colour.
+  const boardTone: number[] = [];
+  for (let i = 0; i < boards; i++) boardTone.push(random());
+
+  /** Where in the run of boards a texel falls, and how it should be shaded. */
+  const shade = (across: number, along: number) => {
+    const cell = across * boards;
+    const index = Math.floor(cell) % boards;
+    const withinBoard = cell - Math.floor(cell);
+
+    // The joint: dark at the top of a lap board, dark at both edges of a batten
+    // run. `reveal` decides how deep it goes.
+    const edge = Math.min(withinBoard, 1 - withinBoard);
+    const jointDepth =
+      options.battenWidth > 0
+        ? withinBoard < battenFraction
+          ? 0
+          : Math.max(0, 1 - edge / 0.08)
+        : Math.max(0, 1 - withinBoard / 0.12);
+
+    const grain = fbm(noise, along * 9, across * boards * 1.4, 3, NOISE_PERIOD);
+    const tone = 0.94 + (boardTone[index]! - 0.5) * 0.07 + (grain - 0.5) * options.grain * 0.35;
+
+    return {
+      /** 0-1 brightness, before the material tint. */
+      value: Math.max(0, tone - jointDepth * options.reveal * 0.75),
+      jointDepth,
+      /** Where the batten stands proud, if there is one. */
+      proud: options.battenWidth > 0 && withinBoard < battenFraction ? 1 : 0,
+      grain,
+    };
+  };
+
+  for (let y = 0; y < size; y++) {
+    const v = y / size;
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      const index = (y * size + x) * 4;
+
+      const across = options.orientation === 'horizontal' ? v : u;
+      const along = options.orientation === 'horizontal' ? u : v;
+      const sample = shade(across, along);
+
+      const level = sample.value * 255;
+      setPixel(albedo, index, level, level, level);
+      setGrey(
+        roughness,
+        index,
+        (options.baseRoughness + sample.jointDepth * 0.08 + (sample.grain - 0.5) * 0.05) * 255,
+      );
+    }
+  }
+
+  const height = renderHeightField(size, (u, v) => {
+    const across = options.orientation === 'horizontal' ? v : u;
+    const along = options.orientation === 'horizontal' ? u : v;
+    const sample = shade(across, along);
+    return 0.45 + sample.proud * 0.35 - sample.jointDepth * 0.4 + (sample.grain - 0.5) * 0.1;
+  });
+
+  return { albedo, roughness, height, normalStrength: 2.2, tileMetres: options.tileMetres };
+}
+
+/* ──────────────────────────── Masonry ──────────────────────────── */
+
+export interface MasonryOptions {
+  /** Face size of one unit, in metres. A US modular brick is 0.194 x 0.057. */
+  unitWidth: number;
+  unitHeight: number;
+  /** Mortar joint, in metres. Around 10 mm for brick. */
+  jointWidth: number;
+  /** How far each course shifts along: 0.5 is a running bond. */
+  stagger: number;
+  /** 0-1 tonal spread between units. Stone is far more varied than brick. */
+  variation: number;
+  /** 0-1 how ragged the unit edges are. Zero for brick, high for rubble stone. */
+  irregularity: number;
+  baseRoughness: number;
+  seed: number;
+  tileMetres: number;
+}
+
+/**
+ * Brick, block, stone or shingle: units in courses with a joint between them.
+ *
+ * The stagger is what makes it masonry rather than a grid — every course
+ * shifted along by half a unit is the running bond nearly every brick wall in
+ * the world is laid in. Raising `irregularity` wanders the joint lines, which
+ * is the difference between brick and rubble stone, and works for shingles too
+ * since they are also small units in staggered courses.
+ *
+ * Near-white and tinted by the material colour, like the siding above.
+ */
+export function generateMasonry(size: number, options: MasonryOptions): SurfaceMaps {
+  const albedo = new ImageData(size, size);
+  const roughness = new ImageData(size, size);
+  const wobble = new ValueNoise2D(NOISE_PERIOD, options.seed);
+  const grit = new ValueNoise2D(NOISE_PERIOD, options.seed ^ 0x77c1);
+  const random = mulberry32(options.seed ^ 0x2ab3);
+
+  const courses = Math.max(1, Math.round(options.tileMetres / options.unitHeight));
+  const perCourse = Math.max(1, Math.round(options.tileMetres / options.unitWidth));
+  const jointV = options.jointWidth / options.unitHeight;
+  const jointU = options.jointWidth / options.unitWidth;
+
+  const tones: number[] = [];
+  for (let i = 0; i < courses * perCourse; i++) tones.push(random());
+
+  const sample = (u: number, v: number) => {
+    // Wandering the sample point is what turns a grid into rubble.
+    const drift = options.irregularity * 0.06;
+    const du = u + (fbm(wobble, u * 7, v * 7, 3, NOISE_PERIOD) - 0.5) * drift;
+    const dv = v + (fbm(wobble, u * 7 + 31, v * 7 + 17, 3, NOISE_PERIOD) - 0.5) * drift;
+
+    const courseFloat = dv * courses;
+    const course = Math.floor(courseFloat);
+    const withinCourse = courseFloat - course;
+
+    // Every other course shifted along: the running bond.
+    const shifted = du * perCourse + course * options.stagger;
+    const unit = Math.floor(shifted);
+    const withinUnit = shifted - unit;
+
+    const inJoint = withinCourse < jointV || withinUnit < jointU;
+    const toneIndex =
+      (((course % courses) + courses) % courses) * perCourse +
+      (((unit % perCourse) + perCourse) % perCourse);
+    const tone = tones[toneIndex] ?? 0.5;
+
+    return { inJoint, tone, withinCourse, withinUnit };
+  };
+
+  for (let y = 0; y < size; y++) {
+    const v = y / size;
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      const index = (y * size + x) * 4;
+
+      const face = sample(u, v);
+      const speckle = fbm(grit, u * 90, v * 90, 2, NOISE_PERIOD);
+
+      // Mortar is lighter and much rougher than the units it beds.
+      const level = face.inJoint
+        ? 0.97 + (speckle - 0.5) * 0.06
+        : 0.86 + (face.tone - 0.5) * options.variation * 0.5 + (speckle - 0.5) * 0.05;
+
+      setPixel(albedo, index, level * 255, level * 255, level * 255);
+      setGrey(
+        roughness,
+        index,
+        (options.baseRoughness + (face.inJoint ? 0.06 : 0) + (speckle - 0.5) * 0.06) * 255,
+      );
+    }
+  }
+
+  const height = renderHeightField(size, (u, v) => {
+    const face = sample(u, v);
+    const speckle = fbm(grit, u * 90, v * 90, 2, NOISE_PERIOD);
+    // The joint is recessed; the face of each unit stands proud and is itself
+    // slightly uneven, which is what catches raking light on a real wall.
+    return face.inJoint
+      ? 0.25 + (speckle - 0.5) * 0.1
+      : 0.72 + (face.tone - 0.5) * options.irregularity * 0.35 + (speckle - 0.5) * 0.12;
+  });
+
+  return { albedo, roughness, height, normalStrength: 2.6, tileMetres: options.tileMetres };
+}

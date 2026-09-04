@@ -80,7 +80,36 @@ export function footprintsOf(level: Level): Footprint[] {
     });
   }
 
-  return footprints;
+  /*
+   * A loop of walls drawn entirely inside another one is a ROOM, not a second
+   * building — the graph cannot tell the difference, because to it they are
+   * simply two components that do not touch. Left in, an internal room would be
+   * clad on its outside and given a roof of its own inside the house.
+   */
+  return footprints.filter(
+    (candidate, index) =>
+      !footprints.some(
+        (other, otherIndex) => otherIndex !== index && contains(other.outline, candidate.outline),
+      ),
+  );
+}
+
+/** Whether every corner of one outline falls inside another. */
+function contains(outer: readonly Point2[], inner: readonly Point2[]): boolean {
+  if (outer.length < 3 || inner.length < 3) return false;
+  return inner.every((point) => pointInPolygon(point, outer));
+}
+
+function pointInPolygon(point: Point2, polygon: readonly Point2[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i]!;
+    const b = polygon[j]!;
+    if (a.z > point.z === b.z > point.z) continue;
+    const crossing = ((b.x - a.x) * (point.z - a.z)) / (b.z - a.z) + a.x;
+    if (point.x < crossing) inside = !inside;
+  }
+  return inside;
 }
 
 /**
