@@ -38,6 +38,8 @@ const TOOL_KEYS: Record<string, EditTool> = {
   d: 'door',
   n: 'window',
   f: 'furnish',
+  // T for sTair: S is Select and W is Wall.
+  t: 'stair',
 };
 
 /** Input types that swallow keystrokes as text and own their own undo stack. */

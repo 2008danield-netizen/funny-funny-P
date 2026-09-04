@@ -20,15 +20,17 @@ import {
   itemFootprint,
 } from '@/physics/colliders';
 import { obbCorners, snapToWall, solvePosition, type Obb } from '@/physics/collision';
+import { stairColliders } from '@/building/stairs';
 import { findRegions, pointInPolygon, type Region } from '@/scene/planGraph';
 import { getCatalogEntry, isKnownCatalogId } from '@/furniture/catalog';
 import { violatesRequiredClearance } from '@/clearance/analyze';
-import { FURNITURE_LIMITS, type DesignDocument, type FurnitureItem, type Point2 } from './types';
+import { FURNITURE_LIMITS, type DesignDocument,
+  type Level, type FurnitureItem, type Point2 } from './types';
 
 /* ---------------------------------- IDs -------------------------------- */
 
-export function newFurnitureId(doc: DesignDocument): string {
-  const taken = new Set(doc.furniture.map((item) => item.id));
+export function newFurnitureId(level: Level): string {
+  const taken = new Set(level.furniture.map((item) => item.id));
   let n = taken.size + 1;
   while (taken.has(`f${n}`)) n += 1;
   return `f${n}`;
@@ -56,6 +58,7 @@ function insideAnyRoom(regions: readonly Region[], point: Point2): boolean {
  */
 function validityTest(
   doc: DesignDocument,
+  level: Level,
   itemId: string,
   regions: readonly Region[],
   box: Obb,
@@ -63,7 +66,7 @@ function validityTest(
   return (center) => {
     if (!insideAnyRoom(regions, center)) return false;
     if (!doc.clearance.strict) return true;
-    return !violatesRequiredClearance(doc, itemId, { ...box, center });
+    return !violatesRequiredClearance(level, itemId, { ...box, center });
   };
 }
 
@@ -105,6 +108,7 @@ export interface PlaceOptions {
 
 export function placeFurniture(
   doc: DesignDocument,
+  level: Level,
   catalogId: string,
   at: Point2,
   options: PlaceOptions = {},
@@ -112,7 +116,7 @@ export function placeFurniture(
   if (!isKnownCatalogId(catalogId)) return { id: null, reason: 'Unknown item' };
 
   const entry = getCatalogEntry(catalogId);
-  const regions = findRegions(doc.plan);
+  const regions = findRegions(level.plan);
 
   if (!insideAnyRoom(regions, at)) {
     return { id: null, reason: 'Drop it inside a room' };
@@ -125,7 +129,7 @@ export function placeFurniture(
     rotation: options.rotation ?? 0,
   };
 
-  const colliders = collidersForNewItem(doc.plan, doc.furniture, catalogId);
+  const colliders = collidersForNewItem(level.plan, level.furniture, catalogId, stairColliders(doc, level.id));
 
   // Things that live against walls find one and turn to face the room.
   if ((options.snapWalls ?? true) && entry.placement === 'wall') {
@@ -143,7 +147,7 @@ export function placeFurniture(
     padding: FURNITURE_LIMITS.contactGap,
     iterations: FURNITURE_LIMITS.solverIterations,
     // A brand-new piece has no ID yet, so nothing can be excluded as its own.
-    isPositionValid: validityTest(doc, '', regions, box),
+    isPositionValid: validityTest(doc, level, '', regions, box),
   });
 
   if (!solved.resolved) {
@@ -155,8 +159,8 @@ export function placeFurniture(
     };
   }
 
-  const id = newFurnitureId(doc);
-  doc.furniture.push({
+  const id = newFurnitureId(level);
+  level.furniture.push({
     id,
     catalogId,
     x: solved.center.x,
@@ -183,17 +187,18 @@ export interface MoveResult {
  */
 export function moveFurniture(
   doc: DesignDocument,
+  level: Level,
   id: string,
   to: Point2,
   options: { snapWalls?: boolean } = {},
 ): MoveResult {
-  const item = doc.furniture.find((candidate) => candidate.id === id);
+  const item = level.furniture.find((candidate) => candidate.id === id);
   if (!item) return { moved: false, blockedBy: [] };
 
   const entry = getCatalogEntry(item.catalogId);
-  const regions = findRegions(doc.plan);
+  const regions = findRegions(level.plan);
   const dimensions = itemDimensions(item);
-  const colliders = collidersFor(doc.plan, doc.furniture, id);
+  const colliders = collidersFor(level.plan, level.furniture, id, stairColliders(doc, level.id));
 
   let box: Obb = {
     center: { x: to.x, z: to.z },
@@ -216,7 +221,7 @@ export function moveFurniture(
     colliders,
     padding: FURNITURE_LIMITS.contactGap,
     iterations: FURNITURE_LIMITS.solverIterations,
-    isPositionValid: validityTest(doc, id, regions, box),
+    isPositionValid: validityTest(doc, level, id, regions, box),
   });
 
   if (!solved.resolved) {
@@ -239,13 +244,18 @@ export function moveFurniture(
  * angle. Silently accepting it would leave a sofa buried in a wall, which is
  * exactly the guarantee this session exists to make.
  */
-export function rotateFurniture(doc: DesignDocument, id: string, radians: number): boolean {
-  const item = doc.furniture.find((candidate) => candidate.id === id);
+export function rotateFurniture(
+  doc: DesignDocument,
+  level: Level,
+  id: string,
+  radians: number,
+): boolean {
+  const item = level.furniture.find((candidate) => candidate.id === id);
   if (!item) return false;
 
   const dimensions = itemDimensions(item);
-  const regions = findRegions(doc.plan);
-  const colliders = collidersFor(doc.plan, doc.furniture, id);
+  const regions = findRegions(level.plan);
+  const colliders = collidersFor(level.plan, level.furniture, id, stairColliders(doc, level.id));
 
   const box: Obb = {
     center: { x: item.x, z: item.z },
@@ -258,7 +268,7 @@ export function rotateFurniture(doc: DesignDocument, id: string, radians: number
     colliders,
     padding: FURNITURE_LIMITS.contactGap,
     iterations: FURNITURE_LIMITS.solverIterations,
-    isPositionValid: validityTest(doc, id, regions, box),
+    isPositionValid: validityTest(doc, level, id, regions, box),
   });
 
   if (!solved.resolved) return false;
@@ -272,10 +282,11 @@ export function rotateFurniture(doc: DesignDocument, id: string, radians: number
 /** Resizes a resizable piece, keeping it legal. */
 export function resizeFurniture(
   doc: DesignDocument,
+  level: Level,
   id: string,
   size: { width?: number; depth?: number },
 ): boolean {
-  const item = doc.furniture.find((candidate) => candidate.id === id);
+  const item = level.furniture.find((candidate) => candidate.id === id);
   if (!item) return false;
 
   const entry = getCatalogEntry(item.catalogId);
@@ -291,8 +302,8 @@ export function resizeFurniture(
     height: current.height,
   };
 
-  const regions = findRegions(doc.plan);
-  const colliders = collidersFor(doc.plan, doc.furniture, id);
+  const regions = findRegions(level.plan);
+  const colliders = collidersFor(level.plan, level.furniture, id, stairColliders(doc, level.id));
 
   const solved = solvePosition(
     {
@@ -317,8 +328,8 @@ export function resizeFurniture(
   return true;
 }
 
-export function removeFurniture(doc: DesignDocument, id: string): void {
-  doc.furniture = doc.furniture.filter((item) => item.id !== id);
+export function removeFurniture(level: Level, id: string): void {
+  level.furniture = level.furniture.filter((item) => item.id !== id);
 }
 
 /**
@@ -328,14 +339,18 @@ export function removeFurniture(doc: DesignDocument, id: string): void {
  * is often occupied — duplicating a dining chair is usually done to build a row
  * of them, and having the copy silently fail to appear would be baffling.
  */
-export function duplicateFurniture(doc: DesignDocument, id: string): string | null {
-  const item = doc.furniture.find((candidate) => candidate.id === id);
+export function duplicateFurniture(
+  doc: DesignDocument,
+  level: Level,
+  id: string,
+): string | null {
+  const item = level.furniture.find((candidate) => candidate.id === id);
   if (!item) return null;
 
   const dimensions = itemDimensions(item);
   const step = Math.max(dimensions.width, dimensions.depth) * 0.75 + 0.15;
-  const regions = findRegions(doc.plan);
-  const colliders = collidersFor(doc.plan, doc.furniture, null);
+  const regions = findRegions(level.plan);
+  const colliders = collidersFor(level.plan, level.furniture, null, stairColliders(doc, level.id));
 
   for (let i = 0; i < 8; i++) {
     const angle = (i / 8) * Math.PI * 2 + item.rotation;
@@ -355,8 +370,8 @@ export function duplicateFurniture(doc: DesignDocument, id: string): string | nu
 
     if (!solved.resolved) continue;
 
-    const newId = newFurnitureId(doc);
-    doc.furniture.push({
+    const newId = newFurnitureId(level);
+    level.furniture.push({
       ...structuredClone(item),
       id: newId,
       x: solved.center.x,
@@ -377,13 +392,13 @@ export function duplicateFurniture(doc: DesignDocument, id: string): string | nu
  * the furniture is pushed clear afterwards. Anything that cannot be rescued is
  * reported so the UI can say so instead of silently deleting the user's work.
  */
-export function reseatFurniture(doc: DesignDocument): { stranded: string[] } {
-  const regions = findRegions(doc.plan);
+export function reseatFurniture(doc: DesignDocument, level: Level): { stranded: string[] } {
+  const regions = findRegions(level.plan);
   const stranded: string[] = [];
 
-  for (const item of doc.furniture) {
+  for (const item of level.furniture) {
     const dimensions = itemDimensions(item);
-    const colliders = collidersFor(doc.plan, doc.furniture, item.id);
+    const colliders = collidersFor(level.plan, level.furniture, item.id, stairColliders(doc, level.id));
 
     const solved = solvePosition(
       {
@@ -414,12 +429,12 @@ export function reseatFurniture(doc: DesignDocument): { stranded: string[] } {
 /* --------------------------------- Queries ------------------------------ */
 
 /** True when a piece currently overlaps anything it should not. */
-export function isItemColliding(doc: DesignDocument, id: string): boolean {
-  const item = doc.furniture.find((candidate) => candidate.id === id);
+export function isItemColliding(doc: DesignDocument, level: Level, id: string): boolean {
+  const item = level.furniture.find((candidate) => candidate.id === id);
   if (!item) return false;
 
-  const regions = findRegions(doc.plan);
-  const colliders = collidersFor(doc.plan, doc.furniture, id);
+  const regions = findRegions(level.plan);
+  const colliders = collidersFor(level.plan, level.furniture, id, stairColliders(doc, level.id));
   const footprint = itemFootprint(item);
 
   const solved = solvePosition(footprint, {

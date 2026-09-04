@@ -20,6 +20,7 @@ import {
   useSelectedWall,
   wallLength,
 } from '@/bridge/useEditor';
+import { activeLevel } from '@/state/levels';
 import { useDesignEdit, useDesignSlice } from '@/bridge/useDesign';
 import { getFloorPreset, WALL_FINISHES, WALL_PAINTS, nearestFinishId } from '@/scene/materials/presets';
 import {
@@ -70,7 +71,7 @@ export function InspectorPanel({ onSplitWall, onRotate }: InspectorPanelProps) {
 
 function WallInspector({ onSplitWall }: Pick<InspectorPanelProps, 'onSplitWall'>) {
   const wall = useSelectedWall();
-  const plan = useDesignSlice((doc) => doc.plan);
+  const plan = useDesignSlice((doc) => activeLevel(doc).plan);
   const units = useDesignSlice((doc) => doc.units);
   const edit = useDesignEdit();
 
@@ -82,7 +83,7 @@ function WallInspector({ onSplitWall }: Pick<InspectorPanelProps, 'onSplitWall'>
   const paintFace = (side: WallSide, color: string) => {
     edit(
       (draft) => {
-        const target = draft.plan.walls.find((candidate) => candidate.id === wallId);
+        const target = activeLevel(draft).plan.walls.find((candidate) => candidate.id === wallId);
         if (!target) return;
         const existing = target.faces[side];
         target.faces[side] = {
@@ -96,7 +97,7 @@ function WallInspector({ onSplitWall }: Pick<InspectorPanelProps, 'onSplitWall'>
 
   const clearFace = (side: WallSide) => {
     edit((draft) => {
-      const target = draft.plan.walls.find((candidate) => candidate.id === wallId);
+      const target = activeLevel(draft).plan.walls.find((candidate) => candidate.id === wallId);
       if (target) delete target.faces[side];
     });
   };
@@ -111,7 +112,7 @@ function WallInspector({ onSplitWall }: Pick<InspectorPanelProps, 'onSplitWall'>
         max={PLAN_LIMITS.wallHeight.max}
         onChange={(metres) =>
           edit((draft) => {
-            const target = draft.plan.walls.find((candidate) => candidate.id === wallId);
+            const target = activeLevel(draft).plan.walls.find((candidate) => candidate.id === wallId);
             if (target) target.height = metres;
           })
         }
@@ -125,7 +126,7 @@ function WallInspector({ onSplitWall }: Pick<InspectorPanelProps, 'onSplitWall'>
         max={PLAN_LIMITS.wallThickness.max}
         onChange={(metres) =>
           edit((draft) => {
-            const target = draft.plan.walls.find((candidate) => candidate.id === wallId);
+            const target = activeLevel(draft).plan.walls.find((candidate) => candidate.id === wallId);
             if (target) target.thickness = metres;
           })
         }
@@ -170,7 +171,7 @@ function WallInspector({ onSplitWall }: Pick<InspectorPanelProps, 'onSplitWall'>
           type="button"
           className="btn btn--danger"
           onClick={() => {
-            edit((draft) => deleteWall(draft.plan, wallId));
+            edit((draft) => deleteWall(activeLevel(draft).plan, wallId));
             editorStore.clearSelection();
           }}
         >
@@ -190,7 +191,7 @@ function WallInspector({ onSplitWall }: Pick<InspectorPanelProps, 'onSplitWall'>
 
 function FurnitureInspector({ onRotate }: Pick<InspectorPanelProps, 'onRotate'>) {
   const { selection } = useEditor();
-  const furniture = useDesignSlice((doc) => doc.furniture);
+  const furniture = useDesignSlice((doc) => activeLevel(doc).furniture);
   const units = useDesignSlice((doc) => doc.units);
   const edit = useDesignEdit();
 
@@ -238,7 +239,7 @@ function FurnitureInspector({ onRotate }: Pick<InspectorPanelProps, 'onRotate'>)
                 className={`colorways__item ${active ? 'colorways__item--active' : ''}`}
                 onClick={() =>
                   edit((draft) => {
-                    const target = draft.furniture.find((candidate) => candidate.id === itemId);
+                    const target = activeLevel(draft).furniture.find((candidate) => candidate.id === itemId);
                     if (target) target.colorwayId = colorway.id;
                   })
                 }
@@ -279,7 +280,7 @@ function FurnitureInspector({ onRotate }: Pick<InspectorPanelProps, 'onRotate'>)
           onChange={(value) =>
             edit(
               (draft) => {
-                resizeFurniture(draft, itemId, { width: value });
+                resizeFurniture(draft, activeLevel(draft), itemId, { width: value });
               },
               { history: 'coalesce', coalesceKey: `furniture.${itemId}.width` },
             )
@@ -295,7 +296,7 @@ function FurnitureInspector({ onRotate }: Pick<InspectorPanelProps, 'onRotate'>)
           onClick={() => {
             let created: string | null = null;
             edit((draft) => {
-              created = duplicateFurniture(draft, itemId);
+              created = duplicateFurniture(draft, activeLevel(draft), itemId);
             });
             if (created) editorStore.select('furniture', created);
           }}
@@ -306,7 +307,7 @@ function FurnitureInspector({ onRotate }: Pick<InspectorPanelProps, 'onRotate'>)
           type="button"
           className="btn btn--danger"
           onClick={() => {
-            edit((draft) => removeFurniture(draft, itemId));
+            edit((draft) => removeFurniture(activeLevel(draft), itemId));
             editorStore.clearSelection();
           }}
         >
@@ -327,7 +328,7 @@ function FurnitureInspector({ onRotate }: Pick<InspectorPanelProps, 'onRotate'>)
 
 function OpeningInspector() {
   const selection = useSelectedOpening();
-  const plan = useDesignSlice((doc) => doc.plan);
+  const plan = useDesignSlice((doc) => activeLevel(doc).plan);
   const units = useDesignSlice((doc) => doc.units);
   const edit = useDesignEdit();
 
@@ -343,7 +344,7 @@ function OpeningInspector() {
 
   const patch = (update: Parameters<typeof updateOpening>[2], coalesceKey?: string) => {
     edit(
-      (draft) => updateOpening(draft.plan, openingId, update),
+      (draft) => updateOpening(activeLevel(draft).plan, openingId, update),
       coalesceKey ? { history: 'coalesce', coalesceKey } : {},
     );
   };
@@ -446,7 +447,7 @@ function OpeningInspector() {
         type="button"
         className="btn btn--danger"
         onClick={() => {
-          edit((draft) => removeOpening(draft.plan, openingId));
+          edit((draft) => removeOpening(activeLevel(draft).plan, openingId));
           editorStore.clearSelection();
         }}
       >
@@ -528,7 +529,7 @@ function OpeningGlyph({ preset }: { preset: OpeningPreset }) {
 
 function RoomInspector() {
   const region = useSelectedRegion();
-  const plan = useDesignSlice((doc) => doc.plan);
+  const plan = useDesignSlice((doc) => activeLevel(doc).plan);
   const units = useDesignSlice((doc) => doc.units);
   const edit = useDesignEdit();
 
@@ -542,7 +543,7 @@ function RoomInspector() {
     coalesceKey?: string,
   ) => {
     edit(
-      (draft) => setRoomSpec(draft.plan, key, change),
+      (draft) => setRoomSpec(activeLevel(draft).plan, key, change),
       coalesceKey ? { history: 'coalesce', coalesceKey } : {},
     );
   };

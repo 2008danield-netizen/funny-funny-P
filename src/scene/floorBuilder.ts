@@ -25,16 +25,43 @@ import type { Point2 } from '@/state/types';
  * room shape — and lets floorboards run continuously across two rooms sharing
  * the same material instead of restarting at every doorway.
  */
-function buildSurface(polygon: readonly Point2[], facing: 'up' | 'down'): THREE.BufferGeometry {
-  const shape = new THREE.Shape();
-
-  polygon.forEach((point, index) => {
+function buildSurface(
+  polygon: readonly Point2[],
+  facing: 'up' | 'down',
+  holes: ReadonlyArray<readonly Point2[]> = [],
+): THREE.BufferGeometry {
+  const toShapeSpace = (point: Point2) => ({
+    x: point.x,
     // See the note above on why the floor mirrors Z and the ceiling does not.
-    const y = facing === 'up' ? -point.z : point.z;
-    if (index === 0) shape.moveTo(point.x, y);
-    else shape.lineTo(point.x, y);
+    y: facing === 'up' ? -point.z : point.z,
+  });
+
+  const shape = new THREE.Shape();
+  polygon.forEach((point, index) => {
+    const { x, y } = toShapeSpace(point);
+    if (index === 0) shape.moveTo(x, y);
+    else shape.lineTo(x, y);
   });
   shape.closePath();
+
+  /*
+   * Holes are cut with the same Shape-and-holes technique the walls already use
+   * for doors and windows, rather than with a boolean mesh operation. Same
+   * reason as there: CSG on floating-point geometry produces slivers and
+   * degenerate triangles at the seams, and a floor is the surface a user stares
+   * at from directly above.
+   */
+  for (const hole of holes) {
+    if (hole.length < 3) continue;
+    const path = new THREE.Path();
+    hole.forEach((point, index) => {
+      const { x, y } = toShapeSpace(point);
+      if (index === 0) path.moveTo(x, y);
+      else path.lineTo(x, y);
+    });
+    path.closePath();
+    shape.holes.push(path);
+  }
 
   const geometry = new THREE.ShapeGeometry(shape);
 
@@ -45,17 +72,29 @@ function buildSurface(polygon: readonly Point2[], facing: 'up' | 'down'): THREE.
   return geometry;
 }
 
-/** A floor for one room, lying on y = 0. */
-export function buildFloorGeometry(polygon: readonly Point2[]): THREE.BufferGeometry {
-  return buildSurface(polygon, 'up');
+/**
+ * A floor for one room, lying on y = 0, with any openings cut out of it.
+ *
+ * A limitation worth knowing: a hole is cut into whichever room CONTAINS it,
+ * and is not clipped where it straddles a wall between two rooms. Clipping
+ * properly needs polygon boolean operations, and a stairwell in practice sits
+ * inside one space — the hall it rises out of. If that assumption ever stops
+ * holding, this is the place to fix it, not the caller.
+ */
+export function buildFloorGeometry(
+  polygon: readonly Point2[],
+  holes: ReadonlyArray<readonly Point2[]> = [],
+): THREE.BufferGeometry {
+  return buildSurface(polygon, 'up', holes);
 }
 
 /** A ceiling for one room, lifted to the given height. */
 export function buildCeilingGeometry(
   polygon: readonly Point2[],
   height: number,
+  holes: ReadonlyArray<readonly Point2[]> = [],
 ): THREE.BufferGeometry {
-  const geometry = buildSurface(polygon, 'down');
+  const geometry = buildSurface(polygon, 'down', holes);
   geometry.translate(0, height, 0);
   return geometry;
 }

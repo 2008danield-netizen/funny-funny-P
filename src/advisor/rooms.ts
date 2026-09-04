@@ -21,7 +21,7 @@ import { openingCenter, resolveWall, indexVertices, type Region } from '@/scene/
 import { resolveRoomSpec } from '@/state/planOps';
 import { pointInPolygon, type Obb } from '@/physics/collision';
 import type { CirculationReport } from '@/clearance/circulation';
-import type { DesignDocument, FurnitureItem, Opening, Point2, RoomSpec } from '@/state/types';
+import type { DesignDocument, FurnitureItem, Level, Opening, Point2, RoomSpec } from '@/state/types';
 import { roomFrame, roomWalls, type RoomFrame, type RoomWall } from './geometry';
 import type { RoomProgram } from './types';
 
@@ -133,6 +133,8 @@ export interface RoomOpening {
 /** Everything one room is and contains. Built once per report, per room. */
 export interface RoomContext {
   doc: DesignDocument;
+  /** The storey this room is on. Rooms only ever exist on one. */
+  level: Level;
   region: Region;
   spec: RoomSpec;
   walls: RoomWall[];
@@ -213,18 +215,19 @@ export function programLabel(program: RoomProgram): string {
  */
 export function readRooms(
   doc: DesignDocument,
+  level: Level,
   regions: readonly Region[],
   circulationByRoom: ReadonlyMap<string, CirculationReport>,
 ): RoomContext[] {
-  const vertices = indexVertices(doc.plan);
-  const described = doc.furniture.map(describeItem);
+  const vertices = indexVertices(level.plan);
+  const described = level.furniture.map(describeItem);
 
   return regions.map((region) => {
     const items = described.filter((placed) =>
       pointInPolygon({ x: placed.item.x, z: placed.item.z }, region.polygon),
     );
 
-    const walls = roomWalls(doc.plan, region);
+    const walls = roomWalls(level.plan, region);
     const windows: RoomOpening[] = [];
     const doors: RoomOpening[] = [];
 
@@ -246,10 +249,11 @@ export function readRooms(
 
     return {
       doc,
+      level,
       region,
-      spec: resolveRoomSpec(doc.plan, region.key),
+      spec: resolveRoomSpec(level.plan, region.key),
       walls,
-      frame: roomFrame(doc.plan, region),
+      frame: roomFrame(level.plan, region),
       program: inferProgram(items),
       items,
       area: region.area,

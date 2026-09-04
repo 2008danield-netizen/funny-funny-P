@@ -6,19 +6,29 @@
 
 import {
   CLEARANCE_DEFAULTS,
+  LEVEL_LIMITS,
   OPENING_LIMITS,
   PLAN_LIMITS,
   SCHEMA_VERSION,
+  STAIR_LIMITS,
   type DesignDocument,
   type FloorSpec,
+  type FloorVoid,
   type FurnitureItem,
+  type Level,
   type Opening,
   type PlanModel,
+  type Point2,
   type RoomSpec,
+  type Site,
+  type Stair,
+  type StairForm,
+  type StairTurn,
   type Vertex,
   type Wall,
   type WallFaceSpec,
 } from './types';
+import { defaultLevelName } from './levels';
 import { migrateDocument } from './migrate';
 import { addRectangle, normalizePlan } from './planOps';
 import { getCatalogEntry, isKnownCatalogId } from '@/furniture/catalog';
@@ -60,13 +70,33 @@ export function createDefaultPlan(): PlanModel {
   return plan;
 }
 
+/** A storey with nothing drawn on it yet. */
+export function createLevel(id: string, name: string, plan?: PlanModel): Level {
+  return {
+    id,
+    name,
+    wallHeight: 2.6,
+    // A joisted timber floor with its ceiling is about 250 mm. It matters more
+    // than it looks: it is the difference between the ceiling height people
+    // quote and the floor-to-floor rise a staircase actually has to climb.
+    slabThickness: 0.25,
+    plan: plan ?? createDefaultPlan(),
+    furniture: [],
+    voids: [],
+  };
+}
+
 export function createDefaultDocument(): DesignDocument {
   return {
     schemaVersion: SCHEMA_VERSION,
     name: 'Untitled Home',
     updatedAt: new Date().toISOString(),
-    plan: createDefaultPlan(),
-    furniture: [],
+    levels: [createLevel('lv1', 'First Floor')],
+    activeLevelId: 'lv1',
+    stairs: [],
+    roofs: [],
+    site: { northAngle: 0, boundary: [], sewerConnection: null },
+    services: [],
     lighting: {
       presetId: 'daylight',
       intensity: 1,
@@ -78,11 +108,14 @@ export function createDefaultDocument(): DesignDocument {
       strict: false,
       walkwayWidth: CLEARANCE_DEFAULTS.walkway,
     },
-    currency: 'EUR',
+    currency: 'USD',
     // Hidden by default: opaque ceilings block the orbit camera's view in from
     // above, which is how people naturally inspect a floor plan.
     showCeilings: false,
-    units: 'metric',
+    // Feet and inches. The app is built to US codes, which are written in
+    // inches, and a figure that has to be converted before it can be checked
+    // against the limit it failed is a figure nobody checks.
+    units: 'imperial',
   };
 }
 
@@ -363,6 +396,219 @@ export function normalizeAngle(radians: number): number {
   return angle;
 }
 
+
+/* ------------------------------ Levels and stairs --------------------------- */
+
+/**
+ * Validates the storeys, and guarantees there is at least one.
+ *
+ * A building with no levels has nowhere to draw, so a document that arrives
+ * empty or broken gets the starter room rather than a blank screen with no way
+ * back. Level IDs are also forced unique: two storeys sharing an ID makes
+ * `activeLevel` ambiguous and would have the editor writing to one and drawing
+ * the other.
+ */
+export function safeLevels(
+  value: unknown,
+  activeId: unknown,
+): { list: Level[]; activeId: string } {
+  const input = Array.isArray(value) ? value : [];
+  const list: Level[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of input.slice(0, LEVEL_LIMITS.maxLevels)) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const raw = entry as Record<string, unknown>;
+
+    let id = safeString(raw.id, `lv${list.length + 1}`, 40);
+    while (seen.has(id)) id = `${id}_`;
+    seen.add(id);
+
+    list.push({
+      id,
+      name: safeString(raw.name, defaultLevelName(list.length), 60),
+      wallHeight: clamp(
+        raw.wallHeight,
+        LEVEL_LIMITS.wallHeight.min,
+        LEVEL_LIMITS.wallHeight.max,
+        2.6,
+      ),
+      slabThickness: clamp(
+        raw.slabThickness,
+        LEVEL_LIMITS.slabThickness.min,
+        LEVEL_LIMITS.slabThickness.max,
+        0.25,
+      ),
+      plan: safePlan(raw.plan),
+      furniture: safeFurniture(raw.furniture),
+      voids: safeVoids(raw.voids),
+    });
+  }
+
+  if (list.length === 0) list.push(createLevel('lv1', 'First Floor'));
+
+  const wanted = typeof activeId === 'string' ? activeId : '';
+  return {
+    list,
+    activeId: list.some((level) => level.id === wanted) ? wanted : list[0]!.id,
+  };
+}
+
+function safeVoids(value: unknown): FloorVoid[] {
+  if (!Array.isArray(value)) return [];
+  const voids: FloorVoid[] = [];
+
+  for (const entry of value.slice(0, 40)) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const raw = entry as Record<string, unknown>;
+    const polygon = safePolygon(raw.polygon);
+    // Fewer than three corners is not a hole, it is a line.
+    if (polygon.length < 3) continue;
+    voids.push({
+      id: safeString(raw.id, `void${voids.length + 1}`, 40),
+      name: safeString(raw.name, 'Opening', 60),
+      polygon,
+    });
+  }
+
+  return voids;
+}
+
+function safePolygon(value: unknown): Point2[] {
+  if (!Array.isArray(value)) return [];
+  const points: Point2[] = [];
+  for (const entry of value.slice(0, 200)) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const raw = entry as Record<string, unknown>;
+    if (typeof raw.x !== 'number' || typeof raw.z !== 'number') continue;
+    if (!Number.isFinite(raw.x) || !Number.isFinite(raw.z)) continue;
+    points.push({
+      x: clamp(raw.x, -PLAN_LIMITS.planExtent, PLAN_LIMITS.planExtent, 0),
+      z: clamp(raw.z, -PLAN_LIMITS.planExtent, PLAN_LIMITS.planExtent, 0),
+    });
+  }
+  return points;
+}
+
+/**
+ * Validates the staircases.
+ *
+ * A stair whose `fromLevelId` names a storey that no longer exists is dropped
+ * rather than repaired: it has no rise to climb and no floor to stand on, and
+ * silently reassigning it to some other level would move somebody's staircase
+ * to a different part of the house without telling them.
+ */
+export function safeStairs(value: unknown, levels: readonly Level[]): Stair[] {
+  if (!Array.isArray(value)) return [];
+  const ids = new Set(levels.map((level) => level.id));
+  const stairs: Stair[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of value.slice(0, 20)) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const raw = entry as Record<string, unknown>;
+
+    const fromLevelId = typeof raw.fromLevelId === 'string' ? raw.fromLevelId : '';
+    if (!ids.has(fromLevelId)) continue;
+
+    const at = raw.at as Record<string, unknown> | undefined;
+    if (!at || typeof at.x !== 'number' || typeof at.z !== 'number') continue;
+
+    let id = safeString(raw.id, `st${stairs.length + 1}`, 40);
+    while (seen.has(id)) id = `${id}_`;
+    seen.add(id);
+
+    stairs.push({
+      id,
+      name: safeString(raw.name, 'Stair', 60),
+      fromLevelId,
+      form: safeStairForm(raw.form),
+      at: {
+        x: clamp(at.x, -PLAN_LIMITS.planExtent, PLAN_LIMITS.planExtent, 0),
+        z: clamp(at.z, -PLAN_LIMITS.planExtent, PLAN_LIMITS.planExtent, 0),
+      },
+      rotation: normalizeAngle(typeof raw.rotation === 'number' ? raw.rotation : 0),
+      width: clamp(raw.width, STAIR_LIMITS.width.min, STAIR_LIMITS.width.max, 0.9144),
+      treadDepth: clamp(
+        raw.treadDepth,
+        STAIR_LIMITS.treadDepth.min,
+        STAIR_LIMITS.treadDepth.max,
+        0.2794,
+      ),
+      riserCount: Math.round(
+        clamp(raw.riserCount, STAIR_LIMITS.riserCount.min, STAIR_LIMITS.riserCount.max, 14),
+      ),
+      nosing: clamp(raw.nosing, STAIR_LIMITS.nosing.min, STAIR_LIMITS.nosing.max, 0.0254),
+      handrail:
+        raw.handrail === 'none' || raw.handrail === 'left' || raw.handrail === 'right'
+          ? raw.handrail
+          : 'both',
+    });
+  }
+
+  return stairs;
+}
+
+function safeStairForm(value: unknown): StairForm {
+  if (typeof value !== 'object' || value === null) return { kind: 'straight' };
+  const raw = value as Record<string, unknown>;
+  const turn: StairTurn = raw.turn === 'left' ? 'left' : 'right';
+
+  switch (raw.kind) {
+    case 'l-shaped':
+      return {
+        kind: 'l-shaped',
+        turn,
+        risersBeforeLanding: Math.round(clamp(raw.risersBeforeLanding, 1, 30, 7)),
+      };
+    case 'u-shaped':
+      return {
+        kind: 'u-shaped',
+        turn,
+        risersBeforeLanding: Math.round(clamp(raw.risersBeforeLanding, 1, 30, 8)),
+      };
+    case 'winder':
+      return {
+        kind: 'winder',
+        turn,
+        risersBeforeWinder: Math.round(clamp(raw.risersBeforeWinder, 1, 30, 6)),
+        winderTreads: Math.round(
+          clamp(raw.winderTreads, STAIR_LIMITS.winderTreads.min, STAIR_LIMITS.winderTreads.max, 3),
+        ),
+        innerRadius: clamp(
+          raw.innerRadius,
+          STAIR_LIMITS.spiralInnerRadius.min,
+          STAIR_LIMITS.spiralInnerRadius.max,
+          0.1,
+        ),
+      };
+    case 'spiral':
+      return {
+        kind: 'spiral',
+        clockwise: raw.clockwise !== false,
+        innerRadius: clamp(
+          raw.innerRadius,
+          STAIR_LIMITS.spiralInnerRadius.min,
+          STAIR_LIMITS.spiralInnerRadius.max,
+          0.15,
+        ),
+      };
+    default:
+      return { kind: 'straight' };
+  }
+}
+
+function safeSite(value: unknown): Site {
+  const base: Site = { northAngle: 0, boundary: [], sewerConnection: null };
+  if (typeof value !== 'object' || value === null) return base;
+  const raw = value as Record<string, unknown>;
+  return {
+    northAngle: normalizeAngle(typeof raw.northAngle === 'number' ? raw.northAngle : 0),
+    boundary: safePolygon(raw.boundary),
+    sewerConnection: null,
+  };
+}
+
 /**
  * Coerces an arbitrary parsed object into a valid DesignDocument.
  *
@@ -379,6 +625,7 @@ export function sanitizeDocument(input: unknown): DesignDocument {
   // room the user built rather than being discarded as unrecognised.
   const raw = migrateDocument(input as Record<string, unknown>);
   const rawLighting = (raw.lighting ?? {}) as Record<string, unknown>;
+  const levels = safeLevels(raw.levels, raw.activeLevelId);
 
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -386,8 +633,12 @@ export function sanitizeDocument(input: unknown): DesignDocument {
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : base.updatedAt,
     units: raw.units === 'imperial' ? 'imperial' : 'metric',
     showCeilings: raw.showCeilings === true,
-    plan: safePlan(raw.plan),
-    furniture: safeFurniture(raw.furniture),
+    levels: levels.list,
+    activeLevelId: levels.activeId,
+    stairs: safeStairs(raw.stairs, levels.list),
+    roofs: [],
+    site: safeSite(raw.site),
+    services: [],
     clearance: safeClearance(raw.clearance),
     currency: safeCurrency(raw.currency),
     lighting: {

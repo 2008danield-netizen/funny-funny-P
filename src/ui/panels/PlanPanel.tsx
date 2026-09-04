@@ -9,6 +9,7 @@
 
 import { Panel } from '../components/Panel';
 import { NumberField } from '../components/NumberField';
+import { activeLevel } from '@/state/levels';
 import { useDesignEdit, useDesignSlice } from '@/bridge/useDesign';
 import { useEditor, useRegions } from '@/bridge/useEditor';
 import { editorStore } from '@/state/selection';
@@ -18,7 +19,7 @@ import { PLAN_LIMITS } from '@/state/types';
 import { formatArea, formatLength } from '@/state/units';
 
 export function PlanPanel() {
-  const plan = useDesignSlice((doc) => doc.plan);
+  const plan = useDesignSlice((doc) => activeLevel(doc).plan);
   const units = useDesignSlice((doc) => doc.units);
   const regions = useRegions();
   const { selection } = useEditor();
@@ -83,8 +84,8 @@ export function PlanPanel() {
           edit((draft) => {
             // Placed clear of the existing footprint so the new room does not
             // land on top of what is already there.
-            const offset = planBounds(draft.plan).max.x + 2.5;
-            addRectangle(draft.plan, { x: offset, z: 0 }, 3.6, 3 );
+            const offset = planBounds(activeLevel(draft).plan).max.x + 2.5;
+            addRectangle(activeLevel(draft).plan, { x: offset, z: 0 }, 3.6, 3 );
           })
         }
       >
@@ -105,7 +106,7 @@ export function PlanPanel() {
         max={PLAN_LIMITS.wallHeight.max}
         onChange={(metres) =>
           edit((draft) => {
-            draft.plan.defaultWallHeight = metres;
+            activeLevel(draft).plan.defaultWallHeight = metres;
           })
         }
       />
@@ -117,7 +118,7 @@ export function PlanPanel() {
         max={PLAN_LIMITS.wallThickness.max}
         onChange={(metres) =>
           edit((draft) => {
-            draft.plan.defaultWallThickness = metres;
+            activeLevel(draft).plan.defaultWallThickness = metres;
           })
         }
       />
@@ -131,7 +132,7 @@ export function PlanPanel() {
               // Applying to every wall is the common case after deciding on a
               // ceiling height; per-wall overrides remain available in the
               // inspector for a raked or split-level space.
-              for (const wall of draft.plan.walls) wall.height = draft.plan.defaultWallHeight;
+              for (const wall of activeLevel(draft).plan.walls) wall.height = activeLevel(draft).plan.defaultWallHeight;
             })
           }
         >

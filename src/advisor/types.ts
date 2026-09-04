@@ -47,7 +47,8 @@ export type FindingCategory =
   | 'sleep'
   | 'work'
   | 'dining'
-  | 'circulation';
+  | 'circulation'
+  | 'code';
 
 /**
  * How much a finding matters.
@@ -117,6 +118,14 @@ export interface Finding {
   detail: string;
   /** The design principle behind it — why anybody should care. */
   why: string;
+  /**
+   * The code section this comes from, e.g. "R311.7.5.1".
+   *
+   * Empty for the design guidelines, which are conventions rather than law.
+   * Present for anything drawn from the IRC, because a requirement without a
+   * citation cannot be checked by the person who has to sign the work off.
+   */
+  section?: string;
   /** Region key of the room it concerns, or null for whole-design findings. */
   roomKey: string | null;
   focus: FindingFocus;

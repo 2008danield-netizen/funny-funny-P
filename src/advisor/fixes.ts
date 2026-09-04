@@ -29,7 +29,7 @@ import {
 } from '@/state/furnitureOps';
 import { setRoomSpec } from '@/state/planOps';
 import { getCatalogEntry } from '@/furniture/catalog';
-import type { DesignDocument } from '@/state/types';
+import type { DesignDocument, Level } from '@/state/types';
 import type { Fix } from './types';
 
 export interface FixResult {
@@ -48,16 +48,16 @@ export interface FixResult {
  * outcome — the report is recomputed continuously while the user drags, and a
  * button can always be pressed a moment after it stopped being valid.
  */
-export function applyFix(doc: DesignDocument, fix: Fix): FixResult {
+export function applyFix(doc: DesignDocument, level: Level, fix: Fix): FixResult {
   switch (fix.kind) {
     case 'move': {
-      const item = doc.furniture.find((candidate) => candidate.id === fix.itemId);
+      const item = level.furniture.find((candidate) => candidate.id === fix.itemId);
       if (!item) return miss();
 
       // Rotation first: `moveFurniture` solves collisions at the item's
       // CURRENT angle, so turning afterwards could sweep it into something the
       // move had carefully avoided.
-      if (fix.rotation !== undefined && !rotateFurniture(doc, fix.itemId, fix.rotation)) {
+      if (fix.rotation !== undefined && !rotateFurniture(doc, level, fix.itemId, fix.rotation)) {
         return {
           applied: false,
           message: 'It cannot turn that way where it stands.',
@@ -65,7 +65,7 @@ export function applyFix(doc: DesignDocument, fix: Fix): FixResult {
         };
       }
 
-      const moved = moveFurniture(doc, fix.itemId, fix.to, { snapWalls: false });
+      const moved = moveFurniture(doc, level, fix.itemId, fix.to, { snapWalls: false });
       return moved.moved
         ? { applied: true, message: '', touched: [fix.itemId] }
         : {
@@ -76,7 +76,7 @@ export function applyFix(doc: DesignDocument, fix: Fix): FixResult {
     }
 
     case 'rotate': {
-      const turned = rotateFurniture(doc, fix.itemId, fix.rotation);
+      const turned = rotateFurniture(doc, level, fix.itemId, fix.rotation);
       return turned
         ? { applied: true, message: '', touched: [fix.itemId] }
         : {
@@ -100,14 +100,14 @@ export function applyFix(doc: DesignDocument, fix: Fix): FixResult {
        */
       const originals = new Map(
         fix.moves.map((move) => {
-          const item = doc.furniture.find((candidate) => candidate.id === move.itemId);
+          const item = level.furniture.find((candidate) => candidate.id === move.itemId);
           return [move.itemId, item ? { ...item } : null];
         }),
       );
 
       const ids = new Set(fix.moves.map((move) => move.itemId));
-      const lifted = doc.furniture.filter((item) => ids.has(item.id));
-      doc.furniture = doc.furniture.filter((item) => !ids.has(item.id));
+      const lifted = level.furniture.filter((item) => ids.has(item.id));
+      level.furniture = level.furniture.filter((item) => !ids.has(item.id));
 
       const touched: string[] = [];
       let failures = 0;
@@ -118,14 +118,14 @@ export function applyFix(doc: DesignDocument, fix: Fix): FixResult {
 
         const placed = { ...original, x: move.to.x, z: move.to.z };
         if (move.rotation !== undefined) placed.rotation = move.rotation;
-        doc.furniture.push(placed);
+        level.furniture.push(placed);
 
         // Validate through the ordinary move path: pushing it onto the array
         // above put it somewhere untested, and this is what tests it.
-        const settled = moveFurniture(doc, move.itemId, move.to, { snapWalls: false });
+        const settled = moveFurniture(doc, level, move.itemId, move.to, { snapWalls: false });
         if (!settled.moved) {
-          doc.furniture = doc.furniture.filter((item) => item.id !== move.itemId);
-          doc.furniture.push({ ...original });
+          level.furniture = level.furniture.filter((item) => item.id !== move.itemId);
+          level.furniture.push({ ...original });
           failures += 1;
         } else {
           touched.push(move.itemId);
@@ -134,7 +134,7 @@ export function applyFix(doc: DesignDocument, fix: Fix): FixResult {
 
       // Anything the fix did not mention goes back untouched.
       for (const item of lifted) {
-        if (!fix.moves.some((move) => move.itemId === item.id)) doc.furniture.push(item);
+        if (!fix.moves.some((move) => move.itemId === item.id)) level.furniture.push(item);
       }
 
       if (touched.length === 0) {
@@ -151,7 +151,7 @@ export function applyFix(doc: DesignDocument, fix: Fix): FixResult {
     }
 
     case 'add': {
-      const result = placeFurniture(doc, fix.catalogId, fix.at, {
+      const result = placeFurniture(doc, level, fix.catalogId, fix.at, {
         rotation: fix.rotation,
         // The position was chosen deliberately; do not let wall snapping move it.
         snapWalls: false,
@@ -166,28 +166,28 @@ export function applyFix(doc: DesignDocument, fix: Fix): FixResult {
     }
 
     case 'remove': {
-      const exists = doc.furniture.some((item) => item.id === fix.itemId);
+      const exists = level.furniture.some((item) => item.id === fix.itemId);
       if (!exists) return miss();
-      removeFurniture(doc, fix.itemId);
+      removeFurniture(level, fix.itemId);
       return { applied: true, message: '', touched: [] };
     }
 
     case 'swap': {
-      const item = doc.furniture.find((candidate) => candidate.id === fix.itemId);
+      const item = level.furniture.find((candidate) => candidate.id === fix.itemId);
       if (!item) return miss();
 
       const original = { ...item };
       const { x, z, rotation } = original;
 
-      removeFurniture(doc, fix.itemId);
-      const result = placeFurniture(doc, fix.toCatalogId, { x, z }, {
+      removeFurniture(level, fix.itemId);
+      const result = placeFurniture(doc, level, fix.toCatalogId, { x, z }, {
         rotation,
         snapWalls: false,
       });
 
       if (!result.id) {
         // Put the original back rather than leaving a hole where a piece was.
-        doc.furniture.push(original);
+        level.furniture.push(original);
         const entry = getCatalogEntry(fix.toCatalogId);
         return {
           applied: false,
@@ -203,12 +203,12 @@ export function applyFix(doc: DesignDocument, fix: Fix): FixResult {
     }
 
     case 'paint': {
-      const before = doc.plan.rooms[fix.roomKey];
-      setRoomSpec(doc.plan, fix.roomKey, {
+      const before = level.plan.rooms[fix.roomKey];
+      setRoomSpec(level.plan, fix.roomKey, {
         wall: {
           color: fix.color,
           // Keep the finish the user chose; only the colour is being advised.
-          roughness: before?.wall.roughness ?? doc.plan.defaultRoom.wall.roughness,
+          roughness: before?.wall.roughness ?? level.plan.defaultRoom.wall.roughness,
         },
       });
       return { applied: true, message: '', touched: [] };

@@ -15,6 +15,7 @@
 import { useMemo } from 'react';
 
 import { Panel } from '../components/Panel';
+import { activeLevel } from '@/state/levels';
 import { useDesign } from '@/bridge/useDesign';
 import { useDesignEdit } from '@/bridge/useDesign';
 import { useRegions } from '@/bridge/useEditor';
@@ -35,9 +36,9 @@ export function ShoppingListPanel() {
       const region = regions.find((candidate) =>
         pointInPolygon({ x: item.x, z: item.z }, candidate.polygon),
       );
-      return region ? resolveRoomSpec(doc.plan, region.key).name : null;
+      return region ? resolveRoomSpec(activeLevel(doc).plan, region.key).name : null;
     },
-    [regions, doc.plan],
+    [regions, activeLevel(doc).plan],
   );
 
   const list = useMemo(() => buildShoppingList(doc, roomNameOf), [doc, roomNameOf]);
@@ -79,7 +80,7 @@ export function ShoppingListPanel() {
               edit((draft) => {
                 // Applies to every piece of this product: someone confirming a
                 // price has confirmed it for all six of their dining chairs.
-                for (const item of draft.furniture) {
+                for (const item of activeLevel(draft).furniture) {
                   if (item.catalogId === line.catalogId) item.price = value;
                 }
               })

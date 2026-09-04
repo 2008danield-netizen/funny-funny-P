@@ -28,9 +28,10 @@
 import { findRegions } from '@/scene/planGraph';
 import { analyseClearance, type ClearanceReport } from '@/clearance/analyze';
 import { readRooms, type RoomContext } from './rooms';
+import { checkAllStairs } from '@/building/stairCode';
 import { RULES } from './rules';
 import type { AdvisorReport, Finding, FindingSeverity, RoomSummary, ScoreBand } from './types';
-import type { DesignDocument } from '@/state/types';
+import type { DesignDocument, Level } from '@/state/types';
 
 /**
  * The most that advisory notes alone can cost a design.
@@ -58,13 +59,14 @@ const SEVERITY_RANK: Record<FindingSeverity, number> = {
  */
 export function adviseDesign(
   doc: DesignDocument,
+  level: Level,
   clearance?: ClearanceReport,
 ): AdvisorReport {
-  const regions = findRegions(doc.plan);
-  const report = clearance ?? analyseClearance(doc);
-  const contexts = readRooms(doc, regions, report.circulation);
+  const regions = findRegions(level.plan);
+  const report = clearance ?? analyseClearance(doc, level);
+  const contexts = readRooms(doc, level, regions, report.circulation);
 
-  const findings: Finding[] = [];
+  const findings: Finding[] = [...stairFindings(doc, level)];
   for (const context of contexts) {
     for (const rule of RULES) {
       try {
@@ -97,6 +99,45 @@ export function adviseDesign(
   const score = scoreFrom(findings);
 
   return { score, band: bandFor(score), findings, rooms, counts };
+}
+
+/**
+ * The staircases on this storey, as advisor findings.
+ *
+ * Code violations arrive as 'critical' and carry real weight: unlike every
+ * other rule in the advisor, these are not matters of taste that a designer may
+ * knowingly trade away. A stair with 8 1/2 inch risers is not a bold choice.
+ */
+function stairFindings(doc: DesignDocument, level: Level): Finding[] {
+  const findings: Finding[] = [];
+
+  for (const report of checkAllStairs(doc)) {
+    const stair = doc.stairs.find((candidate) => candidate.id === report.stairId);
+    if (!stair || stair.fromLevelId !== level.id) continue;
+
+    for (const finding of report.findings) {
+      if (finding.severity === 'pass') continue;
+      findings.push({
+        id: finding.id,
+        rule: 'irc-stairs',
+        category: 'code',
+        severity: finding.severity === 'violation' ? 'critical' : 'polish',
+        title: `${stair.name}: ${finding.title}`,
+        detail: finding.detail,
+        why: finding.remedy,
+        section: finding.section,
+        roomKey: null,
+        focus: null,
+        at: stair.at,
+        // A violation is a defect, not a preference, so it costs more than any
+        // layout note can. Two of them should visibly wreck the score.
+        weight: finding.severity === 'violation' ? 18 : 2,
+        fix: null,
+      });
+    }
+  }
+
+  return findings;
 }
 
 /**

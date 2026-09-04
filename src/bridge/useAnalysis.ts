@@ -26,39 +26,52 @@ import { useMemo } from 'react';
 import { analyseClearance, type ClearanceReport } from '@/clearance/analyze';
 import { adviseDesign } from '@/advisor/advise';
 import type { AdvisorReport } from '@/advisor/types';
-import type { DesignDocument } from '@/state/types';
+import { activeLevel } from '@/state/levels';
+import type { DesignDocument, Level } from '@/state/types';
 import { useDesign } from './useDesign';
 
-let clearanceDoc: DesignDocument | null = null;
+/*
+ * The cache is keyed on the document AND the level, because switching storeys
+ * changes the answer without changing the document. Keying on the document
+ * alone would show the ground floor's clearance report while the first floor
+ * was on screen — and it would look completely plausible.
+ */
+let clearanceKey: { doc: DesignDocument; level: Level } | null = null;
 let clearanceCache: ClearanceReport | null = null;
 
-/** The clearance report for a document, computed at most once per version. */
-export function clearanceFor(doc: DesignDocument): ClearanceReport {
-  if (doc === clearanceDoc && clearanceCache) return clearanceCache;
-  clearanceCache = analyseClearance(doc);
-  clearanceDoc = doc;
+/** The clearance report for one storey, computed at most once per version. */
+export function clearanceFor(doc: DesignDocument, level: Level): ClearanceReport {
+  if (clearanceKey && clearanceKey.doc === doc && clearanceKey.level === level && clearanceCache) {
+    return clearanceCache;
+  }
+  clearanceCache = analyseClearance(doc, level);
+  clearanceKey = { doc, level };
   return clearanceCache;
 }
 
-let advisorDoc: DesignDocument | null = null;
+let advisorKey: { doc: DesignDocument; level: Level } | null = null;
 let advisorCache: AdvisorReport | null = null;
 
-/** The advisor report for a document, reusing its clearance analysis. */
-export function adviceFor(doc: DesignDocument): AdvisorReport {
-  if (doc === advisorDoc && advisorCache) return advisorCache;
-  advisorCache = adviseDesign(doc, clearanceFor(doc));
-  advisorDoc = doc;
+/** The advisor report for one storey, reusing its clearance analysis. */
+export function adviceFor(doc: DesignDocument, level: Level): AdvisorReport {
+  if (advisorKey && advisorKey.doc === doc && advisorKey.level === level && advisorCache) {
+    return advisorCache;
+  }
+  advisorCache = adviseDesign(doc, level, clearanceFor(doc, level));
+  advisorKey = { doc, level };
   return advisorCache;
 }
 
-/** Subscribes to the clearance report for the live document. */
+/** Subscribes to the clearance report for the storey being edited. */
 export function useClearanceReport(): ClearanceReport {
   const doc = useDesign();
-  return useMemo(() => clearanceFor(doc), [doc]);
+  const level = activeLevel(doc);
+  return useMemo(() => clearanceFor(doc, level), [doc, level]);
 }
 
-/** Subscribes to the advisor's report for the live document. */
+/** Subscribes to the advisor's report for the storey being edited. */
 export function useAdvice(): AdvisorReport {
   const doc = useDesign();
-  return useMemo(() => adviceFor(doc), [doc]);
+  const level = activeLevel(doc);
+  return useMemo(() => adviceFor(doc, level), [doc, level]);
 }

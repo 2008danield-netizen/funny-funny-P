@@ -100,8 +100,16 @@ export function collidersFor(
   plan: PlanModel,
   furniture: readonly FurnitureItem[],
   movingId: string | null,
+  /**
+   * Anything else on this storey that furniture must avoid.
+   *
+   * Staircases, today. Passed in rather than derived here because a stair
+   * belongs to the building rather than to a plan, and this module deliberately
+   * knows nothing above the level it is given.
+   */
+  extra: readonly Collider[] = [],
 ): Collider[] {
-  const colliders = wallColliders(plan);
+  const colliders = [...wallColliders(plan), ...extra];
 
   const moving = movingId
     ? furniture.find((candidate) => candidate.id === movingId)
@@ -110,7 +118,7 @@ export function collidersFor(
     moving !== undefined && getCatalogEntry(moving.catalogId).layer === 'floor';
 
   // A rug only has to stay off the walls; everything else stands on top of it.
-  if (movingIsRug) return colliders;
+  if (movingIsRug) return wallColliders(plan);
 
   for (const item of furniture) {
     if (item.id === movingId) continue;
@@ -128,8 +136,10 @@ export function collidersForNewItem(
   plan: PlanModel,
   furniture: readonly FurnitureItem[],
   catalogId: string,
+  extra: readonly Collider[] = [],
 ): Collider[] {
   const entry = getCatalogEntry(catalogId);
+  // A rug lies under everything, including the bottom of a staircase.
   if (entry.layer === 'floor') return wallColliders(plan);
-  return collidersFor(plan, furniture, null);
+  return collidersFor(plan, furniture, null, extra);
 }

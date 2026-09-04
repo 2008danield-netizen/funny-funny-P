@@ -25,6 +25,7 @@ import { Toggle } from '../components/Toggle';
 import { useAdvice } from '@/bridge/useAnalysis';
 import { useDesign, useDesignEdit } from '@/bridge/useDesign';
 import { editorStore } from '@/state/selection';
+import { activeLevel } from '@/state/levels';
 import { bandLabel, headline } from '@/advisor/advise';
 import { applyFix } from '@/advisor/fixes';
 import { furnishRoom, suggestProgram, type FurnishStyle } from '@/advisor/generate';
@@ -91,7 +92,7 @@ export function AdvisorPanel() {
 
       let outcome = { applied: false, message: '', touched: [] as string[] };
       edit((draft) => {
-        outcome = applyFix(draft, found.fix!);
+        outcome = applyFix(draft, activeLevel(draft), found.fix!);
       });
 
       // Select what moved, so the change is visible rather than merely reported.
@@ -109,7 +110,7 @@ export function AdvisorPanel() {
 
     let outcome: ReturnType<typeof furnishRoom> | null = null;
     edit((draft) => {
-      outcome = furnishRoom(draft, room.roomKey, {
+      outcome = furnishRoom(draft, activeLevel(draft), room.roomKey, {
         program: program ?? undefined,
         budget: ceiling,
         style,

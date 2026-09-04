@@ -27,6 +27,8 @@ import { nearestSnapCandidates, snapPoint } from './snapping';
 import { distance } from '@/scene/planGraph';
 import { getOpeningPreset } from '@/scene/openings/presets';
 import { designStore } from '@/state/store';
+import { activeLevel } from '@/state/levels';
+import { addStair } from '@/state/buildingOps';
 import {
   addOpening,
   deleteVertex,
@@ -193,7 +195,7 @@ export class EditController {
       } else {
         const from = this.drawAnchor;
         designStore.edit((draft) => {
-          drawWall(draft.plan, from, snapped);
+          drawWall(activeLevel(draft).plan, from, snapped);
         });
         // Chain from the point just placed, so a room can be drawn in one go.
         this.drawAnchor = snapped;
@@ -210,7 +212,7 @@ export class EditController {
       let reason: string | undefined;
 
       designStore.edit((draft) => {
-        const result = placeFurniture(draft, catalogId, floor);
+        const result = placeFurniture(draft, activeLevel(draft), catalogId, floor);
         placedId = result.id;
         reason = result.reason;
       });
@@ -222,6 +224,31 @@ export class EditController {
         editorStore.patch({ readout: 'Placed. Click again for another.' });
       } else {
         editorStore.patch({ readout: reason ?? 'It does not fit there' });
+      }
+      this.suppressOrbit();
+      return;
+    }
+
+
+    /* ---- Setting the foot of a staircase ---- */
+    if (state.tool === 'stair') {
+      if (!floor) return;
+      let placedId: string | null = null;
+      let reason: string | undefined;
+
+      designStore.edit((draft) => {
+        const result = addStair(draft, floor);
+        placedId = result.id;
+        reason = result.reason;
+      });
+
+      if (placedId) {
+        editorStore.select('stair', placedId);
+        // Unlike furniture, a stair is a one-off: drop back to Select so the
+        // next click inspects what was just made rather than adding a second.
+        editorStore.patch({ tool: 'select', readout: 'Stair placed.' });
+      } else {
+        editorStore.patch({ readout: reason ?? 'A stair needs a storey above it' });
       }
       this.suppressOrbit();
       return;
@@ -297,10 +324,10 @@ export class EditController {
         const wasPlanEdit = this.drag.kind !== 'furniture' && this.drag.kind !== 'opening';
         designStore.edit(
           (draft) => {
-            normalizePlan(draft.plan);
+            normalizePlan(activeLevel(draft).plan);
             // Moving a wall can leave furniture buried in it. Rather than
             // blocking the wall edit, the furniture is pushed clear afterwards.
-            if (wasPlanEdit) reseatFurniture(draft);
+            if (wasPlanEdit) reseatFurniture(draft, activeLevel(draft));
           },
           { history: 'coalesce', coalesceKey: this.dragCoalesceKey() },
         );
@@ -328,7 +355,7 @@ export class EditController {
   }
 
   private beginVertexDrag(vertexId: string, origin: Point2): void {
-    const plan = designStore.getState().plan;
+    const plan = activeLevel(designStore.getState()).plan;
     const vertex = plan.vertices.find((candidate) => candidate.id === vertexId);
     if (!vertex) return;
 
@@ -344,7 +371,7 @@ export class EditController {
   }
 
   private beginWallDrag(wallId: string, origin: Point2): void {
-    const plan = designStore.getState().plan;
+    const plan = activeLevel(designStore.getState()).plan;
     const wall = plan.walls.find((candidate) => candidate.id === wallId);
     if (!wall) return;
 
@@ -366,9 +393,9 @@ export class EditController {
   }
 
   private beginFurnitureDrag(itemId: string, origin: Point2): void {
-    const item = designStore
-      .getState()
-      .furniture.find((candidate) => candidate.id === itemId);
+    const item = activeLevel(designStore.getState()).furniture.find(
+      (candidate) => candidate.id === itemId,
+    );
     if (!item) return;
 
     this.drag = {
@@ -385,7 +412,7 @@ export class EditController {
   }
 
   private beginOpeningDrag(openingId: string, origin: Point2): void {
-    const plan = designStore.getState().plan;
+    const plan = activeLevel(designStore.getState()).plan;
     const wall = plan.walls.find((candidate) =>
       candidate.openings.some((opening) => opening.id === openingId),
     );
@@ -424,7 +451,7 @@ export class EditController {
       const target = this.snap({ x: start.x + delta.x, z: start.z + delta.z }, null, drag.id);
 
       designStore.edit(
-        (draft) => moveVertex(draft.plan, drag.id, target),
+        (draft) => moveVertex(activeLevel(draft).plan, drag.id, target),
         { history: 'coalesce', coalesceKey: this.dragCoalesceKey() },
       );
       editorStore.patch({
@@ -450,7 +477,7 @@ export class EditController {
       designStore.edit(
         (draft) => {
           for (const [id, start] of drag.startVertices) {
-            moveVertex(draft.plan, id, { x: start.x + applied.x, z: start.z + applied.z });
+            moveVertex(activeLevel(draft).plan, id, { x: start.x + applied.x, z: start.z + applied.z });
           }
         },
         { history: 'coalesce', coalesceKey: this.dragCoalesceKey() },
@@ -472,7 +499,7 @@ export class EditController {
         (draft) => {
           // Wall-snapping is applied on every frame, not just on release, so
           // the piece visibly clicks into place against a wall as it passes.
-          const result = moveFurniture(draft, drag.id, target, { snapWalls: true });
+          const result = moveFurniture(draft, activeLevel(draft), drag.id, target, { snapWalls: true });
           blocked = result.blockedBy;
         },
         { history: 'coalesce', coalesceKey: this.dragCoalesceKey() },
@@ -501,7 +528,7 @@ export class EditController {
         : offset;
 
       designStore.edit(
-        (draft) => updateOpening(draft.plan, drag.id, { offset: snapped }),
+        (draft) => updateOpening(activeLevel(draft).plan, drag.id, { offset: snapped }),
         { history: 'coalesce', coalesceKey: this.dragCoalesceKey() },
       );
       editorStore.patch({ readout: `${formatLength(snapped, units)} along wall` });
@@ -520,7 +547,7 @@ export class EditController {
     const state = editorStore.getState();
     if (!state.snapEnabled) return point;
 
-    const plan = designStore.getState().plan;
+    const plan = activeLevel(designStore.getState()).plan;
     return snapPoint(point, {
       gridSize: state.gridSize,
       anchor,
@@ -583,7 +610,7 @@ export class EditController {
 
     designStore.edit((draft) => {
       createdId = addOpening(
-        draft.plan,
+        activeLevel(draft).plan,
         targetWall,
         preset.kind,
         preset.id,
@@ -646,7 +673,7 @@ export class EditController {
       event.preventDefault();
       let created: string | null = null;
       designStore.edit((draft) => {
-        created = duplicateFurniture(draft, id);
+        created = duplicateFurniture(draft, activeLevel(draft), id);
       });
       if (created) editorStore.select('furniture', created);
       else editorStore.patch({ readout: 'No space for a copy' });
@@ -658,13 +685,13 @@ export class EditController {
     event.preventDefault();
     designStore.edit((draft) => {
       if (kind === 'wall') {
-        deleteWall(draft.plan, id);
-        reseatFurniture(draft);
+        deleteWall(activeLevel(draft).plan, id);
+        reseatFurniture(draft, activeLevel(draft));
       } else if (kind === 'vertex') {
-        deleteVertex(draft.plan, id);
-        reseatFurniture(draft);
-      } else if (kind === 'opening') removeOpening(draft.plan, id);
-      else if (kind === 'furniture') removeFurniture(draft, id);
+        deleteVertex(activeLevel(draft).plan, id);
+        reseatFurniture(draft, activeLevel(draft));
+      } else if (kind === 'opening') removeOpening(activeLevel(draft).plan, id);
+      else if (kind === 'furniture') removeFurniture(activeLevel(draft), id);
     });
     editorStore.clearSelection();
   }
@@ -678,7 +705,7 @@ export class EditController {
 
     let created: string | null = null;
     designStore.edit((draft) => {
-      created = splitWall(draft.plan, id, 0.5);
+      created = splitWall(activeLevel(draft).plan, id, 0.5);
     });
     if (created) editorStore.select('vertex', created);
   }
@@ -693,7 +720,7 @@ export class EditController {
     const { kind, id } = editorStore.getState().selection;
     if (kind !== 'furniture' || !id) return;
 
-    const item = designStore.getState().furniture.find((candidate) => candidate.id === id);
+    const item = activeLevel(designStore.getState()).furniture.find((candidate) => candidate.id === id);
     if (!item) return;
 
     const step = (FURNITURE_ROTATION_STEP * Math.PI) / 180;
@@ -701,7 +728,7 @@ export class EditController {
 
     let ok = false;
     designStore.edit((draft) => {
-      ok = rotateFurniture(draft, id, target);
+      ok = rotateFurniture(draft, activeLevel(draft), id, target);
     });
     if (!ok) editorStore.patch({ readout: 'Not enough space to turn it' });
   }
@@ -710,7 +737,7 @@ export class EditController {
   selectedFootprint(): { width: number; depth: number } | null {
     const { kind, id } = editorStore.getState().selection;
     if (kind !== 'furniture' || !id) return null;
-    const item = designStore.getState().furniture.find((candidate) => candidate.id === id);
+    const item = activeLevel(designStore.getState()).furniture.find((candidate) => candidate.id === id);
     return item ? itemDimensions(item) : null;
   }
 

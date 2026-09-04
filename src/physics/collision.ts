@@ -44,8 +44,8 @@ export interface Obb {
 
 /** A collider, tagged so the solver can explain what blocked a move. */
 export interface Collider extends Obb {
-  kind: 'wall' | 'furniture';
-  /** Wall ID or furniture item ID. */
+  kind: 'wall' | 'furniture' | 'stair';
+  /** Wall ID, furniture item ID, or stair ID and tread index. */
   id: string;
 }
 

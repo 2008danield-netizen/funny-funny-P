@@ -7,8 +7,22 @@ import { useMemo, useSyncExternalStore } from 'react';
 import { findRegions, type Region } from '@/scene/planGraph';
 import { designStore } from '@/state/store';
 import { editorStore, type EditorState } from '@/state/selection';
-import type { PlanModel, Wall } from '@/state/types';
-import { useDesignSlice } from './useDesign';
+import { activeLevel } from '@/state/levels';
+import type { Level, PlanModel, Wall } from '@/state/types';
+import { useDesign } from './useDesign';
+
+/**
+ * The storey the editor is working on.
+ *
+ * Subscribed to the whole document rather than to a slice, because "which
+ * level is active" and "what is on it" are two different things that both have
+ * to be current — selecting a slice of one would let a component render the
+ * new level's name beside the old level's walls.
+ */
+export function useActiveLevel(): Level {
+  const doc = useDesign();
+  return activeLevel(doc);
+}
 
 /** Subscribes to the whole editor state (tool, selection, hover, snapping). */
 export function useEditor(): EditorState {
@@ -28,13 +42,13 @@ export function useEditor(): EditorState {
  * out a new plan object on every edit and the same one otherwise.
  */
 export function useRegions(): Region[] {
-  const plan = useDesignSlice((doc) => doc.plan);
+  const plan = useActiveLevel().plan;
   return useMemo(() => findRegions(plan), [plan]);
 }
 
 /** The currently selected wall, or null. */
 export function useSelectedWall(): Wall | null {
-  const plan = useDesignSlice((doc) => doc.plan);
+  const plan = useActiveLevel().plan;
   const { selection } = useEditor();
 
   return useMemo(() => {
@@ -45,7 +59,7 @@ export function useSelectedWall(): Wall | null {
 
 /** The currently selected opening together with the wall it sits in. */
 export function useSelectedOpening(): { wall: Wall; openingIndex: number } | null {
-  const plan = useDesignSlice((doc) => doc.plan);
+  const plan = useActiveLevel().plan;
   const { selection } = useEditor();
 
   return useMemo(() => {
@@ -73,7 +87,7 @@ export function useSelectedRegion(): Region | null {
 
 /** Convenience accessor for the live plan. */
 export function usePlan(): PlanModel {
-  return useDesignSlice((doc) => doc.plan);
+  return useActiveLevel().plan;
 }
 
 /** Length of a wall in metres, or 0 if it cannot be resolved. */

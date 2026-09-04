@@ -27,7 +27,8 @@ import { obbCorners, obbIntersects, pointInPolygon, type Collider, type Obb } fr
 import { collidersFor, itemFootprint, wallColliders } from '@/physics/colliders';
 import { getCatalogEntry } from '@/furniture/catalog';
 import { furnitureZones, openingZones, type ClearanceZone } from '@/clearance/zones';
-import type { DesignDocument, FurnitureItem, PlanModel, Point2 } from '@/state/types';
+import type { DesignDocument, FurnitureItem, Level, PlanModel, Point2 } from '@/state/types';
+import { stairColliders } from '@/building/stairs';
 
 /* ------------------------------- Angles -------------------------------- */
 
@@ -409,13 +410,16 @@ export function obbCornersInside(box: Obb, region: Region): boolean {
  */
 export function positionIsLegal(
   doc: DesignDocument,
+  level: Level,
   region: Region,
   itemId: string | null,
   box: Obb,
   isRug: boolean,
 ): boolean {
   if (!obbCornersInside(box, region)) return false;
-  const colliders = isRug ? wallColliders(doc.plan) : collidersFor(doc.plan, doc.furniture, itemId);
+  const colliders = isRug
+    ? wallColliders(level.plan)
+    : collidersFor(level.plan, level.furniture, itemId, stairColliders(doc, level.id));
   for (const collider of colliders) {
     if (obbIntersects(box, collider, 0.002)) return false;
   }
@@ -430,8 +434,8 @@ export function positionIsLegal(
  * The generator uses this to avoid parking a lamp exactly where a door opens,
  * which is legal by collision but wrong by any other measure.
  */
-export function reservedZones(doc: DesignDocument): ClearanceZone[] {
-  return [...openingZones(doc.plan), ...furnitureZones(doc.furniture)];
+export function reservedZones(level: Level): ClearanceZone[] {
+  return [...openingZones(level.plan), ...furnitureZones(level.furniture)];
 }
 
 /** Centre-to-centre distance between two placed pieces. */

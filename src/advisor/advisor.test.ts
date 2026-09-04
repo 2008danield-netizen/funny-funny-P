@@ -20,6 +20,8 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { activeLevel } from '@/state/levels';
+
 import { adviseDesign, bandFor, scoreFrom } from './advise';
 import { applyFix } from './fixes';
 import { FLOOR_SWATCHES } from './rules';
@@ -41,18 +43,30 @@ import { addRectangle, addOpening } from '@/state/planOps';
 import { collidersFor, itemFootprint } from '@/physics/colliders';
 import { obbIntersects } from '@/physics/collision';
 import { findRegions, pointInPolygon } from '@/scene/planGraph';
-import type { DesignDocument, FurnitureItem } from '@/state/types';
+import type { DesignDocument, FurnitureItem, Level } from '@/state/types';
 import type { Finding } from './types';
 
 /* -------------------------------- Fixtures ------------------------------ */
 
+/**
+ * The storey a test is working on.
+ *
+ * Every fixture here is a one-level building, so this is always its ground
+ * floor — but going through the accessor rather than reaching for `levels[0]`
+ * means these tests exercise the same path the app does.
+ */
+function level(doc: DesignDocument): Level {
+  return activeLevel(doc);
+}
+
+
 /** A document with one rectangular room, centred on the origin. */
 function roomDocument(width = 6, depth = 5): DesignDocument {
   const doc = createDefaultDocument();
-  doc.plan.vertices = [];
-  doc.plan.walls = [];
-  doc.plan.rooms = {};
-  addRectangle(doc.plan, { x: 0, z: 0 }, width, depth);
+  level(doc).plan.vertices = [];
+  level(doc).plan.walls = [];
+  level(doc).plan.rooms = {};
+  addRectangle(level(doc).plan, { x: 0, z: 0 }, width, depth);
   return doc;
 }
 
@@ -72,20 +86,20 @@ function put(
   rotation = 0,
 ): FurnitureItem {
   const item: FurnitureItem = {
-    id: `t${doc.furniture.length + 1}`,
+    id: `t${level(doc).furniture.length + 1}`,
     catalogId,
     x,
     z,
     y: 0,
     rotation,
   };
-  doc.furniture.push(item);
+  level(doc).furniture.push(item);
   return item;
 }
 
 /** Every finding the advisor produces for a document. */
 function findingsFor(doc: DesignDocument): Finding[] {
-  return adviseDesign(doc).findings;
+  return adviseDesign(doc, level(doc)).findings;
 }
 
 /** Findings from one named rule. */
@@ -95,10 +109,10 @@ function fromRule(doc: DesignDocument, rule: string): Finding[] {
 
 /** Asserts nothing in the document overlaps a wall or another piece. */
 function expectLegalLayout(doc: DesignDocument): void {
-  const regions = findRegions(doc.plan);
-  for (const item of doc.furniture) {
+  const regions = findRegions(level(doc).plan);
+  for (const item of level(doc).furniture) {
     const footprint = itemFootprint(item);
-    for (const collider of collidersFor(doc.plan, doc.furniture, item.id)) {
+    for (const collider of collidersFor(level(doc).plan, level(doc).furniture, item.id)) {
       expect(
         obbIntersects(footprint, collider),
         `${item.catalogId} (${item.id}) overlaps ${collider.kind} ${collider.id}`,
@@ -152,10 +166,10 @@ describe('advisor geometry', () => {
 
   it('finds the blank stretches of a wall with a door in it', () => {
     const doc = roomDocument(6, 5);
-    const wall = doc.plan.walls[0]!;
+    const wall = level(doc).plan.walls[0]!;
     // A 0.9 m door two metres along a 6 m wall.
     addOpening(
-      doc.plan,
+      level(doc).plan,
       wall.id,
       'door',
       'door-single',
@@ -163,8 +177,8 @@ describe('advisor geometry', () => {
       2,
     );
 
-    const region = findRegions(doc.plan)[0]!;
-    const roomWall = roomWalls(doc.plan, region).find(
+    const region = findRegions(level(doc).plan)[0]!;
+    const roomWall = roomWalls(level(doc).plan, region).find(
       (candidate) => candidate.wallId === wall.id,
     )!;
 
@@ -293,7 +307,7 @@ describe('furniture roles', () => {
     const doc = roomDocument(8, 7);
     put(doc, 'malm-bed-140', 0, 0);
     put(doc, 'klippan-2', 2, 2);
-    expect(inferProgram(doc.furniture.map(describeItem))).toBe('bedroom');
+    expect(inferProgram(level(doc).furniture.map(describeItem))).toBe('bedroom');
   });
 
   it('needs chairs before it calls a room a dining room', () => {
@@ -301,7 +315,7 @@ describe('furniture roles', () => {
     put(doc, 'ekedalen-table', 0, 0);
     put(doc, 'ingolf-chair', 0, 0.8);
     put(doc, 'ingolf-chair', 0, -0.8);
-    expect(inferProgram(doc.furniture.map(describeItem))).toBe('dining');
+    expect(inferProgram(level(doc).furniture.map(describeItem))).toBe('dining');
   });
 });
 
@@ -352,7 +366,7 @@ describe('the focal-point rule', () => {
   it('turns the sofa the right way when the fix is applied', () => {
     const doc = livingRoom(Math.PI);
     const fix = fromRule(doc, 'seating-focal')[0]!.fix!;
-    expect(applyFix(doc, fix).applied).toBe(true);
+    expect(applyFix(doc, level(doc), fix).applied).toBe(true);
 
     // After the fix, the rule must be satisfied — an advisor whose own fix does
     // not clear its own finding is arguing with itself.
@@ -402,7 +416,7 @@ describe('the coffee-table rule', () => {
   it('moves it into range when the fix is applied', () => {
     const doc = withGap(0.95);
     const fix = fromRule(doc, 'coffee-table-reach')[0]!.fix!;
-    expect(applyFix(doc, fix).applied).toBe(true);
+    expect(applyFix(doc, level(doc), fix).applied).toBe(true);
 
     expect(fromRule(doc, 'coffee-table-reach')[0]!.severity).toBe('praise');
     expectLegalLayout(doc);
@@ -443,8 +457,8 @@ describe('the conversation-group rule', () => {
     // The fix is only offered when the target position validates; if it was
     // offered, applying it must both work and satisfy the rule.
     if (fix) {
-      expect(applyFix(doc, fix).applied).toBe(true);
-      const moved = doc.furniture.find((item) => item.id === chair.id)!;
+      expect(applyFix(doc, level(doc), fix).applied).toBe(true);
+      const moved = level(doc).furniture.find((item) => item.id === chair.id)!;
       expect(Math.hypot(moved.x - 0, moved.z + 2.8)).toBeLessThan(2.75);
       expectLegalLayout(doc);
     }
@@ -455,13 +469,13 @@ describe('the bed rule', () => {
   it('flags a bed under a window and moves it to a blank wall', () => {
     const doc = roomDocument(4.4, 4);
     // A window in the north wall, then a bed with its headboard against it.
-    const northWall = doc.plan.walls.find((wall) => {
-      const start = doc.plan.vertices.find((v) => v.id === wall.start)!;
-      const end = doc.plan.vertices.find((v) => v.id === wall.end)!;
+    const northWall = level(doc).plan.walls.find((wall) => {
+      const start = level(doc).plan.vertices.find((v) => v.id === wall.start)!;
+      const end = level(doc).plan.vertices.find((v) => v.id === wall.end)!;
       return Math.abs(start.z - 2) < 0.01 && Math.abs(end.z - 2) < 0.01;
     })!;
     addOpening(
-      doc.plan,
+      level(doc).plan,
       northWall.id,
       'window',
       'window-picture',
@@ -480,7 +494,7 @@ describe('the bed rule', () => {
 
     const fix = found[0]!.fix;
     expect(fix, 'a room this size has three other walls; a fix should exist').not.toBeNull();
-    expect(applyFix(doc, fix!).applied).toBe(true);
+    expect(applyFix(doc, level(doc), fix!).applied).toBe(true);
     expectLegalLayout(doc);
 
     // And the complaint is gone.
@@ -528,12 +542,12 @@ describe('the dining rule', () => {
 
     const fix = scatter!.fix;
     expect(fix?.kind).toBe('moveMany');
-    expect(applyFix(doc, fix!).applied).toBe(true);
+    expect(applyFix(doc, level(doc), fix!).applied).toBe(true);
     expectLegalLayout(doc);
 
     // Every chair now sits at the table.
-    const table = doc.furniture.find((item) => item.catalogId === 'ekedalen-table')!;
-    for (const chair of doc.furniture.filter((item) => item.catalogId === 'ingolf-chair')) {
+    const table = level(doc).furniture.find((item) => item.catalogId === 'ekedalen-table')!;
+    for (const chair of level(doc).furniture.filter((item) => item.catalogId === 'ingolf-chair')) {
       expect(edgeGap(itemFootprint(table), itemFootprint(chair))).toBeLessThan(0.5);
     }
   });
@@ -578,10 +592,10 @@ describe('the alignment rule', () => {
     const shelf = put(doc, 'billy-80', 0, -1.9, (4 * Math.PI) / 180);
 
     const fix = fromRule(doc, 'alignment')[0]!.fix!;
-    expect(applyFix(doc, fix).applied).toBe(true);
+    expect(applyFix(doc, level(doc), fix).applied).toBe(true);
 
     // The bookcase must not have been turned to face the wall it stands against.
-    const after = doc.furniture.find((item) => item.id === shelf.id)!;
+    const after = level(doc).furniture.find((item) => item.id === shelf.id)!;
     expect(angleBetween(after.rotation, (4 * Math.PI) / 180)).toBeLessThan(0.2);
     expect(fromRule(doc, 'alignment')).toHaveLength(0);
   });
@@ -611,10 +625,10 @@ describe('the lighting rule', () => {
     put(doc, 'kivik-3', 0, -1.9, 0);
     put(doc, 'lisabo-coffee', 0, -0.5, 0);
 
-    const before = doc.furniture.length;
+    const before = level(doc).furniture.length;
     const fix = fromRule(doc, 'lighting-layers')[0]!.fix!;
-    expect(applyFix(doc, fix).applied).toBe(true);
-    expect(doc.furniture).toHaveLength(before + 1);
+    expect(applyFix(doc, level(doc), fix).applied).toBe(true);
+    expect(level(doc).furniture).toHaveLength(before + 1);
     expectLegalLayout(doc);
   });
 
@@ -629,10 +643,10 @@ describe('the palette rule', () => {
     const doc = roomDocument(6, 5);
     put(doc, 'kivik-3', 0, -1.9, 0);
 
-    const key = findRegions(doc.plan)[0]!.key;
+    const key = findRegions(level(doc).plan)[0]!.key;
     // Oak plank reads around #b98b57; paint the walls to match it.
-    doc.plan.rooms[key] = {
-      ...doc.plan.defaultRoom,
+    level(doc).plan.rooms[key] = {
+      ...level(doc).plan.defaultRoom,
       floor: { presetId: 'oak-plank', color: '#ffffff', textureScale: 2 },
       wall: { color: '#b98b57', roughness: 0.9 },
     };
@@ -643,7 +657,7 @@ describe('the palette rule', () => {
     expect(found).toHaveLength(1);
     expect(found[0]!.fix?.kind).toBe('paint');
 
-    expect(applyFix(doc, found[0]!.fix!).applied).toBe(true);
+    expect(applyFix(doc, level(doc), found[0]!.fix!).applied).toBe(true);
     // The repaint must actually resolve the complaint it was offered for.
     expect(
       fromRule(doc, 'palette').filter((item) => item.id.endsWith('colour-contrast')),
@@ -652,9 +666,9 @@ describe('the palette rule', () => {
 
   it('keeps the wall finish the user chose when it repaints', () => {
     const doc = roomDocument(6, 5);
-    const key = findRegions(doc.plan)[0]!.key;
-    doc.plan.rooms[key] = {
-      ...doc.plan.defaultRoom,
+    const key = findRegions(level(doc).plan)[0]!.key;
+    level(doc).plan.rooms[key] = {
+      ...level(doc).plan.defaultRoom,
       floor: { presetId: 'oak-plank', color: '#ffffff', textureScale: 2 },
       wall: { color: '#b98b57', roughness: 0.55 },
     };
@@ -662,8 +676,8 @@ describe('the palette rule', () => {
     const fix = fromRule(doc, 'palette').find((item) =>
       item.id.endsWith('colour-contrast'),
     )!.fix!;
-    applyFix(doc, fix);
-    expect(doc.plan.rooms[key]!.wall.roughness).toBeCloseTo(0.55, 6);
+    applyFix(doc, level(doc), fix);
+    expect(level(doc).plan.rooms[key]!.wall.roughness).toBeCloseTo(0.55, 6);
   });
 
   it('does not complain about the starter room', () => {
@@ -759,10 +773,10 @@ describe('the score', () => {
 describe('the report as a whole', () => {
   it('survives a design with no rooms at all', () => {
     const doc = createDefaultDocument();
-    doc.plan.vertices = [];
-    doc.plan.walls = [];
-    doc.plan.rooms = {};
-    const report = adviseDesign(doc);
+    level(doc).plan.vertices = [];
+    level(doc).plan.walls = [];
+    level(doc).plan.rooms = {};
+    const report = adviseDesign(doc, level(doc));
     expect(report.findings).toEqual([]);
     expect(report.score).toBe(100);
   });
@@ -774,7 +788,7 @@ describe('the report as a whole', () => {
     put(doc, 'billy-80', -2, 0, (4 * Math.PI) / 180);
 
     const order = ['critical', 'improve', 'polish', 'praise'];
-    const ranks = adviseDesign(doc).findings.map((found) => order.indexOf(found.severity));
+    const ranks = adviseDesign(doc, level(doc)).findings.map((found) => order.indexOf(found.severity));
     for (let i = 1; i < ranks.length; i++) {
       expect(ranks[i]!).toBeGreaterThanOrEqual(ranks[i - 1]!);
     }
@@ -782,9 +796,9 @@ describe('the report as a whole', () => {
 
   it('gives every room a summary', () => {
     const doc = roomDocument(6, 5);
-    const report = adviseDesign(doc);
+    const report = adviseDesign(doc, level(doc));
     expect(report.rooms).toHaveLength(1);
-    expect(report.rooms[0]!.area).toBeCloseTo(findRegions(doc.plan)[0]!.area, 6);
+    expect(report.rooms[0]!.area).toBeCloseTo(findRegions(level(doc).plan)[0]!.area, 6);
   });
 
   it('offers no fix it cannot honour', () => {
@@ -821,7 +835,7 @@ describe('the report as a whole', () => {
 
     for (const fix of fixes) {
       const doc = build();
-      const result = applyFix(doc, fix);
+      const result = applyFix(doc, level(doc), fix);
       expect(result.applied, `"${fix.label}" was offered but would not apply`).toBe(true);
       expectLegalLayout(doc);
     }

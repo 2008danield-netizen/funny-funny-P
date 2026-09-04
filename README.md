@@ -6,12 +6,12 @@ walk through it — in the browser, with no install.
 
 **Live app:** https://2008danield-netizen.github.io/VR-home-design-project/
 
-> **Status: session 5 — the design advisor, and a room generator.** The app now
-> has an opinion. It reads your layout against published interior-design
-> guidelines, tells you what is wrong *and why*, applies the fix for you where it
-> can, and will lay a whole room out from an empty floor. It is a rules engine,
-> not a language model — every judgement names the measurement it failed, runs
-> offline, and can be argued with. The VR walkthrough is next.
+> **Status: session 6 — it is a building now, not a room.** Storeys, staircases
+> and the holes they come up through, all checked against the International
+> Residential Code with the section number printed beside every finding. This is
+> the session that turns an interior-design tool into the start of a building-
+> design one; roofs and the exterior are next, then the services — electrical,
+> water, drainage and heating.
 
 ---
 
@@ -73,6 +73,34 @@ rooms they are in, and a running total. Prices ship as rough estimates so the
 totals work immediately, and **every estimated figure is labelled as one** — at
 the line, at the total and in the CSV export. Type a real price over any of them
 and it counts as confirmed.
+
+**A building, not a single floor.**
+Add storeys, each with its own walls, rooms, furniture and ceiling height. A new
+floor traces the one below so you are editing a plan rather than redrawing it,
+and the storey underneath shows as a faint outline to line new walls up against.
+You work on one level at a time; everything else — the inspector, the catalogue,
+the clearance report, the advisor — follows you to it.
+
+**Staircases that are checked, not just drawn.**
+Straight, L-shaped, U-shaped, winder and spiral, each cutting its own opening
+through the floor above — derived from where **headroom** actually runs out, so
+the cupboard under the stairs stays solid floor and the staircase never arrives
+at a ceiling.
+
+The riser height is never stored, only derived: the floor-to-floor rise divided
+by however many steps you want. That makes the most-cited stair defect in the
+country — a step out of pattern with the others — impossible rather than merely
+reported, and it means raising a ceiling re-proportions the stairs instead of
+silently invalidating them.
+
+Then every one is checked against the **2021 IRC**, with the section printed
+beside the finding: riser height (R311.7.5.1), tread depth (R311.7.5.2), winder
+depth at the walkline (R311.7.5.2.1), spirals under their own rules
+(R311.7.10.1), width (R311.7.1), landings (R311.7.6), flight rise (R311.7.3),
+handrails (R311.7.8) and guards around the opening (R312.1). Each says what it
+measured, what the limit is, where that comes from, and the arithmetic that
+would fix it — *"three winders across a 90° turn need a 7 in newel to hold 10 in
+at the walkline"*, not *"this does not comply"*.
 
 **A design advisor that shows its working.**
 Fourteen rules drawn from published interior-design guidance — focal points,
@@ -200,6 +228,8 @@ src/
 ├── state/            The design document — the single source of truth
 │   ├── types.ts        Document shape + the conventions everything depends on
 │   ├── store.ts        Observable store with undo/redo history
+│   ├── levels.ts       Storeys: elevations (derived), stairwells, naming
+│   ├── buildingOps.ts  Adding and removing storeys and staircases
 │   ├── planOps.ts      Structural edits: draw, split, delete, heal, normalise
 │   ├── furnitureOps.ts Placing, moving, rotating — all through the solver
 │   ├── selection.ts    Tool and selection state (view state, never saved)
@@ -215,6 +245,13 @@ src/
 ├── physics/          Collision
 │   ├── collision.ts    Oriented boxes, separating-axis tests, the solver
 │   └── colliders.ts    Turning walls and furniture into colliders
+│
+├── code/             The building code, with its section numbers
+│   └── irc.ts          IRC limits: every one cites where it comes from
+│
+├── building/         The building itself, above the level of one plan
+│   ├── stairs.ts       Stair geometry: flights, turns, winders, spirals
+│   └── stairCode.ts    Checking one against the IRC, citing every section
 │
 ├── advisor/          Does the room WORK, and is it any good?
 │   ├── types.ts        Findings, fixes, and every guideline number in one place
@@ -245,6 +282,8 @@ src/
 │   ├── Building.ts     Walls, floors, ceilings, skirtings, handles
 │   ├── Furnishings.ts  Furniture meshes, shape cache, collision tinting
 │   ├── ClearanceOverlay.ts  Zones drawn flat on the floor
+│   ├── Staircases.ts   Stair meshes, extruded from the derived geometry
+│   ├── GhostLevel.ts   The storey below, as an outline to align to
 │   ├── wallBuilder.ts  Wall extrusion with holes; door and window furniture
 │   ├── floorBuilder.ts Polygon floors, ceilings and skirting ribbons
 │   ├── Lighting.ts     Lighting presets, IBL environment, shadow fitting
@@ -317,7 +356,29 @@ src/
     tomorrow; that is worth one duplicated table of swatch colours, which a test
     keeps honest.
 
-15. **A price carries its provenance everywhere.** `PriceBasis` travels from the
+15. **A storey's height above the ground is derived, never stored.** It is the
+    sum of the wall heights and slabs beneath it (`state/levels.ts`). Storing it
+    as well would be the same fact written twice, and the two part company the
+    first time somebody raises a ground-floor ceiling. Same principle as rooms.
+
+16. **A stair's riser height is derived too, from the floor-to-floor rise.** Not
+    the ceiling height — the rise includes the thickness of the floor above, and
+    a stair built to the wrong one of the two arrives a step short. Deriving it
+    makes every riser in a flight identical to the last floating-point bit,
+    which is the most-cited stair defect in the country made impossible rather
+    than merely checked.
+
+17. **The stairwell opening is derived from headroom, not from the footprint.**
+    The lower steps pass under the ceiling with room to spare and want solid
+    floor over them. Cutting the whole footprint out throws away floor for
+    nothing; cutting none of it out builds a staircase into a slab.
+
+18. **Every code limit cites its section, and keeps its original wording.** A
+    number without a reference cannot be checked, argued with, or updated when
+    the code changes — and 7 3/4 in is what somebody can look up, where 0.197 m
+    is not. If you cannot name the section, you do not yet know the rule.
+
+19. **A price carries its provenance everywhere.** `PriceBasis` travels from the
     catalogue entry through the line item into the total and out to the CSV.
     Never display or export a figure without it — a guessed number that reads
     like a quoted one is how somebody budgets a room wrong.
@@ -328,7 +389,8 @@ src/
 npm test
 ```
 
-190 tests covering the parts where a bug is invisible on screen: room detection
+237 tests covering the parts where a bug is invisible on screen: stair geometry
+and every IRC check, storey elevations and the v5 migration, room detection
 (L-shapes, partitions, disconnected structures, winding, stable identity),
 collision (penetration depth, sliding, wall-snap orientation, wedged pieces),
 furniture placement end to end, clearance zones and circulation analysis,
@@ -342,6 +404,15 @@ should, does every fix it offers actually apply, and does applying one leave the
 design legal. The generator is then run past the advisor itself — a layout the
 app builds and its own critic marks down means one of the two has the rule
 wrong.
+
+The stair tests are the most important ones here, because they are the only ones
+where the failure mode is a person falling rather than a room looking wrong.
+They check three separate things: that the geometry is right (the steps add up
+to the storey, turns come out square, nothing is mirrored), that the checks fire
+when the code says they should and stay quiet when it does not, and that the
+**citations are correct** — a finding naming the wrong section is worse than no
+finding, because somebody will look it up, find it says something else, and stop
+trusting all of them.
 
 They have earned their place. Across five sessions they have caught a
 separating-axis test that under-reported penetration whenever one box's
@@ -365,16 +436,47 @@ square metres of floor.
 - ~~**Session 3** — furniture catalogue and hard collision.~~ ✅
 - ~~**Session 4** — clearance, ergonomics and the shopping list.~~ ✅
 - ~~**Session 5** — the design advisor and the room generator.~~ ✅
-- **Session 6 — VR walkthrough.** WebXR immersive mode with teleport locomotion,
-  so you can put a headset on and stand in the room you have just laid out.
-- **Session 7 — accounts and cloud sync.** Designs currently live only in this
-  browser's `localStorage`; one cleared cache loses everything. This is also the
-  session that makes shared project links and, eventually, subscription tiers
-  possible.
+- ~~**Session 6** — storeys, staircases and the IRC.~~ ✅
+- **Session 7 — roof and exterior.** Pitched, hipped and flat roofs, eaves and
+  gables. Cladding, render and brick. The view from outside. Site, plot boundary
+  and orientation.
+- **Session 8 — trace real floor plans, per storey.** Nobody draws a whole house
+  from memory. This is where somebody's actual home gets into the app.
+- **Session 9 — the services foundation, and electrical.** The routed-network
+  primitive built once, then receptacles, switches, fittings, circuits, the
+  panel, cable safe-zones and per-circuit load, to the NEC.
+- **Session 10 — water and drainage.** Supply runs and pipe sizing; then the
+  soil stack, waste branches, falls, traps, vents and the connection to the
+  sewer, to the IPC.
+- **Session 11 — heating and ventilation.** Room-by-room load to ACCA Manual J,
+  equipment selection to Manual S, ducts to Manual D.
+- **Session 12 — the drawing set.** A plan and a schedule per discipline, plus
+  elevations, dimension lines and annotations.
+- **Elsewhere in the queue** — a VR walkthrough, and accounts with cloud sync
+  (designs currently live only in this browser's `localStorage`, so one cleared
+  cache loses everything).
 - **Later** — an LLM advisor layered *on top of* the rules engine rather than
   replacing it: the rules give it measured facts to reason from and a way to be
   checked. Real looked-up prices. More retailers. A native app wrapping this
   same codebase.
+
+### About the code checking
+
+The app is built to **US codes**: the IRC for the shell, and — as those sessions
+land — the NEC for electrical, the IPC for plumbing and ACCA's manuals for
+heating. Choosing your jurisdiction comes later; for now the figures are the
+2021 IRC and the app says so.
+
+**Checking is not approval.** Nothing here is certified by anybody. A real build
+needs a permit, an inspection, and for anything structural, electrical or gas, a
+licensed professional. What the app does is catch the ordinary mistakes while
+they are still free to fix, and show its arithmetic — with the section number —
+to the person who will sign the work off. That is the difference between work an
+engineer has to redo and work an engineer can check in ten minutes.
+
+Structural design is deliberately out of scope. Load paths, beams and what can
+come out of a wall are an engineer's job, and being confidently wrong about them
+would be worse than saying nothing.
 
 ### Why the advisor is not an LLM (yet)
 

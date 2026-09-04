@@ -35,7 +35,7 @@
 
 import { distance } from '@/scene/planGraph';
 import { getCatalogEntry, resolveColorway } from '@/furniture/catalog';
-import { CLEARANCE_DEFAULTS, type Point2 } from '@/state/types';
+import { CLEARANCE_DEFAULTS, type Level, type Point2 } from '@/state/types';
 import {
   add,
   angleBetween,
@@ -188,7 +188,7 @@ const seatingFocal: Rule = (context) => {
     // Only offer the turn if the sofa can actually make it — rotating a long
     // sofa in a narrow room sweeps it into the walls.
     const turned = { ...sofa.box, rotation: wanted };
-    const legal = positionIsLegal(context.doc, context.region, sofa.item.id, turned, false);
+    const legal = positionIsLegal(context.doc, context.level, context.region, sofa.item.id, turned, false);
 
     findings.push(
       finding(context, {
@@ -312,7 +312,7 @@ const coffeeTableReach: Rule = (context) => {
     scale(forward, 0.375 + extentAlong(table.box, forward)),
   );
   const candidate = { ...table.box, center: target, rotation: sofa.item.rotation };
-  const legal = positionIsLegal(context.doc, context.region, table.item.id, candidate, false);
+  const legal = positionIsLegal(context.doc, context.level, context.region, table.item.id, candidate, false);
 
   const tooClose = gap < min;
 
@@ -402,7 +402,7 @@ const conversationGroup: Rule = (context) => {
   const target = add(at(anchor), scale(unit, -2.4));
   const rotation = rotationFacing(unit);
   const candidate = { ...mover.box, center: target, rotation };
-  const legal = positionIsLegal(context.doc, context.region, mover.item.id, candidate, false);
+  const legal = positionIsLegal(context.doc, context.level, context.region, mover.item.id, candidate, false);
 
   return [
     finding(context, {
@@ -500,7 +500,7 @@ const rugFit: Rule = (context) => {
   const target = { x: cx / seats.length, z: cz / seats.length };
   const rotation = sofa ? sofa.item.rotation : rug.item.rotation;
   const candidate = { ...rug.box, center: target, rotation };
-  const legal = positionIsLegal(context.doc, context.region, rug.item.id, candidate, true);
+  const legal = positionIsLegal(context.doc, context.level, context.region, rug.item.id, candidate, true);
 
   // A rug too small to reach the whole group is a different problem from one
   // that is simply in the wrong place.
@@ -522,7 +522,7 @@ const rugFit: Rule = (context) => {
     };
     const swapLegal =
       entry.width / 2 > rug.box.halfWidth &&
-      positionIsLegal(context.doc, context.region, rug.item.id, swapBox, true);
+      positionIsLegal(context.doc, context.level, context.region, rug.item.id, swapBox, true);
 
     return [
       finding(context, {
@@ -591,7 +591,7 @@ const wallHugging: Rule = (context) => {
   // Pull the sofa off its wall, along the direction it faces.
   const target = add(at(sofa), scale(forwardOf(sofa.item.rotation), 0.45));
   const candidate = { ...sofa.box, center: target };
-  const legal = positionIsLegal(context.doc, context.region, sofa.item.id, candidate, false);
+  const legal = positionIsLegal(context.doc, context.level, context.region, sofa.item.id, candidate, false);
 
   return [
     finding(context, {
@@ -651,7 +651,7 @@ const alignment: Rule = (context) => {
     );
 
     const candidate = { ...placed.box, rotation: snapped };
-    if (!positionIsLegal(context.doc, context.region, placed.item.id, candidate, false)) continue;
+    if (!positionIsLegal(context.doc, context.level, context.region, placed.item.id, candidate, false)) continue;
 
     findings.push(
       finding(context, {
@@ -866,7 +866,7 @@ function findLampSpot(context: RoomContext): { at: Point2; rotation: number } | 
   for (const candidate of candidates) {
     const box = { center: candidate, halfWidth: half, halfDepth: half, rotation: 0 };
     if (distanceToWalls(candidate, context.region) < half + 0.05) continue;
-    if (!positionIsLegal(context.doc, context.region, null, box, false)) continue;
+    if (!positionIsLegal(context.doc, context.level, context.region, null, box, false)) continue;
     // Face the middle of the room, so a shaded lamp throws light inwards.
     const toCenter = {
       x: context.region.interiorPoint.x - candidate.x,
@@ -1197,7 +1197,7 @@ function bestBedWall(
       const center = seatAgainst(wall, middle, bed.box.halfDepth, 0.02);
       const rotation = wall.seatRotation;
       const box = { ...bed.box, center, rotation };
-      if (!positionIsLegal(context.doc, context.region, bed.item.id, box, false)) continue;
+      if (!positionIsLegal(context.doc, context.level, context.region, bed.item.id, box, false)) continue;
       // Prefer the longest blank wall, and heavily prefer one with no window.
       candidates.push({ at: center, rotation, score: spanLength(span) - penalty });
     }
@@ -1240,7 +1240,7 @@ const workspace: Rule = (context) => {
       halfDepth: entry.depth / 2,
       rotation: desk.item.rotation + Math.PI,
     };
-    const legal = positionIsLegal(context.doc, context.region, null, box, false);
+    const legal = positionIsLegal(context.doc, context.level, context.region, null, box, false);
 
     findings.push(
       finding(context, {
@@ -1461,13 +1461,15 @@ function legalIgnoring(
   box: { center: Point2; halfWidth: number; halfDepth: number; rotation: number },
   ignore: ReadonlySet<string>,
 ): boolean {
-  const trimmed = {
-    ...context.doc,
-    furniture: context.doc.furniture.filter(
+  // The other chairs are about to vacate their places, so they are treated as
+  // absent while the arrangement is checked.
+  const trimmed: Level = {
+    ...context.level,
+    furniture: context.level.furniture.filter(
       (item) => item.id === itemId || !ignore.has(item.id),
     ),
   };
-  return positionIsLegal(trimmed, context.region, itemId, box, false);
+  return positionIsLegal(context.doc, trimmed, context.region, itemId, box, false);
 }
 
 /* --------------------------- 14. Circulation --------------------------- */

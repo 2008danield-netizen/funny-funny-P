@@ -12,6 +12,7 @@ import { useCallback, useRef, useState } from 'react';
 import { Viewport } from './Viewport';
 import { Toolbar } from './Toolbar';
 import { PlanPanel } from './panels/PlanPanel';
+import { StoreyPanel } from './panels/StoreyPanel';
 import { CataloguePanel } from './panels/CataloguePanel';
 import { AdvisorPanel } from './panels/AdvisorPanel';
 import { IssuesPanel } from './panels/IssuesPanel';
@@ -134,6 +135,7 @@ export function App() {
             <CataloguePanel />
             <IssuesPanel />
             <ShoppingListPanel />
+            <StoreyPanel />
             <PlanPanel />
             <LightingPanel />
             <ViewPanel

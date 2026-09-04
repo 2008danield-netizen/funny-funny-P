@@ -24,6 +24,10 @@ import { Lighting } from '@/scene/Lighting';
 import { Building } from '@/scene/Building';
 import { Furnishings } from '@/scene/Furnishings';
 import { ClearanceOverlay } from '@/scene/ClearanceOverlay';
+import { Staircases } from '@/scene/Staircases';
+import { GhostLevel } from '@/scene/GhostLevel';
+import { stairGeometry } from '@/building/stairs';
+import { activeLevel, elevationOf, floorHoles, levelBelow } from '@/state/levels';
 import { analyseClearance } from '@/clearance/analyze';
 import { MaterialLibrary } from '@/scene/materials/MaterialLibrary';
 import { designStore } from '@/state/store';
@@ -46,7 +50,20 @@ export class Engine {
   private building: Building;
   private furnishings: Furnishings;
   private clearanceOverlay: ClearanceOverlay;
+  private staircases: Staircases;
+  private ghost: GhostLevel;
   private lighting: Lighting;
+
+  /**
+   * Everything belonging to the storey being edited, parented together.
+   *
+   * One group carrying one elevation is what keeps "the floor is at y = 0"
+   * true for every builder below this line. Walls, floors, furniture, stairs
+   * and the clearance overlay all still work in their own level's coordinates;
+   * this group is the single place that knows how high off the ground that
+   * level actually is.
+   */
+  private levelGroup = new THREE.Group();
   private editController: EditController;
 
   private clock = new THREE.Clock();
@@ -80,13 +97,19 @@ export class Engine {
     this.scene.add(this.lighting.group);
 
     this.building = new Building(this.materials);
-    this.scene.add(this.building.group);
+    this.levelGroup.name = 'ActiveLevel';
+    this.scene.add(this.levelGroup);
+    this.levelGroup.add(this.building.group);
 
     this.furnishings = new Furnishings();
-    this.scene.add(this.furnishings.group);
+    this.levelGroup.add(this.furnishings.group);
 
     this.clearanceOverlay = new ClearanceOverlay();
-    this.scene.add(this.clearanceOverlay.group);
+    this.levelGroup.add(this.clearanceOverlay.group);
+    this.staircases = new Staircases();
+    this.levelGroup.add(this.staircases.group);
+    this.ghost = new GhostLevel();
+    this.levelGroup.add(this.ghost.group);
 
     // The edit controller drives OrbitControls' `enabled` flag directly so that
     // a drag on a wall does not also orbit the camera.
@@ -117,7 +140,7 @@ export class Engine {
 
   /** Moves the camera to a named viewpoint. */
   goToViewpoint(viewpoint: ViewpointId): void {
-    const plan = designStore.getState().plan;
+    const plan = activeLevel(designStore.getState()).plan;
     this.cameraController.goTo(viewpoint, plan, this.focusPoint());
   }
 
@@ -167,36 +190,56 @@ export class Engine {
   /** Pushes a design document into the scene. */
   private applyDocument(doc: DesignDocument): void {
     const previous = this.appliedDocument;
+    const level = activeLevel(doc);
+    const previousLevel = previous ? activeLevel(previous) : null;
+
+    // Switching storey changes everything on screen without changing a single
+    // sub-object, so it has to be its own trigger rather than being inferred.
+    const levelSwitched = previousLevel?.id !== level.id;
 
     // Reference comparison is valid because the store treats documents as
     // immutable — an unchanged sub-object is guaranteed to be the same object.
-    const planChanged = !previous || previous.plan !== doc.plan;
+    const planChanged = levelSwitched || !previousLevel || previousLevel.plan !== level.plan;
     const ceilingsChanged = !previous || previous.showCeilings !== doc.showCeilings;
 
-    if (planChanged || ceilingsChanged) {
-      this.building.update(doc.plan, doc.showCeilings);
+    // The whole storey rides at its own height above the ground.
+    this.levelGroup.position.y = elevationOf(doc, level.id);
+
+    const holes = floorHoles(doc, level.id, (stair) => stairGeometry(doc, stair).wellOpening);
+
+    if (planChanged || ceilingsChanged || previous?.stairs !== doc.stairs) {
+      this.building.update(level.plan, doc.showCeilings, holes);
     }
-    if (!previous || previous.furniture !== doc.furniture) {
-      this.furnishings.update(doc.furniture);
+    if (levelSwitched || !previousLevel || previousLevel.furniture !== level.furniture) {
+      this.furnishings.update(level.furniture);
+    }
+    if (levelSwitched || previous?.stairs !== doc.stairs || planChanged) {
+      this.staircases.update(doc, level.id);
+    }
+
+    // The storey below, as an outline to line new walls up against.
+    if (levelSwitched || planChanged || previous?.levels !== doc.levels) {
+      this.ghost.update(levelBelow(doc, level.id)?.plan ?? null);
     }
 
     // Clearance depends on the plan, the furniture and the settings alike, so
     // it is refreshed whenever any of them moves. The overlay itself skips the
     // work while hidden.
     if (
-      !previous ||
-      previous.plan !== doc.plan ||
-      previous.furniture !== doc.furniture ||
-      previous.clearance !== doc.clearance
+      levelSwitched ||
+      !previousLevel ||
+      previousLevel.plan !== level.plan ||
+      previousLevel.furniture !== level.furniture ||
+      previous?.clearance !== doc.clearance
     ) {
       this.refreshClearance();
     }
     if (planChanged) {
-      this.cameraController.configureForPlan(doc.plan);
+      this.cameraController.configureForPlan(level.plan);
     }
 
     if (!previous || previous.lighting !== doc.lighting || planChanged) {
-      this.lighting.apply(doc.lighting, doc.plan);
+      this.lighting.apply(doc.lighting, level.plan);
       this.renderer.webgl.shadowMap.enabled = doc.lighting.shadowsEnabled;
     }
 
@@ -206,7 +249,8 @@ export class Engine {
   /** Recomputes the clearance report and pushes it to the overlay. */
   private refreshClearance(): void {
     if (!editorStore.getState().showClearance) return;
-    const report = analyseClearance(designStore.getState());
+    const doc = designStore.getState();
+    const report = analyseClearance(doc, activeLevel(doc));
     this.clearanceOverlay.update(report.zones, report.violatedZoneIds);
   }
 
@@ -283,6 +327,8 @@ export class Engine {
 
     this.editController.dispose();
     this.clearanceOverlay.dispose();
+    this.staircases.dispose();
+    this.ghost.dispose();
     this.furnishings.dispose();
     this.building.dispose();
     this.lighting.dispose();

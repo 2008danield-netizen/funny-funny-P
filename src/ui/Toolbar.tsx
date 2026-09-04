@@ -61,6 +61,13 @@ const TOOLS: ToolDefinition[] = [
     hint: 'Pick something from the catalogue, then click inside a room.',
     shortcut: 'F',
   },
+  {
+    id: 'stair',
+    label: 'Stair',
+    icon: 'T',
+    hint: 'Click the floor to put the foot of a staircase there.',
+    shortcut: 'T',
+  },
 ];
 
 export function Toolbar() {

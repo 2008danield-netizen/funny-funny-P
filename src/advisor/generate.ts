@@ -35,7 +35,13 @@ import { findRegions, type Region } from '@/scene/planGraph';
 import { pointInPolygon, type Collider, type Obb } from '@/physics/collision';
 import { itemFootprint } from '@/physics/colliders';
 import { analyseCirculation } from '@/clearance/circulation';
-import { CLEARANCE_DEFAULTS, type DesignDocument, type FurnitureItem, type Point2 } from '@/state/types';
+import {
+  CLEARANCE_DEFAULTS,
+  type DesignDocument,
+  type FurnitureItem,
+  type Level,
+  type Point2,
+} from '@/state/types';
 import {
   add,
   blankSpans,
@@ -100,6 +106,7 @@ export interface FurnishResult {
 /** Everything a program function needs, and the tools to place with. */
 interface Build {
   doc: DesignDocument;
+  level: Level;
   region: Region;
   walls: RoomWall[];
   frame: RoomFrame;
@@ -179,13 +186,13 @@ function place(
     const isRug = entry.layer === 'floor';
     if (!build.placer.fits(box, build.region, { isRug })) continue;
 
-    const result = placeFurniture(build.doc, catalogId, at, { rotation, snapWalls: false });
+    const result = placeFurniture(build.doc, build.level, catalogId, at, { rotation, snapWalls: false });
     if (!result.id) continue;
 
-    const item = build.doc.furniture.find((candidate) => candidate.id === result.id);
+    const item = build.level.furniture.find((candidate) => candidate.id === result.id);
     if (item) applyStyle(item, entry, build.style);
 
-    build.placer.setFurniture(build.doc.furniture);
+    build.placer.setFurniture(build.level.furniture);
     build.placed.push(result.id);
     // A required piece is the reason the room exists; everything else can be
     // taken back out if the layout turns out too tight to walk through.
@@ -867,7 +874,7 @@ function relieveCirculation(build: Build): void {
         (candidate) =>
           // Priority 0 obstructs nothing (a rug); removing it cannot help.
           candidate.priority > 0 &&
-          build.doc.furniture.some((item) => item.id === candidate.id),
+          build.level.furniture.some((item) => item.id === candidate.id),
       )
       // Least important first.
       .sort((a, b) => b.priority - a.priority);
@@ -889,10 +896,10 @@ function relieveCirculation(build: Build): void {
     if (!choice || choice.route.narrowest <= before.narrowest + 1e-6) return;
 
     const victim = candidates[choice.index]!;
-    const item = build.doc.furniture.find((candidate) => candidate.id === victim.id);
+    const item = build.level.furniture.find((candidate) => candidate.id === victim.id);
     const refund = item ? (getCatalogEntry(item.catalogId).price?.amount ?? 0) : 0;
 
-    removeFurniture(build.doc, victim.id);
+    removeFurniture(build.level, victim.id);
     build.removable = build.removable.filter((entry) => entry.id !== victim.id);
     build.placed = build.placed.filter((id) => id !== victim.id);
     // Give the money back, or the reported spend counts a piece that is no
@@ -908,7 +915,7 @@ function relieveCirculation(build: Build): void {
 
 /** The standing furniture inside the room being furnished. */
 function roomOccupants(build: Build): FurnitureItem[] {
-  return build.doc.furniture.filter(
+  return build.level.furniture.filter(
     (item) =>
       getCatalogEntry(item.catalogId).layer !== 'floor' &&
       pointInPolygon({ x: item.x, z: item.z }, build.region.polygon),
@@ -929,7 +936,7 @@ function routeWidth(
   const report = analyseCirculation(
     build.region,
     obstacles,
-    doorwaysOf(build.doc, build.region),
+    doorwaysOf(build.level, build.region),
     build.doc.clearance.walkwayWidth,
   );
 
@@ -954,9 +961,9 @@ function isBlocked({ narrowest, maroonedArea }: { narrowest: number; maroonedAre
  * exporting it from there would widen that module's surface for one caller, and
  * the logic is four lines.
  */
-function doorwaysOf(doc: DesignDocument, region: Region): Point2[] {
+function doorwaysOf(level: Level, region: Region): Point2[] {
   const points: Point2[] = [];
-  for (const wall of roomWalls(doc.plan, region)) {
+  for (const wall of roomWalls(level.plan, region)) {
     for (const opening of wall.segment.wall.openings) {
       if (opening.kind !== 'door') continue;
       const t = opening.offset / Math.max(1e-6, wall.length);
@@ -994,10 +1001,11 @@ export function suggestProgram(area: number): Exclude<RoomProgram, 'unknown'> {
  */
 export function furnishRoom(
   doc: DesignDocument,
+  level: Level,
   roomKey: string,
   options: FurnishOptions = {},
 ): FurnishResult {
-  const region = findRegions(doc.plan).find((candidate) => candidate.key === roomKey);
+  const region = findRegions(level.plan).find((candidate) => candidate.key === roomKey);
   if (!region) {
     return {
       placed: [],
@@ -1010,10 +1018,10 @@ export function furnishRoom(
 
   let removed = 0;
   if (options.clearExisting) {
-    const inside = doc.furniture.filter((item) =>
+    const inside = level.furniture.filter((item) =>
       pointInPolygon({ x: item.x, z: item.z }, region.polygon),
     );
-    for (const item of inside) removeFurniture(doc, item.id);
+    for (const item of inside) removeFurniture(level, item.id);
     removed = inside.length;
   }
 
@@ -1022,13 +1030,14 @@ export function furnishRoom(
 
   const build: Build = {
     doc,
+    level,
     region,
-    walls: roomWalls(doc.plan, region),
-    frame: roomFrame(doc.plan, region),
+    walls: roomWalls(level.plan, region),
+    frame: roomFrame(level.plan, region),
     // Required clearances are respected, so the generator will not park a
     // wardrobe where a door opens — the one thing a person laying a room out
     // never does and a naive generator always does.
-    placer: new Placer(doc.plan, doc.furniture, { respectClearance: true }),
+    placer: new Placer(level.plan, level.furniture, { respectClearance: true }),
     style: options.style ?? 'calm',
     remaining: options.budget ?? null,
     spend: 0,

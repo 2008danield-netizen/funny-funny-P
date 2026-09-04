@@ -17,7 +17,7 @@ import { obbIntersects, type Collider } from '@/physics/collision';
 import { findRegions, openingCenter, resolveWalls, type Region } from '@/scene/planGraph';
 import { analyseCirculation, type CirculationReport } from './circulation';
 import { furnitureZones, openingZones, type ClearanceZone } from './zones';
-import type { DesignDocument, Point2 } from '@/state/types';
+import type { DesignDocument, Level, Point2 } from '@/state/types';
 
 export type IssueSeverity = 'required' | 'advisory';
 
@@ -64,17 +64,17 @@ function metres(value: number): string {
  * to obstruct it and would report a spurious "narrowest route" equal to its own
  * width.
  */
-export function analyseClearance(doc: DesignDocument): ClearanceReport {
-  const regions = findRegions(doc.plan);
+export function analyseClearance(doc: DesignDocument, level: Level): ClearanceReport {
+  const regions = findRegions(level.plan);
   const issues: ClearanceIssue[] = [];
 
-  const zones = [...furnitureZones(doc.furniture), ...openingZones(doc.plan)];
+  const zones = [...furnitureZones(level.furniture), ...openingZones(level.plan)];
   const violatedZoneIds = new Set<string>();
 
   /* ---------------- Zone intrusions ---------------- */
 
   for (const zone of zones) {
-    for (const item of doc.furniture) {
+    for (const item of level.furniture) {
       // A zone's owner never violates its own zone, and rugs lie flat under
       // everything — a doormat in a door swing is not a problem.
       if (zone.owner.kind === 'furniture' && zone.owner.id === item.id) continue;
@@ -108,7 +108,7 @@ export function analyseClearance(doc: DesignDocument): ClearanceReport {
   const walkway = doc.clearance.walkwayWidth;
 
   for (const region of regions) {
-    const itemsHere = doc.furniture.filter(
+    const itemsHere = level.furniture.filter(
       (item) =>
         getCatalogEntry(item.catalogId).layer !== 'floor' &&
         roomKeyAt(regions, { x: item.x, z: item.z }) === region.key,
@@ -122,7 +122,7 @@ export function analyseClearance(doc: DesignDocument): ClearanceReport {
       ...itemFootprint(item),
     }));
 
-    const report = analyseCirculation(region, obstacles, doorwaysOf(doc, region), walkway);
+    const report = analyseCirculation(region, obstacles, doorwaysOf(level, region), walkway);
     circulation.set(region.key, report);
 
     if (report.marooned.length > 0) {
@@ -157,7 +157,7 @@ export function analyseClearance(doc: DesignDocument): ClearanceReport {
 
   /* ---------------- Furniture that ended up nowhere ---------------- */
 
-  for (const item of doc.furniture) {
+  for (const item of level.furniture) {
     if (roomKeyAt(regions, { x: item.x, z: item.z }) !== null) continue;
     issues.push({
       id: `stranded:${item.id}`,
@@ -213,11 +213,11 @@ function pointInside(point: Point2, region: Region): boolean {
 }
 
 /** World positions of the doorways opening into a room. */
-function doorwaysOf(doc: DesignDocument, region: Region): Point2[] {
+function doorwaysOf(level: Level, region: Region): Point2[] {
   const points: Point2[] = [];
   const wallIds = new Set(region.wallIds);
 
-  for (const segment of resolveWalls(doc.plan)) {
+  for (const segment of resolveWalls(level.plan)) {
     if (!wallIds.has(segment.wall.id)) continue;
     for (const opening of segment.wall.openings) {
       if (opening.kind !== 'door') continue;
@@ -245,11 +245,11 @@ function doorwaysOf(doc: DesignDocument, region: Region): Point2[] {
  * the rooms that need the most help.
  */
 export function violatesRequiredClearance(
-  doc: DesignDocument,
+  level: Level,
   itemId: string,
   footprint: Parameters<typeof obbIntersects>[0],
 ): boolean {
-  const zones = [...furnitureZones(doc.furniture), ...openingZones(doc.plan)];
+  const zones = [...furnitureZones(level.furniture), ...openingZones(level.plan)];
 
   for (const zone of zones) {
     if (zone.severity !== 'required') continue;

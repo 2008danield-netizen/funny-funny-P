@@ -1546,3 +1546,216 @@ select {
   line-height: 1.6;
   color: var(--text-muted);
 }
+
+/* ============================ Storeys and stairs ========================
+ *
+ * The level strip reads bottom to top the way a building does. Reversing it
+ * to a conventional top-down list saves nothing and makes a person hesitate
+ * every time they use it.
+ */
+
+.levels {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.levels__list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.levels__row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.levels__row--active {
+  background: var(--accent-dim);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.levels__pick {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.levels__pick:hover { background: var(--surface-hover); }
+.levels__row--active .levels__pick:hover { background: transparent; }
+
+.levels__name {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.levels__row--active .levels__name { color: var(--accent); }
+
+.levels__meta {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.levels__rename {
+  flex: 1;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--surface-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.levels__remove {
+  flex: none;
+  width: 26px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.levels__remove:hover { color: #c86458; background: var(--surface-hover); }
+
+.levels__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.levels__status {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* --------------------------------- Stairs -------------------------------- */
+
+.stairs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.stairs__item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.stairs__item--active { border-color: var(--accent); }
+.stairs__item--violation { border-left: 2px solid #c86458; }
+
+.stairs__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.stairs__head:hover { background: var(--surface-hover); }
+
+.stairs__name {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.stairs__meta {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.stairs__editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.stairs__code {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-top: 1px solid var(--border);
+}
+
+.stairs__finding {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-left: 2px solid transparent;
+}
+
+.stairs__finding--violation {
+  border-left-color: #c86458;
+  background: rgba(200, 100, 88, 0.07);
+}
+
+.stairs__finding--caution {
+  border-left-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.stairs__finding-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+
+/* The citation is the point of the whole finding, so it is always visible
+   rather than hidden behind a hover or a click. */
+.stairs__section {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  padding: 1px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.stairs__finding-detail {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.stairs__finding-remedy {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}

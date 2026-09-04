@@ -33,8 +33,11 @@
  *      `state/migrate.ts` upgrades v1 documents by tracing a rectangle.
  * v3 — furniture placed in the plan.
  * v4 — clearance settings and per-item price overrides.
+ * v5 — a BUILDING of levels rather than a single plan, plus stairs, floor
+ *      voids, and the reserved shape for roofs, the site and the service
+ *      networks (electrical, water, drainage, heating).
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /** Which measurement system the UI displays. Storage is always metric. */
 export type UnitSystem = 'metric' | 'imperial';
@@ -231,6 +234,250 @@ export interface FurnitureItem {
   size?: { width: number; depth: number; height: number };
 }
 
+/* ─────────────────────────────── The building ────────────────────────────── */
+
+/**
+ * One storey.
+ *
+ * A level owns everything that is *on* that floor: its walls, its rooms, its
+ * furniture, and any holes cut through its slab. It does NOT own its own
+ * height above the ground — see `elevationOf` in `state/levels.ts`, which sums
+ * the levels below it. Storing an absolute elevation as well would be a second
+ * source of truth for the same fact, and the two would drift the first time
+ * somebody changed a ceiling height on the ground floor.
+ */
+export interface Level {
+  id: string;
+  /** "First Floor", "Basement". Shown on the level strip. */
+  name: string;
+  /**
+   * Floor-to-ceiling height for walls drawn on this level, in metres.
+   *
+   * Distinct from `plan.defaultWallHeight`, which is the height a NEW wall gets
+   * and which the user may vary wall by wall. This is the storey height the
+   * level above sits on top of.
+   */
+  wallHeight: number;
+  /** Thickness of the floor structure at this level's base, in metres. */
+  slabThickness: number;
+  plan: PlanModel;
+  furniture: FurnitureItem[];
+  /**
+   * Holes cut through this level's floor that the user made deliberately —
+   * a double-height space, a light well.
+   *
+   * Stairwell openings are NOT stored here. They are derived from the stairs
+   * that arrive at this level (see `floorHoles`), because a stair and the hole
+   * it comes up through are the same fact stated twice, and storing both is how
+   * you end up with a staircase that arrives at a solid ceiling.
+   */
+  voids: FloorVoid[];
+}
+
+/** A hole cut through a level's floor. */
+export interface FloorVoid {
+  id: string;
+  /** Outline on the floor plane, in world XZ. */
+  polygon: Point2[];
+  /** Shown in the inspector, e.g. "Stairwell", "Light well". */
+  name: string;
+}
+
+/* --------------------------------- Stairs -------------------------------- */
+
+/** Which way a stair turns as it rises, seen from the bottom looking up. */
+export type StairTurn = 'left' | 'right';
+
+/**
+ * The shape a stair makes in plan.
+ *
+ * A discriminated union rather than a pile of optional fields, so that a
+ * straight flight carries no landing data and a spiral carries no turn
+ * direction it does not use. Every variant is measured in RISERS rather than in
+ * metres: a flight is a whole number of equal steps, and expressing it any
+ * other way lets a design exist that cannot be built.
+ */
+export type StairForm =
+  /** One flight, bottom to top. */
+  | { kind: 'straight' }
+  /** Two flights at 90°, with a landing between them. */
+  | { kind: 'l-shaped'; turn: StairTurn; risersBeforeLanding: number }
+  /** Two flights at 180°, with a half-landing between them. */
+  | { kind: 'u-shaped'; turn: StairTurn; risersBeforeLanding: number }
+  /**
+   * A turn made of tapered treads instead of a landing.
+   *
+   * Cheaper in floor area than a landing and correspondingly fussier under the
+   * code, because tread depth has to be measured at the walkline rather than at
+   * the middle of the step (IRC R311.7.5.2.1).
+   */
+  | {
+      kind: 'winder';
+      turn: StairTurn;
+      risersBeforeWinder: number;
+      winderTreads: number;
+      /**
+       * Radius of the newel post the winders turn around.
+       *
+       * Not decoration — it is what makes a winder legal. Tread depth is
+       * measured along an arc 12 in out from the narrow edge, so the arc length
+       * per tread is (newel radius + 12 in) x the angle. Converge the treads to
+       * a point and three winders across a 90 degree turn give 6 1/4 in at the
+       * walkline against the 10 in the code asks for. The post is how the
+       * geometry is rescued, and the app has to model it to tell you whether
+       * yours is big enough.
+       */
+      innerRadius: number;
+    }
+  /** A helix around a central pole. Its own code section entirely. */
+  | { kind: 'spiral'; clockwise: boolean; innerRadius: number };
+
+export type StairKind = StairForm['kind'];
+
+/**
+ * A staircase, rising from one level to the one above it.
+ *
+ * Stored on the building rather than on a level because a stair belongs to
+ * neither storey and to both: it stands on the lower one's floor and cuts a
+ * hole in the upper one's.
+ *
+ * Note what is NOT stored: the riser height. It is the level rise divided by
+ * the riser count, and it must be, because a stair whose steps do not add up to
+ * exactly the floor-to-floor height is a stair with a trip hazard at one end.
+ * Deriving it means changing a ceiling height re-proportions the stairs
+ * automatically instead of silently invalidating them.
+ */
+export interface Stair {
+  id: string;
+  name: string;
+  /** The level this stair stands on. It arrives at the one above. */
+  fromLevelId: string;
+  form: StairForm;
+  /**
+   * Centre of the bottom riser's leading edge, in world XZ.
+   *
+   * The bottom of the stair rather than its centroid: it is the end you arrive
+   * at, the end that has to line up with a doorway, and the end that stays put
+   * when you add a step.
+   */
+  at: Point2;
+  /** Direction of travel at the bottom. Same convention as furniture. */
+  rotation: number;
+  /** Clear width, in metres. */
+  width: number;
+  /** Going: the horizontal depth of one tread, in metres. */
+  treadDepth: number;
+  /** How many risers from the lower floor to the upper one. */
+  riserCount: number;
+  /** Nosing projection beyond the riser below, in metres. */
+  nosing: number;
+  /** Whether a handrail is modelled. Required by code above 3 risers. */
+  handrail: 'none' | 'left' | 'right' | 'both';
+}
+
+/* ------------------------- Reserved for later sessions -------------------- */
+
+/**
+ * The plot the building stands on.
+ *
+ * Mostly empty until session 7, but `northAngle` earns its place now: it is
+ * needed by every plan drawing, and it is the input to any daylight study. The
+ * sewer connection matters to session 10, because a drain's fall is measured
+ * from the fixture down to a real invert elevation at the boundary — without
+ * one, drainage design has no datum to work to.
+ */
+export interface Site {
+  /**
+   * Compass bearing of world +Z, in radians clockwise from north.
+   *
+   * Zero means "+Z is north", which is the assumption every drawing made
+   * before this field existed was implicitly making.
+   */
+  northAngle: number;
+  /** Plot outline, in world XZ. Empty until the user draws one. */
+  boundary: Point2[];
+  /** Where the building's drainage meets the public sewer. Session 10. */
+  sewerConnection: { at: Point2; invertDepth: number } | null;
+}
+
+/** Which service a routed network carries. Extended as each session lands. */
+export type ServiceSystem =
+  | 'cold-water'
+  | 'hot-water'
+  | 'waste'
+  | 'soil'
+  | 'vent'
+  | 'circuit'
+  | 'gas'
+  | 'supply-air'
+  | 'return-air';
+
+/**
+ * A point on a service network: a fixture, a fitting, an outlet, a junction.
+ *
+ * Deliberately thin. Each discipline adds its own detail in its own session —
+ * a receptacle needs a mounting height and a circuit, a drain needs an invert
+ * elevation and a fixture-unit loading — and `detail` is where that goes. What
+ * is fixed here is the part every discipline shares: where it is, which storey
+ * it is on, and what it connects to.
+ */
+export interface ServiceNode {
+  id: string;
+  levelId: string;
+  at: Point2;
+  /** Height above that level's finished floor, in metres. */
+  height: number;
+  kind: string;
+  detail: Record<string, unknown>;
+}
+
+/** A length of pipe, duct or cable between two nodes. */
+export interface ServiceRun {
+  id: string;
+  from: string;
+  to: string;
+  /** Intermediate points, so a run can go round a corner or up a wall. */
+  waypoints: Array<{ at: Point2; height: number; levelId: string }>;
+  /** Nominal size in metres — pipe bore, conduit diameter, cable CSA. */
+  size: number;
+  detail: Record<string, unknown>;
+}
+
+/**
+ * One discipline's worth of routed network.
+ *
+ * Every service in a building is the same geometric object: nodes joined by
+ * runs, threaded through walls and floors. Electrical, water, drainage and
+ * ventilation differ in their rules, their sizes and their symbols — not in
+ * their shape. Modelling that once means each later session adds a rule set and
+ * a renderer rather than a new spatial model.
+ */
+export interface ServiceNetwork {
+  id: string;
+  system: ServiceSystem;
+  name: string;
+  nodes: ServiceNode[];
+  runs: ServiceRun[];
+}
+
+/**
+ * A roof over the building. Session 7.
+ *
+ * Reserved rather than designed: hips, valleys, dormers and overhangs are a
+ * geometry problem in their own right and guessing at their shape now would be
+ * inventing a schema nobody has tested against real roofs.
+ */
+export interface Roof {
+  id: string;
+  /** The level this roof sits on top of. */
+  overLevelId: string;
+  kind: 'flat' | 'gable' | 'hip' | 'shed';
+  /** Rise over run, e.g. 0.5 for a 6:12 pitch. */
+  pitch: number;
+  /** How far the eaves project beyond the wall, in metres. */
+  overhang: number;
+}
+
 /** The complete, serialisable state of one design. */
 export interface DesignDocument {
   schemaVersion: number;
@@ -239,8 +486,22 @@ export interface DesignDocument {
   /** ISO timestamp of the last modification. */
   updatedAt: string;
 
-  plan: PlanModel;
-  furniture: FurnitureItem[];
+  /**
+   * The storeys, ordered from the bottom up.
+   *
+   * Always at least one. Index 0 is the lowest — a basement if there is one,
+   * otherwise the ground floor — and its finished floor is the site datum.
+   */
+  levels: Level[];
+  /** Which level the editor is working on. */
+  activeLevelId: string;
+
+  stairs: Stair[];
+  roofs: Roof[];
+  site: Site;
+  /** Empty until session 9. See `ServiceNetwork`. */
+  services: ServiceNetwork[];
+
   lighting: LightingSpec;
   clearance: ClearanceSettings;
 
@@ -259,12 +520,6 @@ export interface DesignDocument {
 
   /** Display preference. Does not affect stored values. */
   units: UnitSystem;
-
-  /*
-   * FUTURE SESSIONS ADD THEIR STATE HERE, for example:
-   *   advisorNotes: AdvisorNote[];      // session 5
-   * Adding an optional field is backward-compatible and needs no schema bump.
-   */
 }
 
 /* ────────────────────────────── Clearance ────────────────────────────── */
@@ -314,6 +569,32 @@ export const CLEARANCE_DEFAULTS = {
   walkwayTight: 0.75,
   /** Grid resolution used by the circulation analysis. */
   gridCell: 0.1,
+} as const;
+
+/**
+ * Limits for storeys and stairs. All metres unless stated.
+ *
+ * These are app limits — what the UI will let you type — not code limits.
+ * The code limits live in `src/code/irc.ts` and are checked, cited and
+ * reported rather than enforced, for the same reason clearance is advisory:
+ * the app's job is to tell you what you are doing, not to refuse to draw it.
+ */
+export const LEVEL_LIMITS = {
+  wallHeight: { min: 2.0, max: 6, step: 0.05 },
+  /** Floor structure between storeys. 250 mm is a typical joisted floor. */
+  slabThickness: { min: 0.1, max: 0.6, step: 0.01 },
+  maxLevels: 6,
+} as const;
+
+export const STAIR_LIMITS = {
+  width: { min: 0.6, max: 2.4, step: 0.01 },
+  treadDepth: { min: 0.15, max: 0.45, step: 0.005 },
+  riserCount: { min: 2, max: 30 },
+  nosing: { min: 0, max: 0.04, step: 0.002 },
+  /** Radius of the pole a spiral stair winds around. */
+  spiralInnerRadius: { min: 0.05, max: 0.6, step: 0.01 },
+  /** IRC R311.7.5.2.1 permits winder treads; more than three is unusual. */
+  winderTreads: { min: 2, max: 4 },
 } as const;
 
 /** Limits and tolerances for furniture placement. All metres. */

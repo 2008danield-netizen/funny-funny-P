@@ -91,7 +91,7 @@ export function buildShoppingList(
   roomNameOf: (item: FurnitureItem) => string | null,
 ): ShoppingList {
   const grouped = new Map<string, FurnitureItem[]>();
-  for (const item of doc.furniture) {
+  for (const item of doc.levels.flatMap((level) => level.furniture)) {
     const list = grouped.get(item.catalogId) ?? [];
     list.push(item);
     grouped.set(item.catalogId, list);
@@ -156,7 +156,7 @@ export function buildShoppingList(
     total,
     basis: lines.length === 0 ? 'unknown' : basis,
     unpricedLines,
-    itemCount: doc.furniture.length,
+    itemCount: doc.levels.reduce((count, level) => count + level.furniture.length, 0),
   };
 }
 

@@ -11,7 +11,7 @@
  * and neither owns the other.
  */
 
-export type SelectionKind = 'wall' | 'vertex' | 'opening' | 'floor' | 'furniture';
+export type SelectionKind = 'wall' | 'vertex' | 'opening' | 'floor' | 'furniture' | 'stair';
 
 export interface Selection {
   kind: SelectionKind | null;
@@ -31,7 +31,9 @@ export type EditTool =
   /** Click a wall to place a window. */
   | 'window'
   /** Click inside a room to drop the armed catalogue item. */
-  | 'furnish';
+  | 'furnish'
+  /** Click a spot on the floor to put the foot of a staircase there. */
+  | 'stair';
 
 export interface EditorState {
   tool: EditTool;

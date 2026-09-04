@@ -201,6 +201,62 @@ function migrateV3ToV4(doc: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+
+/**
+ * v4 to v5 — one plan becomes a building of one storey.
+ *
+ * The whole of somebody's design moves down a level, quite literally: the plan
+ * they drew, the furniture they placed and the rooms they painted all become
+ * the ground floor of a one-storey building. Nothing is dropped, and a document
+ * that has been through this reads back exactly as it did before — there is
+ * simply now a level strip above it with one entry on it.
+ *
+ * That has to be true. This is the fifth migration and the first that changes
+ * the SHAPE of the document rather than adding to it, and a design somebody has
+ * spent an evening on is not something to be casual with.
+ */
+function migrateV4ToV5(doc: Record<string, unknown>): Record<string, unknown> {
+  const plan = doc.plan;
+  const furniture = Array.isArray(doc.furniture) ? doc.furniture : [];
+
+  // Wall height for the storey: whatever the plan was drawing walls at, since
+  // that is the height the user actually chose.
+  const planRecord = typeof plan === 'object' && plan !== null ? (plan as Record<string, unknown>) : {};
+  const wallHeight =
+    typeof planRecord.defaultWallHeight === 'number' && planRecord.defaultWallHeight > 0
+      ? planRecord.defaultWallHeight
+      : 2.6;
+
+  const level = {
+    id: 'lv1',
+    // US convention: the storey at ground level is the First Floor.
+    name: 'First Floor',
+    wallHeight,
+    slabThickness: 0.25,
+    plan,
+    furniture,
+    voids: [],
+  };
+
+  const migrated: Record<string, unknown> = {
+    ...doc,
+    schemaVersion: 5,
+    levels: [level],
+    activeLevelId: 'lv1',
+    stairs: [],
+    roofs: [],
+    site: { northAngle: 0, boundary: [], sewerConnection: null },
+    services: [],
+  };
+
+  // The old top-level fields are gone; leaving them would give every reader two
+  // places to look for the same plan and one of them would eventually be stale.
+  delete migrated.plan;
+  delete migrated.furniture;
+
+  return migrated;
+}
+
 /**
  * Brings a document up to the current schema.
  *
@@ -225,6 +281,9 @@ export function migrateDocument(input: Record<string, unknown>): Record<string, 
   }
   if (declared < 4) {
     doc = migrateV3ToV4(doc);
+  }
+  if (declared < 5) {
+    doc = migrateV4ToV5(doc);
   }
 
   return doc;

@@ -33,7 +33,7 @@ import {
 import { WALL_MATERIAL_SLOT, buildOpeningFurniture, buildWallGeometry, wallMatrix } from './wallBuilder';
 import { resolveRoomSpec } from '@/state/planOps';
 import type { Selection } from '@/state/selection';
-import type { PlanModel, WallFaceSpec } from '@/state/types';
+import type { FloorVoid, PlanModel, Point2, WallFaceSpec } from '@/state/types';
 
 /** Height of the skirting board, in metres. */
 const SKIRTING_HEIGHT = 0.09;
@@ -118,6 +118,9 @@ export class Building {
 
   /** Structural signature of the geometry currently built. */
   private builtSignature = '';
+
+  /** Openings cut through this level's floor: stairwells and light wells. */
+  private holes: readonly FloorVoid[] = [];
 
   private editMode = false;
   private autoHideWalls = true;
@@ -266,9 +269,18 @@ export class Building {
    * structural signature changes, so painting a wall skips straight to the
    * material pass.
    */
-  update(plan: PlanModel, showCeilings: boolean): void {
-    const signature = structuralSignature(plan);
+  /**
+   * Brings the meshes in line with a storey.
+   *
+   * `holes` are openings cut through this level's floor — stairwells and light
+   * wells. They join the structural signature because a moved stairwell changes
+   * the floor geometry exactly as a moved wall does, and a signature that
+   * ignored them would leave a staircase rising into a solid slab.
+   */
+  update(plan: PlanModel, showCeilings: boolean, holes: readonly FloorVoid[] = []): void {
+    const signature = `${structuralSignature(plan)}|${voidSignature(holes)}`;
     if (signature !== this.builtSignature) {
+      this.holes = holes;
       this.rebuild(plan);
       this.builtSignature = signature;
     }
@@ -418,6 +430,30 @@ export class Building {
     return mesh;
   }
 
+
+  /**
+   * The openings that belong to one room's floor.
+   *
+   * Matched by containment of the hole's own centre, because a hole is cut into
+   * the room it sits in. See `buildFloorGeometry` for why a hole straddling two
+   * rooms is not split between them.
+   */
+  private holesIn(region: Region): Point2[][] {
+    const mine: Point2[][] = [];
+    for (const hole of this.holes) {
+      if (hole.polygon.length < 3) continue;
+      let cx = 0;
+      let cz = 0;
+      for (const point of hole.polygon) {
+        cx += point.x;
+        cz += point.z;
+      }
+      const centre = { x: cx / hole.polygon.length, z: cz / hole.polygon.length };
+      if (pointInPolygon(centre, region.polygon)) mine.push(hole.polygon);
+    }
+    return mine;
+  }
+
   private rebuildRooms(plan: PlanModel): void {
     const live = new Set(this.regions.map((region) => region.key));
 
@@ -433,13 +469,13 @@ export class Building {
       entry.region = region;
 
       entry.floor.geometry.dispose();
-      entry.floor.geometry = buildFloorGeometry(region.polygon);
+      entry.floor.geometry = buildFloorGeometry(region.polygon, this.holesIn(region));
 
       // A room's ceiling sits at the height of its own walls, so a plan mixing a
       // 2.4 m bedroom with a 3.2 m living room reads correctly.
       const height = regionHeight(plan, region);
       entry.ceiling.geometry.dispose();
-      entry.ceiling.geometry = buildCeilingGeometry(region.polygon, height);
+      entry.ceiling.geometry = buildCeilingGeometry(region.polygon, height, this.holesIn(region));
 
       if (entry.skirting) {
         entry.skirting.geometry.dispose();
@@ -827,4 +863,21 @@ function concatenate(geometries: THREE.BufferGeometry[]): THREE.BufferGeometry |
 
   for (const geometry of flattened) geometry.dispose();
   return merged;
+}
+
+/**
+ * Signature of the floor openings, so a moved stairwell rebuilds the floor.
+ *
+ * Rounded to the millimetre for the same reason the plan's signature is:
+ * floating-point noise from a drag would otherwise rebuild every floor mesh on
+ * every frame.
+ */
+function voidSignature(holes: readonly FloorVoid[]): string {
+  return holes
+    .map(
+      (hole) =>
+        `${hole.id}:` +
+        hole.polygon.map((point) => `${point.x.toFixed(3)},${point.z.toFixed(3)}`).join(';'),
+    )
+    .join('|');
 }
