@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { activeLevel } from '@/state/levels';
-import type { DesignDocument, Level } from '@/state/types';
+import { SCHEMA_VERSION, type DesignDocument, type Level } from '@/state/types';
 
 import { sanitizeDocument } from './defaults';
 import { findRegions } from '@/scene/planGraph';
@@ -57,7 +57,9 @@ describe('v1 to v2 migration', () => {
     const doc = sanitizeDocument(v1Document());
     // A v1 document is carried all the way to the current schema, not just to
     // the next one: the migration chain runs every step in order.
-    expect(doc.schemaVersion).toBe(5);
+    // Asserted against the constant, not a literal: every session that adds a
+    // migration should keep this passing without editing it.
+    expect(doc.schemaVersion).toBe(SCHEMA_VERSION);
     expect(level(doc).furniture).toEqual([]);
     // v4 additions arrive with safe defaults. Strict clearance in particular
     // must default OFF: an old design was laid out under no clearance rules,
@@ -128,7 +130,9 @@ describe('v1 to v2 migration', () => {
     delete legacy.schemaVersion;
 
     const doc = sanitizeDocument(legacy);
-    expect(doc.schemaVersion).toBe(5);
+    // Asserted against the constant, not a literal: every session that adds a
+    // migration should keep this passing without editing it.
+    expect(doc.schemaVersion).toBe(SCHEMA_VERSION);
     expect(findRegions(level(doc).plan)).toHaveLength(1);
   });
 
@@ -240,7 +244,9 @@ describe('v4 to v5 migration', () => {
   it('turns one plan into the ground floor of a one-storey building', () => {
     const doc = sanitizeDocument(v4Document());
 
-    expect(doc.schemaVersion).toBe(5);
+    // Asserted against the constant, not a literal: every session that adds a
+    // migration should keep this passing without editing it.
+    expect(doc.schemaVersion).toBe(SCHEMA_VERSION);
     expect(doc.levels).toHaveLength(1);
     expect(doc.activeLevelId).toBe(doc.levels[0]!.id);
     // US convention: the storey at ground level is the First Floor.
@@ -332,5 +338,137 @@ describe('level validation', () => {
       ],
     });
     expect(doc.stairs.map((stair) => stair.id)).toEqual(['s2']);
+  });
+});
+
+
+describe('v5 to v6 migration', () => {
+  /** A document exactly as session 6 wrote it: a building, but no outside. */
+  function v5Document() {
+    const current = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const rewound = structuredClone(current);
+    return {
+      ...rewound,
+      schemaVersion: 5,
+      site: { northAngle: 1.2, boundary: [], sewerConnection: null },
+      roofs: [],
+      exterior: undefined,
+    };
+  }
+
+  it('keeps the north point the user set', () => {
+    const doc = sanitizeDocument(v5Document());
+    expect(doc.site.northAngle).toBeCloseTo(1.2, 6);
+  });
+
+  it('puts flat ground under the building and leaves the plot alone', () => {
+    const doc = sanitizeDocument(v5Document());
+
+    expect(doc.site.terrain.kind).toBe('flat');
+    expect(doc.site.terrain.spots).toEqual([]);
+    expect(doc.site.ground).toBe('grass');
+    // Setbacks come from a local ordinance nobody has typed in yet. Inventing
+    // numbers here would produce confident violations of a rule that may not
+    // even apply to this plot.
+    expect(doc.site.setbacks).toBeNull();
+  });
+
+  it('does not invent a roof', () => {
+    // A flat-topped building is obviously unfinished; a 6:12 hip the user never
+    // asked for is a decision made on their behalf that they may only discover
+    // on a drawing.
+    expect(sanitizeDocument(v5Document()).roofs).toEqual([]);
+  });
+
+  it('gives the building a default exterior finish', () => {
+    const doc = sanitizeDocument(v5Document());
+    expect(doc.exterior.cladding).toBe('lap-siding');
+    expect(doc.exterior.overrides).toEqual({});
+  });
+
+  it('keeps the storeys, stairs and furniture untouched', () => {
+    const before = sanitizeDocument(v1Document());
+    const after = sanitizeDocument(v5Document());
+
+    expect(after.levels).toHaveLength(before.levels.length);
+    expect(findRegions(level(after).plan)[0]!.area).toBeCloseTo(20, 4);
+  });
+});
+
+describe('roof and site validation', () => {
+  function withRoof(roof: Record<string, unknown>) {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const levels = base.levels as Array<{ id: string }>;
+    return sanitizeDocument({ ...base, roofs: [{ ...roof, overLevelId: levels[0]!.id }] });
+  }
+
+  it('drops a roof over a storey that no longer exists', () => {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const doc = sanitizeDocument({
+      ...base,
+      roofs: [{ id: 'r1', overLevelId: 'gone', kind: 'hip', pitch: 0.5 }],
+    });
+    expect(doc.roofs).toEqual([]);
+  });
+
+  it('clamps an impossible pitch rather than trusting it', () => {
+    const doc = withRoof({ id: 'r1', kind: 'gable', pitch: 999, overhang: 40 });
+    expect(doc.roofs[0]!.pitch).toBeLessThanOrEqual(2);
+    expect(doc.roofs[0]!.overhang).toBeLessThanOrEqual(1.2);
+  });
+
+  it('falls back for an unknown roof kind or covering', () => {
+    const doc = withRoof({ id: 'r1', kind: 'onion-dome', covering: 'thatch' });
+    expect(doc.roofs[0]!.kind).toBe('hip');
+    expect(doc.roofs[0]!.covering).toBe('asphalt-shingle');
+  });
+
+  it('keeps a dormer window inside the dormer it is cut into', () => {
+    const doc = withRoof({
+      id: 'r1',
+      dormers: [
+        {
+          id: 'd1',
+          kind: 'gable',
+          at: { x: 1, z: 1 },
+          width: 1.2,
+          depth: 1.2,
+          faceHeight: 1,
+          pitch: 0.5,
+          // Absurd on purpose: a window bigger than the wall around it.
+          window: { width: 8, height: 8, sillHeight: 5 },
+        },
+      ],
+    });
+
+    const dormer = doc.roofs[0]!.dormers[0]!;
+    expect(dormer.window!.width).toBeLessThan(dormer.width);
+    expect(dormer.window!.height).toBeLessThan(dormer.faceHeight);
+    expect(dormer.window!.sillHeight + dormer.window!.height).toBeLessThanOrEqual(
+      dormer.faceHeight + 1e-9,
+    );
+  });
+
+  it('defaults skylight glazing to laminated', () => {
+    const doc = withRoof({
+      id: 'r1',
+      skylights: [{ id: 's1', at: { x: 0, z: 0 }, glazing: 'annealed' }],
+    });
+    // IRC R308.6.2 does not permit ordinary annealed glass overhead.
+    expect(doc.roofs[0]!.skylights[0]!.glazing).toBe('laminated');
+  });
+
+  it('discards exterior overrides that name no finish at all', () => {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const doc = sanitizeDocument({
+      ...base,
+      exterior: {
+        cladding: 'brick',
+        overrides: { w1: { colour: '#123456' }, w2: {}, w3: { colour: 'periwinkle' } },
+      },
+    });
+
+    expect(doc.exterior.cladding).toBe('brick');
+    expect(Object.keys(doc.exterior.overrides)).toEqual(['w1']);
   });
 });

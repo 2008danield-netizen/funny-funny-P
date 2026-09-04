@@ -36,8 +36,10 @@
  * v5 — a BUILDING of levels rather than a single plan, plus stairs, floor
  *      voids, and the reserved shape for roofs, the site and the service
  *      networks (electrical, water, drainage, heating).
+ * v6 — the outside of the building: roofs that follow the footprint, dormers,
+ *      skylights, exterior cladding, and a site with real ground under it.
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** Which measurement system the UI displays. Storage is always metric. */
 export type UnitSystem = 'metric' | 'imperial';
@@ -377,14 +379,70 @@ export interface Stair {
 
 /* ------------------------- Reserved for later sessions -------------------- */
 
+/* ─────────────────────────────── The site ────────────────────────────── */
+
+/**
+ * The shape of the ground.
+ *
+ * Three ways to describe it, in ascending order of effort:
+ *
+ *  • FLAT — the ground is the datum, which is what a first sketch assumes.
+ *  • SLOPE — one constant fall in one direction. Most real plots away from a
+ *    hillside are close enough to this that measuring more is wasted work.
+ *  • SPOTS — surveyed heights at named points, interpolated between. This is
+ *    what a topographic survey gives you, and the only honest way to describe
+ *    a plot that falls in two directions at once.
+ *
+ * Heights are metres relative to the building's finished ground floor, so a
+ * negative height is ground BELOW the front door — which is the normal case,
+ * since a house sits up on its foundation.
+ */
+export interface Terrain {
+  kind: 'flat' | 'slope' | 'spots';
+  /**
+   * Fall as a ratio: 0.1 drops a metre every ten. Slope mode only.
+   *
+   * Kept as a ratio rather than an angle because that is how site plans and
+   * grading drawings quote it, and how the 1:12 and 2% figures that matter for
+   * paths and drainage are written.
+   */
+  fall: number;
+  /** Downhill direction, radians anticlockwise from world +X. Slope mode only. */
+  fallDirection: number;
+  /** Surveyed heights. Spots mode only. */
+  spots: Array<{ id: string; at: Point2; height: number }>;
+  /** Height of the datum point — the ground at the building — in metres. */
+  datum: number;
+}
+
+/** What the ground is finished in, for rendering and for takeoffs later. */
+export type GroundCover = 'grass' | 'gravel' | 'paving' | 'earth' | 'sand' | 'concrete';
+
+/**
+ * How far a building must stand back from each plot line.
+ *
+ * Zoning, not building code — the numbers come from the local ordinance and
+ * vary street by street, so they are the user's to enter and the app's only job
+ * is to hold them and say when the building crosses one. Which edge of the plot
+ * is the FRONT decides which number applies where, and it is remembered by a
+ * point on that edge rather than by its position in the outline, so that
+ * redrawing the plot does not silently move the front of the house to the back.
+ */
+export interface Setbacks {
+  front: number;
+  rear: number;
+  side: number;
+  /** A point on the front plot line; the nearest edge to it is the front. */
+  frontAt: Point2 | null;
+}
+
 /**
  * The plot the building stands on.
  *
- * Mostly empty until session 7, but `northAngle` earns its place now: it is
- * needed by every plan drawing, and it is the input to any daylight study. The
- * sewer connection matters to session 10, because a drain's fall is measured
- * from the fixture down to a real invert elevation at the boundary — without
- * one, drainage design has no datum to work to.
+ * `northAngle` drives every plan drawing and any daylight study. The sewer
+ * connection matters to session 10, because a drain's fall is measured from the
+ * fixture down to a real invert elevation at the boundary — without one,
+ * drainage design has no datum to work to.
  */
 export interface Site {
   /**
@@ -398,6 +456,10 @@ export interface Site {
   boundary: Point2[];
   /** Where the building's drainage meets the public sewer. Session 10. */
   sewerConnection: { at: Point2; invertDepth: number } | null;
+  terrain: Terrain;
+  ground: GroundCover;
+  /** Null until the user enters their local ordinance's numbers. */
+  setbacks: Setbacks | null;
 }
 
 /** Which service a routed network carries. Extended as each session lands. */
@@ -460,22 +522,181 @@ export interface ServiceNetwork {
   runs: ServiceRun[];
 }
 
+/* ─────────────────────────────── The roof ────────────────────────────── */
+
 /**
- * A roof over the building. Session 7.
+ * The four roof forms, which between them cover almost every house built.
  *
- * Reserved rather than designed: hips, valleys, dormers and overhangs are a
- * geometry problem in their own right and guessing at their shape now would be
- * inventing a schema nobody has tested against real roofs.
+ *  HIP   — every eave slopes up to a ridge. No gable walls, so nothing to clad
+ *          above the eave line, and the best form in a windy place.
+ *  GABLE — the plainest and cheapest: two slopes, and a triangle of wall at
+ *          each end. Which eaves are gabled is the user's choice, since a house
+ *          can be hipped one end and gabled the other (a "Dutch" arrangement).
+ *  FLAT  — not actually flat. A flat roof still falls, or it ponds; IRC R905
+ *          sets minimum slopes by covering, and the check enforces them.
+ *  SHED  — one plane, falling from a high side to a low one. Common on
+ *          additions, porches and anything modern.
+ */
+export type RoofKind = 'hip' | 'gable' | 'flat' | 'shed';
+
+/**
+ * What the roof is covered in.
+ *
+ * Not decoration: the covering decides the minimum slope the roof may be laid
+ * at (IRC R905), and getting that wrong is how a roof leaks. See `code/roof.ts`,
+ * where each of these carries its own section and figure.
+ */
+export type RoofCovering =
+  | 'asphalt-shingle'
+  | 'wood-shake'
+  | 'clay-tile'
+  | 'concrete-tile'
+  | 'slate'
+  | 'standing-seam-metal'
+  | 'metal-shingle'
+  | 'membrane';
+
+/**
+ * A dormer: a window standing up out of a roof slope.
+ *
+ * Anchored by a point in PLAN rather than to a roof face, because roof faces
+ * are derived from the footprint and are renumbered the moment a wall moves.
+ * The face a dormer belongs to is whichever one its anchor falls in, which
+ * means dragging a wall moves the dormer's roof with it instead of orphaning
+ * it — and when a plan changes so much that the anchor falls off the roof
+ * altogether, that is reported rather than silently dropped.
+ */
+export interface Dormer {
+  id: string;
+  /**
+   * GABLE — a little pitched roof of its own, ridge running out of the slope.
+   * SHED  — a single plane at a shallower pitch. Cheapest, and the one that
+   *         gains the most floor area for its size.
+   * HIPPED — sloped on three sides, to match a hipped main roof.
+   */
+  kind: 'gable' | 'shed' | 'hipped';
+  /** Centre of the dormer's front (the cheek face), in plan. */
+  at: Point2;
+  /** Width across the slope, in metres. */
+  width: number;
+  /** How far it reaches back up the slope, measured in plan, in metres. */
+  depth: number;
+  /** Height of the front wall, from where it meets the roof to its own eave. */
+  faceHeight: number;
+  /** The dormer roof's own pitch, rise over run. Ignored for a hipped cheek. */
+  pitch: number;
+  /** The window in its face. Null for a blind dormer, which is rare but legal. */
+  window: { width: number; height: number; sillHeight: number } | null;
+}
+
+/**
+ * A skylight: glass lying in the plane of the roof.
+ *
+ * `length` is measured in PLAN, not up the slope, for the same reason every
+ * other length in this file is a plan dimension — so that a skylight keeps its
+ * footprint when the pitch changes. The real pane is longer by the slope
+ * factor, and the geometry works that out rather than storing it.
+ */
+export interface Skylight {
+  id: string;
+  at: Point2;
+  /** Across the slope, in metres. */
+  width: number;
+  /** Up the slope, measured in plan, in metres. */
+  length: number;
+  kind: 'fixed' | 'venting';
+  /**
+   * IRC R308.6 permits only these in a sloped glazed opening overhead.
+   *
+   * Ordinary annealed glass is not on the list: overhead, it breaks into
+   * pieces that fall on whoever is underneath.
+   */
+  glazing: 'laminated' | 'tempered';
+  /** Height of the upstand it sits on, in metres. Zero for a deck-mounted unit. */
+  curb: number;
+}
+
+/**
+ * A roof over one structure.
+ *
+ * The SHAPE is not stored. It is derived from the walls underneath by the
+ * straight skeleton, every time, which is the only way a roof can still fit
+ * after the plan changes. What is stored is everything the geometry cannot
+ * know: how steep, how far it overhangs, what it is covered in, and which of
+ * its eaves the user wants gabled.
  */
 export interface Roof {
   id: string;
   /** The level this roof sits on top of. */
   overLevelId: string;
-  kind: 'flat' | 'gable' | 'hip' | 'shed';
+  /**
+   * A wall belonging to the structure this roof covers.
+   *
+   * A plan can hold more than one free-standing structure — a house and a
+   * detached garage — and each wants its own roof. Naming a wall rather than an
+   * index means adding a room to the house does not hand the garage's roof to
+   * the house. Null means the largest structure, which is what a single-building
+   * plan always wants.
+   */
+  anchorWallId: string | null;
+  kind: RoofKind;
   /** Rise over run, e.g. 0.5 for a 6:12 pitch. */
   pitch: number;
   /** How far the eaves project beyond the wall, in metres. */
   overhang: number;
+  /**
+   * Which eaves are gabled, named by the wall that carries each.
+   *
+   * Only meaningful for `kind: 'gable'`. Empty means the app picks the pair of
+   * eaves at the ends of the main ridge, which is what "a gable roof" means to
+   * most people; naming them explicitly is how you get a half-hipped house.
+   */
+  gableWallIds: string[];
+  /** For a shed roof, the wall along the LOW side. Null means the app picks. */
+  lowWallId: string | null;
+  /**
+   * Whether the roof space is ventilated (IRC R806) or a sealed assembly.
+   *
+   * A vented attic needs net free ventilating area, and the check works it out
+   * from the roof's own plan area. An unvented one is legal but has conditions
+   * attached, and the check says so rather than staying quiet.
+   */
+  ventilation: 'vented' | 'unvented';
+  covering: RoofCovering;
+  /** Hex colour of the covering, for the render. */
+  colour: string;
+  dormers: Dormer[];
+  skylights: Skylight[];
+}
+
+/* ───────────────────────────── The exterior ──────────────────────────── */
+
+/** What the outside walls are finished in. */
+export type Cladding =
+  | 'lap-siding'
+  | 'board-and-batten'
+  | 'shingle'
+  | 'brick'
+  | 'stone'
+  | 'stucco'
+  | 'fibre-cement';
+
+/**
+ * The outside of the building.
+ *
+ * One finish for the whole house with per-wall exceptions, rather than a finish
+ * on every wall — because that is how houses are actually specified, and
+ * because a default that has to be set forty times is a default that is wrong
+ * thirty-nine times. Overrides are keyed by wall ID, so they survive the wall
+ * being moved and vanish with the wall being deleted.
+ */
+export interface Exterior {
+  cladding: Cladding;
+  claddingColour: string;
+  /** Fascia, barge boards, window surrounds. */
+  trimColour: string;
+  /** Wall ID to its own finish, where it differs. */
+  overrides: Record<string, { cladding?: Cladding; colour?: string }>;
 }
 
 /** The complete, serialisable state of one design. */
@@ -499,6 +720,7 @@ export interface DesignDocument {
   stairs: Stair[];
   roofs: Roof[];
   site: Site;
+  exterior: Exterior;
   /** Empty until session 9. See `ServiceNetwork`. */
   services: ServiceNetwork[];
 
@@ -595,6 +817,40 @@ export const STAIR_LIMITS = {
   spiralInnerRadius: { min: 0.05, max: 0.6, step: 0.01 },
   /** IRC R311.7.5.2.1 permits winder treads; more than three is unusual. */
   winderTreads: { min: 2, max: 4 },
+} as const;
+
+export const ROOF_LIMITS = {
+  /**
+   * Pitch as rise over run.
+   *
+   * The floor is a quarter in twelve (0.0208), the shallowest fall IRC R905
+   * asks of any covering — below that nothing may be laid, so nothing below it
+   * can be offered. The ceiling is 24:12, steeper than any house roof and
+   * already into spire territory.
+   */
+  pitch: { min: 0.0208, max: 2, step: 0.0208 },
+  /** Eaves projection. A metre is a deep, deliberate overhang; more is a canopy. */
+  overhang: { min: 0, max: 1.2, step: 0.05 },
+} as const;
+
+export const DORMER_LIMITS = {
+  width: { min: 0.6, max: 6, step: 0.05 },
+  depth: { min: 0.6, max: 6, step: 0.05 },
+  faceHeight: { min: 0.6, max: 3, step: 0.05 },
+  pitch: { min: 0.0208, max: 2, step: 0.0208 },
+} as const;
+
+export const SKYLIGHT_LIMITS = {
+  width: { min: 0.3, max: 3, step: 0.05 },
+  length: { min: 0.3, max: 4, step: 0.05 },
+  curb: { min: 0, max: 0.4, step: 0.01 },
+} as const;
+
+export const SITE_LIMITS = {
+  /** Fall as a ratio. 1:2 is a bank you terrace rather than build on. */
+  fall: { min: 0, max: 0.5, step: 0.005 },
+  /** Setback distances, in metres. */
+  setback: { min: 0, max: 30, step: 0.1 },
 } as const;
 
 /** Limits and tolerances for furniture placement. All metres. */

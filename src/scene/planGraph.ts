@@ -223,10 +223,32 @@ export function centroidOf(polygon: readonly Point2[]): Point2 {
  * Faces are traced per connected component, so a plan containing two separate
  * structures does not lose the rooms of one to the other's outer face.
  */
-export function findRegions(plan: PlanModel): Region[] {
+/** One traced face of the planar graph: a room, or a component's outer boundary. */
+interface Face {
+  component: number;
+  wallIds: string[];
+  /**
+   * For each entry of `wallIds`, whether the face traverses that wall from
+   * its start vertex to its end vertex. This is what determines which side of
+   * the wall the room is on -- see the note in the region assembly below.
+   */
+  forward: boolean[];
+  vertexIds: string[];
+  polygon: Point2[];
+  signed: number;
+}
+
+/**
+ * Traces every face of the plan's planar graph, outer faces included.
+ *
+ * Shared by room-finding, which throws the outer faces away, and by the roof,
+ * which wants nothing else: the outline a roof covers is precisely the boundary
+ * of the unbounded face around the building.
+ */
+function traceFaces(plan: PlanModel): { faces: Face[]; componentCount: number } {
   const vertices = indexVertices(plan);
   const segments = resolveWalls(plan, vertices);
-  if (segments.length === 0) return [];
+  if (segments.length === 0) return { faces: [], componentCount: 0 };
 
   const segmentById = new Map(segments.map((segment) => [segment.wall.id, segment]));
 
@@ -286,20 +308,6 @@ export function findRegions(plan: PlanModel): Region[] {
     componentCount += 1;
   }
 
-  interface Face {
-    component: number;
-    wallIds: string[];
-    /**
-     * For each entry of `wallIds`, whether the face traverses that wall from
-     * its start vertex to its end vertex. This is what determines which side of
-     * the wall the room is on -- see the note in the region assembly below.
-     */
-    forward: boolean[];
-    vertexIds: string[];
-    polygon: Point2[];
-    signed: number;
-  }
-
   const visited = new Set<string>();
   const faces: Face[] = [];
   const maxSteps = segments.length * 2 + 1;
@@ -348,8 +356,14 @@ export function findRegions(plan: PlanModel): Region[] {
     }
   }
 
-  // Drop each component's outer face -- the one enclosing everything else, and
-  // so the one with the largest absolute area within that component.
+  return { faces, componentCount };
+}
+
+/**
+ * The outer face of each connected component: the one enclosing everything
+ * else, and so the one with the largest absolute area within that component.
+ */
+function outerFacesOf(faces: readonly Face[], componentCount: number): Set<Face> {
   const outerFaces = new Set<Face>();
   for (let component = 0; component < componentCount; component++) {
     const componentFaces = faces.filter((face) => face.component === component);
@@ -367,6 +381,73 @@ export function findRegions(plan: PlanModel): Region[] {
     }
     outerFaces.add(outer);
   }
+  return outerFaces;
+}
+
+/**
+ * The outline around the outside of the plan, anticlockwise.
+ *
+ * One entry per free-standing structure — a detached garage drawn beside the
+ * house is its own outline and gets its own roof, rather than one roof being
+ * stretched over both with a bridge of nothing in between.
+ *
+ * This is the CENTRELINE of the outermost walls. A roof needs the outside face
+ * instead, which is this pushed out by half a wall's thickness; the roof builder
+ * does that itself, because it also has to add the overhang and doing both at
+ * once keeps the mitred corners consistent.
+ */
+export interface Outline {
+  /** Corner points, anticlockwise. */
+  polygon: Point2[];
+  /**
+   * The wall along each edge: edge i runs from `polygon[i]` to `polygon[i + 1]`.
+   *
+   * Aligned with the polygon rather than merely listed, because everything the
+   * roof does with this — how thick the wall is, whether that eave is gabled —
+   * is a question about one particular edge.
+   */
+  wallIds: string[];
+}
+
+export function outerBoundaries(plan: PlanModel): Outline[] {
+  const { faces, componentCount } = traceFaces(plan);
+  const outer = outerFacesOf(faces, componentCount);
+
+  const outlines: Outline[] = [];
+  for (const face of outer) {
+    // Dangling walls are traced out-and-back and enclose nothing.
+    if (Math.abs(face.signed) < 1e-6) continue;
+
+    if (face.signed > 0) {
+      outlines.push({ polygon: face.polygon, wallIds: face.wallIds });
+      continue;
+    }
+
+    /*
+     * Outer faces come out clockwise and every consumer here expects
+     * anticlockwise, so the loop is reversed — and the wall list has to be
+     * reversed to MATCH, which is not the same as reversing it.
+     *
+     * Reversed, edge j runs from v[n-1-j] to v[n-2-j], which is the original
+     * edge n-2-j: the reversed list rotated one place. Reversing alone puts
+     * every wall one edge out, which quietly hands each eave its neighbour's
+     * thickness and gables the wrong end of the house.
+     */
+    const count = face.polygon.length;
+    const wallIds = face.wallIds.map((_, index) => face.wallIds[(count - 2 - index + count) % count]!);
+    outlines.push({ polygon: [...face.polygon].reverse(), wallIds });
+  }
+
+  // Largest first, so the main building leads.
+  outlines.sort(
+    (a, b) => Math.abs(signedArea(b.polygon)) - Math.abs(signedArea(a.polygon)),
+  );
+  return outlines;
+}
+
+export function findRegions(plan: PlanModel): Region[] {
+  const { faces, componentCount } = traceFaces(plan);
+  const outerFaces = outerFacesOf(faces, componentCount);
 
   const regions: Region[] = [];
   for (const face of faces) {

@@ -6,12 +6,20 @@
 
 import {
   CLEARANCE_DEFAULTS,
+  DORMER_LIMITS,
   LEVEL_LIMITS,
   OPENING_LIMITS,
   PLAN_LIMITS,
+  ROOF_LIMITS,
   SCHEMA_VERSION,
+  SITE_LIMITS,
+  SKYLIGHT_LIMITS,
   STAIR_LIMITS,
+  type Cladding,
   type DesignDocument,
+  type Dormer,
+  type Exterior,
+  type GroundCover,
   type FloorSpec,
   type FloorVoid,
   type FurnitureItem,
@@ -19,11 +27,17 @@ import {
   type Opening,
   type PlanModel,
   type Point2,
+  type Roof,
+  type RoofCovering,
+  type RoofKind,
   type RoomSpec,
+  type Setbacks,
   type Site,
+  type Skylight,
   type Stair,
   type StairForm,
   type StairTurn,
+  type Terrain,
   type Vertex,
   type Wall,
   type WallFaceSpec,
@@ -86,6 +100,65 @@ export function createLevel(id: string, name: string, plan?: PlanModel): Level {
   };
 }
 
+/* -------------------------- Roofs, site, exterior ------------------------- */
+
+/** Weathered charcoal, the commonest asphalt shingle colour in America. */
+export const DEFAULT_ROOF_COLOUR = '#4c5157';
+/** Warm off-white siding, which is what most of the country is clad in. */
+export const DEFAULT_CLADDING_COLOUR = '#e4ded2';
+/** Trim is painted lighter than the wall on almost every house ever built. */
+export const DEFAULT_TRIM_COLOUR = '#f7f5f0';
+
+export function defaultTerrain(): Terrain {
+  return { kind: 'flat', fall: 0, fallDirection: 0, spots: [], datum: 0 };
+}
+
+export function defaultSite(): Site {
+  return {
+    northAngle: 0,
+    boundary: [],
+    sewerConnection: null,
+    terrain: defaultTerrain(),
+    ground: 'grass',
+    setbacks: null,
+  };
+}
+
+export function defaultExterior(): Exterior {
+  return {
+    cladding: 'lap-siding',
+    claddingColour: DEFAULT_CLADDING_COLOUR,
+    trimColour: DEFAULT_TRIM_COLOUR,
+    overrides: {},
+  };
+}
+
+/**
+ * A sensible roof to start from.
+ *
+ * A 6:12 hip with a 400 mm overhang is the American default in the most literal
+ * sense: it is what the majority of houses built since the war actually have,
+ * it sheds snow, it clears the minimum slope for every covering in R905, and it
+ * is shallow enough to walk on when something needs fixing.
+ */
+export function defaultRoofFor(levelId: string, id = 'roof1'): Roof {
+  return {
+    id,
+    overLevelId: levelId,
+    anchorWallId: null,
+    kind: 'hip',
+    pitch: 0.5,
+    overhang: 0.4,
+    gableWallIds: [],
+    lowWallId: null,
+    ventilation: 'vented',
+    covering: 'asphalt-shingle',
+    colour: DEFAULT_ROOF_COLOUR,
+    dormers: [],
+    skylights: [],
+  };
+}
+
 export function createDefaultDocument(): DesignDocument {
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -95,7 +168,8 @@ export function createDefaultDocument(): DesignDocument {
     activeLevelId: 'lv1',
     stairs: [],
     roofs: [],
-    site: { northAngle: 0, boundary: [], sewerConnection: null },
+    site: defaultSite(),
+    exterior: defaultExterior(),
     services: [],
     lighting: {
       presetId: 'daylight',
@@ -598,15 +672,293 @@ function safeStairForm(value: unknown): StairForm {
   }
 }
 
+const ROOF_KINDS: readonly RoofKind[] = ['hip', 'gable', 'flat', 'shed'];
+
+const ROOF_COVERINGS: readonly RoofCovering[] = [
+  'asphalt-shingle',
+  'wood-shake',
+  'clay-tile',
+  'concrete-tile',
+  'slate',
+  'standing-seam-metal',
+  'metal-shingle',
+  'membrane',
+];
+
+const CLADDINGS: readonly Cladding[] = [
+  'lap-siding',
+  'board-and-batten',
+  'shingle',
+  'brick',
+  'stone',
+  'stucco',
+  'fibre-cement',
+];
+
+const GROUND_COVERS: readonly GroundCover[] = [
+  'grass',
+  'gravel',
+  'paving',
+  'earth',
+  'sand',
+  'concrete',
+];
+
+/** Accepts a value only if it is one of a known set. */
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
+    ? (value as T)
+    : fallback;
+}
+
+function safePoint(value: unknown): Point2 | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.x !== 'number' || typeof raw.z !== 'number') return null;
+  if (!Number.isFinite(raw.x) || !Number.isFinite(raw.z)) return null;
+  return {
+    x: clamp(raw.x, -PLAN_LIMITS.planExtent, PLAN_LIMITS.planExtent, 0),
+    z: clamp(raw.z, -PLAN_LIMITS.planExtent, PLAN_LIMITS.planExtent, 0),
+  };
+}
+
+/** Wall IDs, deduplicated. Unknown IDs are kept: the wall may be on another level. */
+function safeIdList(value: unknown, limit = 64): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const entry of value.slice(0, limit)) {
+    if (typeof entry !== 'string' || !entry) continue;
+    if (out.includes(entry)) continue;
+    out.push(entry.slice(0, 120));
+  }
+  return out;
+}
+
+function safeTerrain(value: unknown): Terrain {
+  const base = defaultTerrain();
+  if (typeof value !== 'object' || value === null) return base;
+  const raw = value as Record<string, unknown>;
+
+  const spots: Terrain['spots'] = [];
+  if (Array.isArray(raw.spots)) {
+    for (const entry of raw.spots.slice(0, 400)) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const spot = entry as Record<string, unknown>;
+      const at = safePoint(spot.at);
+      if (!at) continue;
+      spots.push({
+        id: safeString(spot.id, `spot${spots.length + 1}`, 60),
+        at,
+        // A 30 m cut or fill is beyond anything a house sits in; past that the
+        // number is corrupt rather than steep.
+        height: clamp(spot.height, -30, 30, 0),
+      });
+    }
+  }
+
+  return {
+    kind: oneOf(raw.kind, ['flat', 'slope', 'spots'] as const, 'flat'),
+    fall: clamp(raw.fall, SITE_LIMITS.fall.min, SITE_LIMITS.fall.max, 0),
+    fallDirection: normalizeAngle(typeof raw.fallDirection === 'number' ? raw.fallDirection : 0),
+    spots,
+    datum: clamp(raw.datum, -30, 30, 0),
+  };
+}
+
+function safeSetbacks(value: unknown): Setbacks | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  const { min, max } = SITE_LIMITS.setback;
+  return {
+    front: clamp(raw.front, min, max, 0),
+    rear: clamp(raw.rear, min, max, 0),
+    side: clamp(raw.side, min, max, 0),
+    frontAt: safePoint(raw.frontAt),
+  };
+}
+
 function safeSite(value: unknown): Site {
-  const base: Site = { northAngle: 0, boundary: [], sewerConnection: null };
+  const base = defaultSite();
   if (typeof value !== 'object' || value === null) return base;
   const raw = value as Record<string, unknown>;
   return {
     northAngle: normalizeAngle(typeof raw.northAngle === 'number' ? raw.northAngle : 0),
     boundary: safePolygon(raw.boundary),
     sewerConnection: null,
+    terrain: safeTerrain(raw.terrain),
+    ground: oneOf(raw.ground, GROUND_COVERS, 'grass'),
+    setbacks: safeSetbacks(raw.setbacks),
   };
+}
+
+function safeExterior(value: unknown): Exterior {
+  const base = defaultExterior();
+  if (typeof value !== 'object' || value === null) return base;
+  const raw = value as Record<string, unknown>;
+
+  const overrides: Exterior['overrides'] = {};
+  if (typeof raw.overrides === 'object' && raw.overrides !== null) {
+    for (const [wallId, entry] of Object.entries(raw.overrides).slice(0, 400)) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const override = entry as Record<string, unknown>;
+      const cladding =
+        typeof override.cladding === 'string' &&
+        (CLADDINGS as readonly string[]).includes(override.cladding)
+          ? (override.cladding as Cladding)
+          : undefined;
+      const colour =
+        typeof override.colour === 'string' && /^#[0-9a-f]{6}$/i.test(override.colour)
+          ? override.colour
+          : undefined;
+      if (!cladding && !colour) continue;
+      overrides[wallId] = { ...(cladding ? { cladding } : {}), ...(colour ? { colour } : {}) };
+    }
+  }
+
+  return {
+    cladding: oneOf(raw.cladding, CLADDINGS, base.cladding),
+    claddingColour: safeColor(raw.claddingColour, base.claddingColour),
+    trimColour: safeColor(raw.trimColour, base.trimColour),
+    overrides,
+  };
+}
+
+function safeDormers(value: unknown): Dormer[] {
+  if (!Array.isArray(value)) return [];
+  const dormers: Dormer[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of value.slice(0, 40)) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const raw = entry as Record<string, unknown>;
+    const at = safePoint(raw.at);
+    if (!at) continue;
+
+    const id = safeString(raw.id, `dormer${dormers.length + 1}`, 60);
+    if (seen.has(id)) continue;
+    seen.add(id);
+
+    const width = clamp(raw.width, DORMER_LIMITS.width.min, DORMER_LIMITS.width.max, 1.5);
+    const faceHeight = clamp(
+      raw.faceHeight,
+      DORMER_LIMITS.faceHeight.min,
+      DORMER_LIMITS.faceHeight.max,
+      1.2,
+    );
+
+    let window: Dormer['window'] = null;
+    if (typeof raw.window === 'object' && raw.window !== null) {
+      const pane = raw.window as Record<string, unknown>;
+      // A window can never be wider than the wall it is cut into, nor taller
+      // than the face it stands in. Clamping to the dormer rather than to a
+      // fixed limit is what keeps that true after the dormer is resized.
+      const paneWidth = clamp(pane.width, 0.2, Math.max(0.2, width - 0.3), Math.max(0.2, width - 0.4));
+      const paneHeight = clamp(
+        pane.height,
+        0.2,
+        Math.max(0.2, faceHeight - 0.15),
+        Math.max(0.2, faceHeight - 0.35),
+      );
+      window = {
+        width: paneWidth,
+        height: paneHeight,
+        sillHeight: clamp(pane.sillHeight, 0, Math.max(0, faceHeight - paneHeight), 0.15),
+      };
+    }
+
+    dormers.push({
+      id,
+      kind: oneOf(raw.kind, ['gable', 'shed', 'hipped'] as const, 'gable'),
+      at,
+      width,
+      depth: clamp(raw.depth, DORMER_LIMITS.depth.min, DORMER_LIMITS.depth.max, 1.5),
+      faceHeight,
+      pitch: clamp(raw.pitch, DORMER_LIMITS.pitch.min, DORMER_LIMITS.pitch.max, 0.5),
+      window,
+    });
+  }
+
+  return dormers;
+}
+
+function safeSkylights(value: unknown): Skylight[] {
+  if (!Array.isArray(value)) return [];
+  const skylights: Skylight[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of value.slice(0, 40)) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const raw = entry as Record<string, unknown>;
+    const at = safePoint(raw.at);
+    if (!at) continue;
+
+    const id = safeString(raw.id, `skylight${skylights.length + 1}`, 60);
+    if (seen.has(id)) continue;
+    seen.add(id);
+
+    skylights.push({
+      id,
+      at,
+      width: clamp(raw.width, SKYLIGHT_LIMITS.width.min, SKYLIGHT_LIMITS.width.max, 0.8),
+      length: clamp(raw.length, SKYLIGHT_LIMITS.length.min, SKYLIGHT_LIMITS.length.max, 1.2),
+      kind: oneOf(raw.kind, ['fixed', 'venting'] as const, 'fixed'),
+      // Defaults to laminated, which is the safer of the two permitted by
+      // R308.6.2 and the one that stays in its frame when it breaks.
+      glazing: oneOf(raw.glazing, ['laminated', 'tempered'] as const, 'laminated'),
+      curb: clamp(raw.curb, SKYLIGHT_LIMITS.curb.min, SKYLIGHT_LIMITS.curb.max, 0.15),
+    });
+  }
+
+  return skylights;
+}
+
+/**
+ * Validates the roofs.
+ *
+ * A roof over a storey that no longer exists is dropped for the same reason a
+ * stranded staircase is: reassigning it would put somebody's roof over a
+ * different part of the house without saying so.
+ */
+export function safeRoofs(value: unknown, levels: readonly Level[]): Roof[] {
+  if (!Array.isArray(value)) return [];
+  const levelIds = new Set(levels.map((level) => level.id));
+  const roofs: Roof[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of value.slice(0, 20)) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const raw = entry as Record<string, unknown>;
+
+    const overLevelId = typeof raw.overLevelId === 'string' ? raw.overLevelId : '';
+    if (!levelIds.has(overLevelId)) continue;
+
+    const id = safeString(raw.id, `roof${roofs.length + 1}`, 60);
+    if (seen.has(id)) continue;
+    seen.add(id);
+
+    const base = defaultRoofFor(overLevelId, id);
+    roofs.push({
+      ...base,
+      anchorWallId: typeof raw.anchorWallId === 'string' ? raw.anchorWallId : null,
+      kind: oneOf(raw.kind, ROOF_KINDS, base.kind),
+      pitch: clamp(raw.pitch, ROOF_LIMITS.pitch.min, ROOF_LIMITS.pitch.max, base.pitch),
+      overhang: clamp(
+        raw.overhang,
+        ROOF_LIMITS.overhang.min,
+        ROOF_LIMITS.overhang.max,
+        base.overhang,
+      ),
+      gableWallIds: safeIdList(raw.gableWallIds),
+      lowWallId: typeof raw.lowWallId === 'string' ? raw.lowWallId : null,
+      ventilation: oneOf(raw.ventilation, ['vented', 'unvented'] as const, base.ventilation),
+      covering: oneOf(raw.covering, ROOF_COVERINGS, base.covering),
+      colour: safeColor(raw.colour, base.colour),
+      dormers: safeDormers(raw.dormers),
+      skylights: safeSkylights(raw.skylights),
+    });
+  }
+
+  return roofs;
 }
 
 /**
@@ -636,8 +988,9 @@ export function sanitizeDocument(input: unknown): DesignDocument {
     levels: levels.list,
     activeLevelId: levels.activeId,
     stairs: safeStairs(raw.stairs, levels.list),
-    roofs: [],
+    roofs: safeRoofs(raw.roofs, levels.list),
     site: safeSite(raw.site),
+    exterior: safeExterior(raw.exterior),
     services: [],
     clearance: safeClearance(raw.clearance),
     currency: safeCurrency(raw.currency),

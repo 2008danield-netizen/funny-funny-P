@@ -243,11 +243,33 @@ export interface SkeletonResult {
  * reoriented by `prepare` first. Holes are not supported: a roof over a
  * courtyard is a different problem and the app has no way to draw one yet.
  */
-export function straightSkeleton(input: readonly Point2[]): SkeletonResult {
+export function straightSkeleton(
+  input: readonly Point2[],
+  weights?: readonly number[],
+): SkeletonResult {
   const polygon = prepare(input);
   if (polygon.length < 3) return { faces: [], arcs: [], complete: false };
 
   const edgeCount = polygon.length;
+
+  /*
+   * How fast each eave travels. One, unless the caller says otherwise.
+   *
+   * A weight of zero is a GABLE: that eave does not move, so no roof plane
+   * grows from it and the planes either side run out over it and meet in a
+   * ridge above it. The wall below is then carried up into the triangle
+   * everyone recognises as a gable end. This is the whole reason weights exist,
+   * and it is why a gable is not a special case bolted on afterwards — it is
+   * the same solve with one number changed.
+   *
+   * Weights line up with the PREPARED polygon, so a caller that needs to name
+   * particular eaves should call `prepare` itself first; passing the wrong
+   * number of them means they are ignored rather than silently misapplied.
+   */
+  const speeds =
+    weights && weights.length === edgeCount
+      ? weights.map((weight) => (Number.isFinite(weight) && weight > 0 ? weight : 0))
+      : new Array<number>(edgeCount).fill(1);
 
   /** Inward unit normal of each original edge. */
   const normals: Point2[] = [];
@@ -266,7 +288,12 @@ export function straightSkeleton(input: readonly Point2[]): SkeletonResult {
       id: i,
       point: polygon[i]!,
       time: 0,
-      velocity: bisectorVelocity(normals[leftEdge]!, normals[rightEdge]!),
+      velocity: bisectorVelocity(
+        normals[leftEdge]!,
+        normals[rightEdge]!,
+        speeds[leftEdge]!,
+        speeds[rightEdge]!,
+      ),
       prev: (i - 1 + edgeCount) % edgeCount,
       next: (i + 1) % edgeCount,
       leftEdge,
@@ -329,8 +356,10 @@ export function straightSkeleton(input: readonly Point2[]): SkeletonResult {
 
   const settle = (node: Node, partner: Node, at: Point2, time: number) => {
     const cluster = clusterAt(at, time);
-    if (cluster.length > 2 && resolveCluster(nodes, normals, cluster, at, time, retire)) return;
-    crossJoin(nodes, normals, node, partner, at, time, retire);
+    if (cluster.length > 2 && resolveCluster(nodes, normals, speeds, cluster, at, time, retire)) {
+      return;
+    }
+    crossJoin(nodes, normals, speeds, node, partner, at, time, retire);
   };
 
   let complete = true;
@@ -344,7 +373,7 @@ export function straightSkeleton(input: readonly Point2[]): SkeletonResult {
     const alive = nodes.filter((node) => !node.dead);
     if (alive.length === 0) break;
 
-    const event = nextEvent(nodes, polygon, normals, positionAt);
+    const event = nextEvent(nodes, polygon, normals, speeds, positionAt);
     if (!event) {
       /*
        * No event left, but corners still alive. Before calling that a failure,
@@ -405,7 +434,12 @@ export function straightSkeleton(input: readonly Point2[]): SkeletonResult {
         id: nodes.length,
         point: event.at,
         time: event.time,
-        velocity: bisectorVelocity(normals[a.leftEdge]!, normals[b.rightEdge]!),
+        velocity: bisectorVelocity(
+          normals[a.leftEdge]!,
+          normals[b.rightEdge]!,
+          speeds[a.leftEdge]!,
+          speeds[b.rightEdge]!,
+        ),
         prev: prev.id,
         next: next.id,
         leftEdge: a.leftEdge,
@@ -469,7 +503,12 @@ export function straightSkeleton(input: readonly Point2[]): SkeletonResult {
         id: nodes.length,
         point: event.at,
         time: event.time,
-        velocity: bisectorVelocity(normals[node.leftEdge]!, normals[opposite]!),
+        velocity: bisectorVelocity(
+          normals[node.leftEdge]!,
+          normals[opposite]!,
+          speeds[node.leftEdge]!,
+          speeds[opposite]!,
+        ),
         prev: prev.id,
         next: y.id,
         leftEdge: node.leftEdge,
@@ -483,7 +522,12 @@ export function straightSkeleton(input: readonly Point2[]): SkeletonResult {
         id: nodes.length,
         point: event.at,
         time: event.time,
-        velocity: bisectorVelocity(normals[opposite]!, normals[node.rightEdge]!),
+        velocity: bisectorVelocity(
+          normals[opposite]!,
+          normals[node.rightEdge]!,
+          speeds[opposite]!,
+          speeds[node.rightEdge]!,
+        ),
         prev: x.id,
         next: next.id,
         leftEdge: opposite,
@@ -512,6 +556,15 @@ export function straightSkeleton(input: readonly Point2[]): SkeletonResult {
     if (face) faces.push(face);
   }
 
+  /*
+   * A gabled eave does not move, so it grows no roof plane and owes no face:
+   * what it produces is a wall, which the roof builder reads off the arcs. Only
+   * the eaves that travel are counted here.
+   */
+  const expected = speeds.filter((speed) => speed > 0).length;
+  const resolved = new Set(faces.map((face) => face.edgeIndex));
+  const missing = speeds.some((speed, index) => speed > 0 && !resolved.has(index));
+
   return {
     faces,
     arcs: arcRecords.map((arc) => ({
@@ -522,7 +575,7 @@ export function straightSkeleton(input: readonly Point2[]): SkeletonResult {
       left: arc.left,
       right: arc.right,
     })),
-    complete: complete && faces.length === edgeCount,
+    complete: complete && !missing && faces.length >= expected,
   };
 }
 
@@ -662,14 +715,24 @@ function chainFace(
  *    parked instead pins the point where one roof plane hands over to the next,
  *    and both planes are then left with a boundary that will not close.
  */
-function bisectorVelocity(leftNormal: Point2, rightNormal: Point2): Point2 {
+function bisectorVelocity(
+  leftNormal: Point2,
+  rightNormal: Point2,
+  leftSpeed = 1,
+  rightSpeed = 1,
+): Point2 {
   const determinant = leftNormal.x * rightNormal.z - leftNormal.z * rightNormal.x;
   if (Math.abs(determinant) < 1e-9) {
-    return dot(leftNormal, rightNormal) > 0 ? { ...leftNormal } : { x: 0, z: 0 };
+    if (dot(leftNormal, rightNormal) <= 0) return { x: 0, z: 0 };
+    // Same-facing pair: travel with the line. Their speeds agree in every case
+    // this can arise from, and averaging is the harmless answer if they do not.
+    return scale(leftNormal, (leftSpeed + rightSpeed) / 2);
   }
+  // Solve dot(v, leftNormal) = leftSpeed and dot(v, rightNormal) = rightSpeed:
+  // the corner stays on both moving lines at once.
   return {
-    x: (rightNormal.z - leftNormal.z) / determinant,
-    z: (leftNormal.x - rightNormal.x) / determinant,
+    x: (leftSpeed * rightNormal.z - rightSpeed * leftNormal.z) / determinant,
+    z: (rightSpeed * leftNormal.x - leftSpeed * rightNormal.x) / determinant,
   };
 }
 
@@ -688,6 +751,7 @@ function nextEvent(
   nodes: Node[],
   polygon: readonly Point2[],
   normals: readonly Point2[],
+  speeds: readonly number[],
   positionAt: (node: Node, time: number) => Point2,
 ): SkeletonEvent | null {
   let best: SkeletonEvent | null = null;
@@ -730,7 +794,7 @@ function nextEvent(
     consider(edgeEvent(node, next, positionAt));
 
     if (node.reflex) {
-      consider(splitEvent(node, nodes, polygon, normals, positionAt));
+      consider(splitEvent(node, nodes, polygon, normals, speeds, positionAt));
     }
 
     // Corner-into-corner. Only pairs where this node has the lower id, so each
@@ -819,6 +883,7 @@ function splitEvent(
   nodes: Node[],
   polygon: readonly Point2[],
   normals: readonly Point2[],
+  speeds: readonly number[],
   positionAt: (node: Node, time: number) => Point2,
 ): SkeletonEvent | null {
   let best: SkeletonEvent | null = null;
@@ -833,7 +898,10 @@ function splitEvent(
     const normal = normals[edgeIndex]!;
     const origin = polygon[edgeIndex]!;
 
-    const approach = 1 - dot(node.velocity, normal);
+    // The edge is coming to meet the corner at its own speed, so the closing
+    // rate is that speed less however much of the corner's own motion is
+    // already along the same line.
+    const approach = speeds[edgeIndex]! - dot(node.velocity, normal);
     if (Math.abs(approach) < EPS) continue;
 
     const offset = dot(sub(node.point, origin), normal) - node.time * dot(node.velocity, normal);
@@ -992,6 +1060,7 @@ function closeFinishedLoops(
 function resolveCluster(
   nodes: Node[],
   normals: readonly Point2[],
+  speeds: readonly number[],
   cluster: readonly Node[],
   at: Point2,
   time: number,
@@ -1063,7 +1132,12 @@ function resolveCluster(
       id: nodes.length,
       point: at,
       time,
-      velocity: bisectorVelocity(normals[pair.into.leftEdge]!, normals[pair.out.rightEdge]!),
+      velocity: bisectorVelocity(
+        normals[pair.into.leftEdge]!,
+        normals[pair.out.rightEdge]!,
+        speeds[pair.into.leftEdge]!,
+        speeds[pair.out.rightEdge]!,
+      ),
       prev: before.id,
       next: after.id,
       leftEdge: pair.into.leftEdge,
@@ -1129,6 +1203,7 @@ function resolveCluster(
 function crossJoin(
   nodes: Node[],
   normals: readonly Point2[],
+  speeds: readonly number[],
   node: Node,
   partner: Node,
   at: Point2,
@@ -1147,7 +1222,12 @@ function crossJoin(
     id: nodes.length,
     point: at,
     time,
-    velocity: bisectorVelocity(normals[node.leftEdge]!, normals[partner.rightEdge]!),
+    velocity: bisectorVelocity(
+      normals[node.leftEdge]!,
+      normals[partner.rightEdge]!,
+      speeds[node.leftEdge]!,
+      speeds[partner.rightEdge]!,
+    ),
     prev: nodePrev.id,
     next: partnerNext.id,
     leftEdge: node.leftEdge,
@@ -1161,7 +1241,12 @@ function crossJoin(
     id: nodes.length,
     point: at,
     time,
-    velocity: bisectorVelocity(normals[partner.leftEdge]!, normals[node.rightEdge]!),
+    velocity: bisectorVelocity(
+      normals[partner.leftEdge]!,
+      normals[node.rightEdge]!,
+      speeds[partner.leftEdge]!,
+      speeds[node.rightEdge]!,
+    ),
     prev: partnerPrev.id,
     next: nodeNext.id,
     leftEdge: partner.leftEdge,
@@ -1302,30 +1387,66 @@ function closeCollapsedLoops(
  */
 export function offsetPolygon(polygon: readonly Point2[], distance: number): Point2[] {
   const clean = prepare(polygon);
-  if (clean.length < 3 || Math.abs(distance) < EPS) return clean;
+  if (clean.length < 3) return clean;
+  return offsetPolygonEdges(clean, new Array<number>(clean.length).fill(distance));
+}
+
+/**
+ * The same, but with a distance of its own for every edge.
+ *
+ * Which is what a real building needs: a house does not have one wall
+ * thickness, and the eave line runs parallel to the OUTSIDE of each wall, so a
+ * 300 mm masonry wall and a 140 mm frame wall beside it push their eaves out by
+ * different amounts. Each edge's line is moved by its own distance and the
+ * corners are re-cut where the moved lines cross, which is the mitre a roofer
+ * would actually build.
+ *
+ * `distances` is indexed by edge — edge i runs from vertex i to vertex i+1 —
+ * and lines up with the polygon AS PASSED, so prepare it first if the indices
+ * have to mean something.
+ */
+export function offsetPolygonEdges(
+  polygon: readonly Point2[],
+  distances: readonly number[],
+): Point2[] {
+  const clean = prepare(polygon);
+  if (clean.length < 3 || distances.length !== clean.length) return clean;
+  if (distances.every((distance) => Math.abs(distance) < EPS)) return clean;
 
   const count = clean.length;
   const result: Point2[] = [];
+  const cap = Math.max(...distances.map(Math.abs)) * 4;
 
   for (let i = 0; i < count; i++) {
     const prev = clean[(i - 1 + count) % count]!;
     const here = clean[i]!;
     const next = clean[(i + 1) % count]!;
 
+    const inEdge = (i - 1 + count) % count;
     const inNormal = outwardNormal(prev, here);
     const outNormal = outwardNormal(here, next);
+    const inDistance = distances[inEdge]!;
+    const outDistance = distances[i]!;
 
-    const bisector = normalize(add(inNormal, outNormal));
-    if (bisector.x === 0 && bisector.z === 0) {
-      result.push(here);
+    // Where the two moved lines cross. Solve dot(p - here, n) = d for both.
+    const determinant = inNormal.x * outNormal.z - inNormal.z * outNormal.x;
+    if (Math.abs(determinant) < 1e-9) {
+      // The edges are parallel: no corner to cut, just move the vertex out.
+      const straightOn = dot(inNormal, outNormal) > 0;
+      result.push(add(here, scale(outNormal, straightOn ? outDistance : 0)));
       continue;
     }
 
-    // The mitre length grows as 1/cos(half-angle); cap it at four times the
-    // offset, which is a corner of about 30 degrees.
-    const cosHalf = dot(bisector, outNormal);
-    const reach = Math.abs(cosHalf) < 0.25 ? distance * 4 : distance / cosHalf;
-    result.push(add(here, scale(bisector, reach)));
+    const shift = {
+      x: (inDistance * outNormal.z - outDistance * inNormal.z) / determinant,
+      z: (outDistance * inNormal.x - inDistance * outNormal.x) / determinant,
+    };
+
+    // A very sharp corner throws its mitre a long way out — an eave that
+    // reaches four feet past the corner of a house is not an eave, it is an
+    // error — so the reach is capped and the direction kept.
+    const reach = length(shift);
+    result.push(add(here, reach > cap && reach > EPS ? scale(shift, cap / reach) : shift));
   }
 
   return result;

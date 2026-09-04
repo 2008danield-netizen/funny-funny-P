@@ -343,6 +343,75 @@ describe('the awkward plans', () => {
   });
 });
 
+describe('gabled eaves (weights)', () => {
+  /*
+   * A gable is the same solve with one number changed: the gabled eave is given
+   * a weight of zero, so it does not travel, and the planes either side run out
+   * over it and meet in a ridge above it. What comes back for that eave is a
+   * face with no area in plan but real heights — which is exactly the triangle
+   * of wall a gable end is.
+   */
+  const bar = [p(0, 0), p(10, 0), p(10, 6), p(0, 6)];
+
+  it('puts the ridge down the middle, running the full length', () => {
+    const result = straightSkeleton(prepare(bar), [1, 0, 1, 0]);
+    expect(result.complete).toBe(true);
+
+    const long = result.faces.find((face) => face.edgeIndex === 0)!;
+    // The slope reaches the ridge at half the 6 m span, and does so along the
+    // whole 10 m — not at a point, which is what a hip would give.
+    const ridge = long.points.filter((point) => point.time > 1e-6);
+    expect(ridge).toHaveLength(2);
+    for (const point of ridge) expect(point.at.z).toBeCloseTo(3, 6);
+    expect(Math.abs(ridge[0]!.at.x - ridge[1]!.at.x)).toBeCloseTo(10, 6);
+  });
+
+  it('returns the gable end as a face with height but no plan area', () => {
+    const result = straightSkeleton(prepare(bar), [1, 0, 1, 0]);
+    const gable = result.faces.find((face) => face.edgeIndex === 1)!;
+
+    expect(Math.abs(signedArea(gable.points.map((entry) => entry.at)))).toBeLessThan(1e-9);
+    // Two eave corners on the ground and one apex, at the ridge height.
+    expect(gable.points).toHaveLength(3);
+    expect(Math.max(...gable.points.map((point) => point.time))).toBeCloseTo(3, 6);
+  });
+
+  it('hips the ends that are not gabled', () => {
+    // Gable one end, hip the other: a real and common arrangement.
+    const result = straightSkeleton(prepare(bar), [1, 0, 1, 1]);
+    expect(result.complete).toBe(true);
+
+    const hipped = result.faces.find((face) => face.edgeIndex === 3)!;
+    // A hip end comes to a point, so its face is a triangle and the ridge
+    // starts 3 m in — half the width of the building.
+    expect(hipped.points).toHaveLength(3);
+    expect(hipped.points[2]!.at.x).toBeCloseTo(3, 6);
+  });
+
+  it('gables an L on both wing ends', () => {
+    const shape = prepare([p(0, 0), p(9, 0), p(9, 4), p(4, 4), p(4, 10), p(0, 10)]);
+    const result = straightSkeleton(shape, [1, 0, 1, 1, 0, 1]);
+
+    expect(result.complete).toBe(true);
+    expect(result.faces).toHaveLength(6);
+    // The valley still lands where the inside corner throws it.
+    const valley = result.faces.find((face) => face.edgeIndex === 2)!;
+    expect(valley.points.some((point) => Math.abs(point.at.x - 2) < 1e-6)).toBe(true);
+  });
+
+  it('ignores weights that do not line up with the polygon', () => {
+    // Silently misapplying them would gable the wrong wall, which is worse than
+    // ignoring them: the roof would look deliberate and be wrong.
+    const result = straightSkeleton(prepare(bar), [1, 0]);
+    expect(result.complete).toBe(true);
+    expect(result.faces).toHaveLength(4);
+    // All four eaves travelled, so this is the plain hip again.
+    for (const face of result.faces) {
+      expect(Math.abs(signedArea(face.points.map((entry) => entry.at)))).toBeGreaterThan(1e-6);
+    }
+  });
+});
+
 describe('distance to the boundary', () => {
   // Used for placing dormers and skylights clear of the eaves, and for setbacks
   // against a plot line, so it has to measure to the nearest POINT of an edge

@@ -258,6 +258,46 @@ function migrateV4ToV5(doc: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * v5 to v6 — the building gets an outside.
+ *
+ * Purely additive, which is the easy kind: a v5 document has a site with a
+ * north point and nothing else, and an empty list of roofs. Both keep exactly
+ * what they held; the site gains flat ground under it and the document gains a
+ * default exterior finish, neither of which changes anything the user drew.
+ *
+ * No roof is invented. A house with a flat top is obviously unfinished, and
+ * that is the honest state for a document that has never been asked about its
+ * roof — better than putting a 6:12 hip on somebody's building and having them
+ * discover it later on a drawing.
+ */
+function migrateV5ToV6(doc: Record<string, unknown>): Record<string, unknown> {
+  const site =
+    typeof doc.site === 'object' && doc.site !== null
+      ? (doc.site as Record<string, unknown>)
+      : {};
+
+  return {
+    ...doc,
+    schemaVersion: 6,
+    site: {
+      northAngle: typeof site.northAngle === 'number' ? site.northAngle : 0,
+      boundary: Array.isArray(site.boundary) ? site.boundary : [],
+      sewerConnection: site.sewerConnection ?? null,
+      terrain: { kind: 'flat', fall: 0, fallDirection: 0, spots: [], datum: 0 },
+      ground: 'grass',
+      setbacks: null,
+    },
+    roofs: Array.isArray(doc.roofs) ? doc.roofs : [],
+    exterior: {
+      cladding: 'lap-siding',
+      claddingColour: '#e4ded2',
+      trimColour: '#f7f5f0',
+      overrides: {},
+    },
+  };
+}
+
+/**
  * Brings a document up to the current schema.
  *
  * Migrations are applied in sequence, so a v1 document passes through every
@@ -284,6 +324,9 @@ export function migrateDocument(input: Record<string, unknown>): Record<string, 
   }
   if (declared < 5) {
     doc = migrateV4ToV5(doc);
+  }
+  if (declared < 6) {
+    doc = migrateV5ToV6(doc);
   }
 
   return doc;
