@@ -235,13 +235,47 @@ own circuit sized from their nameplate and their load into the Article 220
 calculation. The two apologies are withdrawn when they no longer apply, and
 still printed when they do.
 
+**Water and drainage, to the IPC.**
+The one discipline that starts with its inputs already modelled: every fixture
+placed by session 10 already carries what it connects to — hot, cold, its trap
+size, whether it is soil — so the router begins with real loads rather than
+assumptions.
+
+It works backwards from the only fixed elevation in the whole system, the invert
+of the public sewer. The stack goes where the water closets are, on a wall that
+exists on every storey it has to pass through; the building drain runs back from
+the sewer at the minimum fall its size allows, which fixes the height of the
+foot of the stack; and every branch then hangs off that stack at its own
+minimum fall. A branch it cannot give the fall to is *not drawn* — it says which
+fixture, and how many millimetres short it was.
+
+Sizing is by fixture unit, both currencies kept strictly apart: drainage fixture
+units off IPC Table 709.1 for the drains, water supply fixture units off Table
+E103.3(2) for the pipes, and the type system will not let one be passed where
+the other is wanted. Nothing stores a diameter — a stored pipe size is right
+when it is written and wrong the moment a bath is added upstream — so every size
+on the screen, on the drawing and in the checks is derived from the same
+function.
+
+The supply is then checked properly rather than off the table: Hunter's curve
+for the flow, Hazen–Williams for the friction, 9.8 kPa for every metre of rise,
+and a walk from the street to every outlet to find the one with the least left.
+Where the calculation and the table disagree, the calculation wins and the
+finding says which is which — because "the table says 3/4 in but you will have
+12 psi at the top shower" is the sentence that is actually useful.
+
+Vents are sized off the drains they serve, the stack vent is the stack carried
+on full size through the real roof surface, and any trap further from the stack
+than Table 906.1 allows gets a vent of its own.
+
 **A printable drawing set, drawn to scale.**
 Not a screenshot: a real set, written by a PDF writer built from scratch for
 this. A cover, a dimensioned plan of every storey, an elevation of each side, an
 electrical plan per storey with its legend, the panel schedule and the load
-calculation, an elevation of every run of cabinetry dimensioned unit by unit —
-the drawing a joiner actually works from — and schedules of the doors, windows,
-rooms, cabinets, sanitaryware and fittings. Walls are
+calculation, a plumbing plan per storey, a drainage riser diagram, an elevation
+of every run of cabinetry dimensioned unit by unit — the drawing a joiner
+actually works from — and schedules of the doors, windows, rooms, cabinets,
+sanitaryware, fittings, pipes and fixture units. Walls are
 poché, doors show their swing on the side they open, dimensions run in two
 strings, and each sheet carries a title block, a north point and a printed scale
 bar — so you can measure the bar and know whether the print is true.
@@ -407,6 +441,7 @@ src/
 │   ├── Roofs.ts        Roof planes with their openings cut out, in world space
 │   ├── PlanUnderlay.ts The scan being traced, and the walls proposed on it
 │   ├── Electrical.ts   Devices at their real mounting heights, and home runs
+│   ├── Plumbing.ts     Pipes as real tubes at their computed size and fall
 │   ├── Fittings.ts     Carcasses, fronts, handles, worktops and fixtures
 │   ├── Ground.ts       The terrain surface, the plot line, the north arrow
 │   ├── GhostLevel.ts   The storey below, as an outline to align to
@@ -424,6 +459,10 @@ src/
 │   ├── rooms.ts        What a room is FOR, from the name the user typed
 │   ├── layout.ts       Where the outlets, switches and lights go
 │   ├── circuits.ts     Grouping onto breakers, the panel schedule, Article 220
+│   ├── drainage.ts     The stack, the branches, the falls, the drain to the sewer
+│   ├── supply.ts       The service, the heater, and the hot and cold trees
+│   ├── plumbingSize.ts Fixture units in, pipe diameters out — the only copy
+│   ├── plumbingCheck.ts Falls, traps, vents, pressure and velocity, to the IPC
 │   ├── necCheck.ts     The NEC checks, each citing its article
 │   ├── kitchen.ts      Laying a kitchen out: runs, sink, hob, fridge
 │   ├── bathroom.ts     Packing a bathroom: hardest fixture first, checked first
@@ -583,7 +622,10 @@ src/
 npm test
 ```
 
-590 tests covering the parts where a bug is invisible on screen: filling a run
+644 tests covering the parts where a bug is invisible on screen: the IPC's
+sizing tables and the two fixture-unit currencies kept apart, the drainage
+router's falls and the checker that judges them, Hunter's curve and
+Hazen–Williams, filling a run
 of cabinets and the corners it turns, the kitchen and bathroom layouts against
 their own code checks, the PDF writer
 and the drawing set it produces, the NEC spacing rule and every electrical check
@@ -597,7 +639,7 @@ and earthworks, the exterior takeoff, stair geometry and every IRC check, storey
 collision (penetration depth, sliding, wall-snap orientation, wedged pieces),
 furniture placement end to end, clearance zones and circulation analysis,
 structural plan edits, document validation, the schema migrations from v1 all the
-way to v8, every advisor rule (does it fire when it should, and stay quiet when it should not), and the
+way to v10, every advisor rule (does it fire when it should, and stay quiet when it should not), and the
 generator. They are pure logic — no browser, no GPU — so they run in about two
 seconds and gate every deploy.
 
@@ -657,6 +699,25 @@ drawing must never get wrong: that a metre of building comes out the exact numbe
 of points on paper that the stated scale claims, and that the scale named in the
 title block is one somebody owns a rule for.
 
+Session 11's tests found the same shape of defect they found in session 10 — the
+router and the checker disagreeing — twice, and on both occasions the *checker*
+turned out to be the one that needed correcting, which was a first. The first
+was a violation citing IPC 903.1.1 for a universal 3 in minimum on the vent
+through the roof. That section does not say that; the 3 in figure is 904.2's
+frost rule and it applies only in a cold climate. A violation citing a section
+that does not contain the limit is the worst failure this app can produce, and
+the fix went in three places at once: the citation, the sizing (a stack vent is
+the stack *continued*, so it is the same size — not half of it, which is what a
+naive reading of 916.2 gives), and the finding itself, which became a caution
+naming the condition.
+
+The second was worse in a quieter way. The app routed a house, sized the water
+service off the fixture-unit table alone, got ½ in — which is arithmetically
+correct for a small house and *illegal*, because IPC 603.1 puts a ¾ in floor
+under the service — and then reported its own routing as a violation. A test now
+pins both halves: that the general sizing function still returns ½ in for a
+small load, and that the service-specific one never goes below ¾ in.
+
 Session 9 swept the whole project again, and the sweep paid for itself. It found
 a soffit that rendered almost black because it is the one surface in the building
 facing straight down, a roof that stayed on over hidden walls so a house looked
@@ -689,6 +750,25 @@ sink under the window was measured along the WALL while the run's path may be
 ordered the other way round, so on half the walls of any room it landed at the
 far end. In each case the checker was right and the layout was fixed, which is
 the only useful direction for that argument to go.
+
+Session 11 also turned up a defect that had been sitting in the loader since
+session 6, invisible because nothing wrote to the field it broke. `safeSite`
+hardcoded `sewerConnection: null` instead of reading it back, so a sewer
+connection was silently discarded on every reload. Nothing had ever set one, so
+nothing noticed — right up until the drainage router started working back from
+it, at which point every user's sewer would have jumped back to the default
+position each time they opened their design. It now reads the value back, and
+clamps the depth, because a sewer forty metres down would make every fall check
+in the building pass.
+
+The browser sweep for session 11 ran the whole thing end to end on a seeded
+house: lay out the kitchen and the bathroom, route the water and drainage, and
+check what came back. Five fixtures connected, 10 DFU, a 3 in building drain
+(forced there by the WC rather than by the arithmetic), a ¾ in service, 33 psi
+left at the worst fixture, the pipework visibly drawn in 3D and switchable, the
+document returning at v10 with its stack, its eleven drainage runs, its eleven
+supply runs and its cylinder intact, and a drawing set exported with its
+plumbing plans, riser and schedules. No console errors.
 
 The detector's fixtures are all plans the test file DRAWS, so the right answer
 is known exactly and a failure says which part of the pipeline moved: four walls
@@ -724,19 +804,22 @@ their valleys across each other.
 - ~~**Session 9** — electrical to the panel schedule, and the drawing set.~~ ✅
 - ~~**Session 10** — kitchens and bathrooms: cabinetry, fixtures, R307 and the
   counter receptacles the electrical used to guess at.~~ ✅
-- **Session 11 — water and drainage.** Supply runs and pipe sizing by fixture
-  unit; then the soil stack, waste branches, falls, traps, vents and the
-  connection to the sewer, to the IPC. Every fixture already carries what it
-  connects to — hot, cold, the trap size, whether it is soil — so this is the
-  first discipline that starts with its inputs already modelled.
+- ~~**Session 11** — water and drainage: the stack, the falls, the vents, the
+  pressure calculation and the riser diagram, to the IPC.~~ ✅
 - **Session 12 — heating and ventilation.** Room-by-room load to ACCA Manual J,
   equipment selection to Manual S, ducts to Manual D. The Manual J load then
   feeds the heating and cooling figures the electrical service calculation
-  currently has to ask the user for.
+  currently has to ask the user for — and the duct routing has the same shape as
+  the drainage routing session 11 just built, so a good deal of it is already
+  written.
 - **Session 13 — sections, and the drawing set finished.** A building section
   cut anywhere through the model, hidden-line removal on the elevations so a
   facade that steps in and out reads correctly, and window and door marks
   printed on the plans beside the openings they name.
+- **Not done, and worth naming** — pipe and fittings are not on the shopping
+  list. Everything priced in this app carries a `PriceBasis` saying where the
+  figure came from, and there is no honest source for pipe here yet; inventing
+  one to fill a column would be worse than the gap.
 - **Elsewhere in the queue** — a VR walkthrough, and accounts with cloud sync
   (designs currently live only in this browser's `localStorage`, so one cleared
   cache loses everything).
@@ -750,7 +833,7 @@ their valleys across each other.
 The app is built to **US codes**: the IRC for the shell, and — as those sessions
 land — the NEC for electrical, the IPC for plumbing and ACCA's manuals for
 heating. Choosing your jurisdiction comes later; for now the figures are the
-2021 IRC and the 2023 NEC, and the app says so.
+2021 IRC, the 2023 NEC and the 2021 IPC, and the app says so.
 
 Some of what the app reports is deliberately NOT code, and is labelled as such
 where it appears: the kitchen working triangle, the worktop landings beside a
@@ -759,12 +842,30 @@ anywhere requires them and a kitchen that fails every one of them is perfectly
 legal — they are here because they are measurable and because they are the
 difference between a kitchen that works and one that does not.
 
+The plumbing adds three more to that list, and the distinction is worth being
+strict about because plumbing is where a wrong citation does the most damage.
+Water velocity, water heater sizing and the practical maximum fall on a drain
+are all real engineering and none of them is in the code book — they print as
+"Guidance". Two more are *conditional* rather than universal: a vent's 3 in
+minimum applies only where the winter design temperature is at or below 0°F
+(IPC 904.2), and the 10 ft clearance from a vent to a window (904.5) can be
+satisfied by height as well as by distance. The app knows neither the climate
+nor, reliably, the height, so both are cautions that name the condition — not
+violations it cannot stand behind.
+
 Nothing the app produces is a permit set, and nothing has been checked or
 stamped by a licensed professional. **No structural design is done at all** — no
 beam, header, footing or connection is sized, and nothing in the app says the
 building stands up. The electrical work must be done by a licensed electrician
-and inspected. Every sheet of the drawing set says all of this on it, because
-sheets get separated and one of them ends up on a notice board on its own.
+and inspected, and so must the plumbing. Every sheet of the drawing set says all
+of this on it, because sheets get separated and one of them ends up on a notice
+board on its own.
+
+Cleanouts are a specific gap worth naming: the app does not model them, so it
+cannot tell you whether they are there. What it does instead is say where IPC
+708.1 requires them — at the foot of the stack, where the drain leaves the
+building, at every sharp change of direction — which turns into a list to hand
+over rather than a false clean bill of health.
 
 **Checking is not approval.** Nothing here is certified by anybody. A real build
 needs a permit, an inspection, and for anything structural, electrical or gas, a

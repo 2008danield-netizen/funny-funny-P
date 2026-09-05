@@ -24,7 +24,13 @@ export type SelectionKind =
   /** One cabinet in a run. */
   | 'unit'
   /** A sanitary fixture or an appliance. */
-  | 'fixture';
+  | 'fixture'
+  /** One run of pipe, drainage or supply. */
+  | 'pipe'
+  /** A soil stack. */
+  | 'stack'
+  /** The water heater. */
+  | 'heater';
 
 export interface Selection {
   kind: SelectionKind | null;
@@ -101,6 +107,18 @@ export interface EditorState {
   showElectricalRuns: boolean;
 
   /**
+   * Whether the pipework is drawn in the model, and which half of it.
+   *
+   * View state, same as the electrical. Drainage and supply are separated
+   * because a house with both drawn at once is a thicket — and the two are
+   * looked at for different reasons, drainage for its falls and supply for
+   * where it runs.
+   */
+  showPlumbing: boolean;
+  showDrainage: boolean;
+  showSupply: boolean;
+
+  /**
    * Walls the detector has proposed on the traced plan, and which are ticked.
    *
    * View state, deliberately: a proposal is not part of the design until it is
@@ -138,6 +156,11 @@ function initialState(): EditorState {
     // panel does, so nobody has to find this to see what they just laid out.
     showElectrical: false,
     showElectricalRuns: true,
+    // Off by default for the same reason as the electrical: a first-time
+    // visitor should see their room, not a house full of pipe.
+    showPlumbing: false,
+    showDrainage: true,
+    showSupply: true,
   };
 }
 

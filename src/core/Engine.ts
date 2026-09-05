@@ -26,6 +26,7 @@ import { Furnishings } from '@/scene/Furnishings';
 import { ClearanceOverlay } from '@/scene/ClearanceOverlay';
 import { Staircases } from '@/scene/Staircases';
 import { Electrical } from '@/scene/Electrical';
+import { Plumbing } from '@/scene/Plumbing';
 import { Fittings } from '@/scene/Fittings';
 import { GhostLevel } from '@/scene/GhostLevel';
 import { Roofs } from '@/scene/Roofs';
@@ -58,6 +59,7 @@ export class Engine {
   private clearanceOverlay: ClearanceOverlay;
   private staircases: Staircases;
   private electrical: Electrical;
+  private plumbing: Plumbing;
   private fittings: Fittings;
   private ghost: GhostLevel;
   private roofs: Roofs;
@@ -129,6 +131,8 @@ export class Engine {
     // height, and its mounting height is measured from that storey's floor.
     this.electrical = new Electrical();
     this.levelGroup.add(this.electrical.group);
+    this.plumbing = new Plumbing();
+    this.levelGroup.add(this.plumbing.group);
     // Inside the storey group: cabinetry belongs to one storey and its heights
     // are measured from that storey's floor.
     this.fittings = new Fittings();
@@ -162,6 +166,7 @@ export class Engine {
       this.furnishings,
       this.electrical,
       this.fittings,
+      this.plumbing,
       this.cameraController.controls,
     );
 
@@ -297,6 +302,19 @@ export class Engine {
     if (levelSwitched || !previous || previous.electrical !== doc.electrical) {
       this.electrical.update(doc, level.id);
     }
+    /*
+     * The plumbing also watches the FIXTURES, not just its own plan. Every pipe
+     * size is derived from the fixtures it serves, so adding a bath upstairs
+     * changes no pipe geometry and changes the diameter of everything under it.
+     */
+    if (
+      levelSwitched ||
+      !previous ||
+      previous.plumbing !== doc.plumbing ||
+      previous.fixtures !== doc.fixtures
+    ) {
+      this.plumbing.update(doc, level.id);
+    }
     if (levelSwitched || !previous || previous.runs !== doc.runs || previous.fixtures !== doc.fixtures) {
       this.fittings.update(doc, level.id);
     }
@@ -389,6 +407,15 @@ export class Engine {
     this.electrical.setVisible(state.showElectrical);
     this.electrical.setShowRuns(state.showElectricalRuns);
     this.electrical.setSelection(state.selection.kind === 'device' ? state.selection.id : null);
+    this.plumbing.setVisible(state.showPlumbing);
+    this.plumbing.setSystems(state.showDrainage, state.showSupply);
+    this.plumbing.setSelection(
+      state.selection.kind === 'pipe' ||
+        state.selection.kind === 'stack' ||
+        state.selection.kind === 'heater'
+        ? state.selection.id
+        : null,
+    );
     this.fittings.setSelection(
       state.selection.kind === 'unit' || state.selection.kind === 'fixture'
         ? state.selection.id
@@ -397,6 +424,10 @@ export class Engine {
     if (state.showElectrical) {
       const doc = designStore.getState();
       this.electrical.update(doc, activeLevel(doc).id);
+    }
+    if (state.showPlumbing) {
+      const doc = designStore.getState();
+      this.plumbing.update(doc, activeLevel(doc).id);
     }
     // Corner handles and the grid belong to the plan tools; showing them while
     // arranging furniture is clutter the user cannot act on.
@@ -475,6 +506,7 @@ export class Engine {
     this.clearanceOverlay.dispose();
     this.staircases.dispose();
     this.electrical.dispose();
+    this.plumbing.dispose();
     this.fittings.dispose();
     this.ghost.dispose();
     this.planUnderlay.dispose();

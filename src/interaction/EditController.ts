@@ -24,6 +24,7 @@ import * as THREE from 'three';
 import { Building, type PickResult } from '@/scene/Building';
 import type { Furnishings } from '@/scene/Furnishings';
 import type { Electrical } from '@/scene/Electrical';
+import type { Plumbing } from '@/scene/Plumbing';
 import type { Fittings } from '@/scene/Fittings';
 import { nearestSnapCandidates, snapPoint } from './snapping';
 import { distance, indexVertices, resolveWall } from '@/scene/planGraph';
@@ -84,6 +85,7 @@ export class EditController {
   private building: Building;
   private furnishings: Furnishings;
   private electrical: Electrical;
+  private plumbing: Plumbing;
   private fittings: Fittings;
   private orbit: { enabled: boolean };
 
@@ -106,6 +108,7 @@ export class EditController {
     furnishings: Furnishings,
     electrical: Electrical,
     fittings: Fittings,
+    plumbing: Plumbing,
     orbit: { enabled: boolean },
   ) {
     this.canvas = canvas;
@@ -114,6 +117,7 @@ export class EditController {
     this.furnishings = furnishings;
     this.electrical = electrical;
     this.fittings = fittings;
+    this.plumbing = plumbing;
     this.orbit = orbit;
 
     const onPointerDown = (event: PointerEvent) => this.handlePointerDown(event);
@@ -183,6 +187,19 @@ export class EditController {
      */
     const devices = this.raycaster.intersectObjects(this.electrical.pickTargets(), false);
     for (const intersection of devices) {
+      const result = Building.interpret(intersection);
+      if (result) return result;
+    }
+
+    /*
+     * Pipework next, and for a slightly different reason: a waste pipe lives in
+     * the floor void, so the floor above it is always between the pointer and
+     * the pipe. Testing it before the building is what makes a run under a
+     * bathroom clickable at all. Like the devices, it is only pickable while
+     * the layer is shown.
+     */
+    const pipes = this.raycaster.intersectObjects(this.plumbing.pickTargets(), false);
+    for (const intersection of pipes) {
       const result = Building.interpret(intersection);
       if (result) return result;
     }

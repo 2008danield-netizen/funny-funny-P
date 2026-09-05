@@ -345,6 +345,39 @@ function migrateV8ToV9(doc: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * v9 to v10 — water and drainage.
+ *
+ * Additive and empty, like v7→v8 and v8→v9 before it. There is a stronger
+ * reason here than for either of those: a route the app invented would carry
+ * pipe sizes, falls and vent positions that read as designed, and somebody
+ * would build from them. An empty plumbing plan says honestly that nothing has
+ * been worked out yet.
+ *
+ * The site gains a water-service point alongside the sewer connection it has
+ * had since v6, defaulting to null so the router can say it is assuming a
+ * position rather than pretending one was given.
+ */
+function migrateV9ToV10(doc: Record<string, unknown>): Record<string, unknown> {
+  const site =
+    doc.site && typeof doc.site === 'object' ? (doc.site as Record<string, unknown>) : {};
+
+  return {
+    ...doc,
+    schemaVersion: 10,
+    site: { ...site, waterService: site.waterService ?? null },
+    plumbing: {
+      drainage: [],
+      supply: [],
+      stacks: [],
+      connections: [],
+      heater: null,
+      mainPressureKpa: 414,
+      mainPressureMeasured: false,
+    },
+  };
+}
+
+/**
  * Brings a document up to the current schema.
  *
  * Migrations are applied in sequence, so a v1 document passes through every
@@ -383,6 +416,9 @@ export function migrateDocument(input: Record<string, unknown>): Record<string, 
   }
   if (declared < 9) {
     doc = migrateV8ToV9(doc);
+  }
+  if (declared < 10) {
+    doc = migrateV9ToV10(doc);
   }
 
   return doc;

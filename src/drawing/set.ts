@@ -54,6 +54,19 @@ import {
   drawPanelSchedule,
 } from './electricalSheet';
 import {
+  drawDrainageSchedule,
+  drawFixtureUnitSchedule,
+  drawGhostPlan as drawPlumbingGhostPlan,
+  drawPipes,
+  drawPlumbingFittings,
+  drawPlumbingLegend,
+  drawRiserDiagram,
+  drawSupplySchedule,
+} from './plumbingSheet';
+import { plumbingTotals, sizeAllDrainage, sizeAllSupply } from '@/services/plumbingSize';
+import { checkPlumbing } from '@/services/plumbingCheck';
+import { IPC_DISCLAIMER } from '@/code/ipc';
+import {
   cabinetSchedule,
   doorSchedule,
   fittingSchedule,
@@ -167,6 +180,40 @@ export function buildDrawingSet(doc: DesignDocument, options: DrawingSetOptions)
       title: 'Panel schedule and load calculation',
       scale: 'Not to scale',
       draw: (page, block, _setScale, queue) => drawPanelSheet(pdf, page, doc, block, size, queue),
+    });
+  }
+
+  /* ------------------------------- Plumbing ------------------------------- */
+
+  /*
+   * A plan per storey and one riser diagram for the building. Both, because
+   * they answer different questions: the plan says where the pipe goes, and
+   * only the riser says what connects to what and whether every trap has a
+   * vent — which is what an inspector actually checks.
+   */
+  if (doc.plumbing.drainage.length > 0 || doc.plumbing.supply.length > 0) {
+    storeys.forEach((level, index) => {
+      plans.push({
+        number: `P1.${index + 1}`,
+        title: `${level.name} plumbing plan`,
+        scale: '',
+        draw: (page, block, setScale) =>
+          drawPlumbingSheet(page, doc, level, block, options, size, setScale),
+      });
+    });
+
+    plans.push({
+      number: 'P2.1',
+      title: 'Drainage riser diagram',
+      scale: 'Not to scale',
+      draw: (page, block) => drawRiserSheet(page, doc, block),
+    });
+
+    plans.push({
+      number: 'P3.1',
+      title: 'Pipe and fixture unit schedules',
+      scale: 'Not to scale',
+      draw: (page, block, _setScale, queue) => drawPipeScheduleSheet(pdf, page, doc, block, size, queue),
     });
   }
 
@@ -285,6 +332,12 @@ function drawCover(page: PdfPage, doc: DesignDocument, options: DrawingSetOption
     ['Height to ridge', options.formats.length(buildingHeight(doc))],
     ['North', `${Math.round((doc.site.northAngle * 180) / Math.PI)}° · up the sheet is ${compassPoint(((doc.site.northAngle * 180) / Math.PI + 360) % 360)}`],
     ['Circuits', String(doc.electrical.circuits.length)],
+    [
+      'Drainage',
+      doc.plumbing.drainage.length > 0
+        ? `${plumbingTotals(doc).totalDfu} DFU · ${plumbingTotals(doc).waterClosets} WC`
+        : 'Not routed',
+    ],
   ];
 
   for (const [label, value] of facts) {
@@ -299,7 +352,7 @@ function drawCover(page: PdfPage, doc: DesignDocument, options: DrawingSetOption
   page.text('SHEETS IN THIS SET', rightX, right, { size: 9, font: 'helvetica-bold' });
   right -= 16;
   page.text(
-    'Cover, floor plans, elevations, electrical plans and schedules. Every sheet carries its own scale bar; measure the bar before scaling anything off a print.',
+    'Cover, floor plans, elevations, electrical plans, plumbing plans and schedules. Every sheet carries its own scale bar; measure the bar before scaling anything off a print. The riser diagram is schematic and is not to scale.',
     rightX,
     right,
     { size: 7.5, colour: GREY },
@@ -331,9 +384,11 @@ function drawCover(page: PdfPage, doc: DesignDocument, options: DrawingSetOption
   notice = drawParagraph(
     page,
     'Code checking in this app covers the 2021 International Residential Code for stairs, guards, ' +
-      'roofs and light and ventilation, and the 2023 National Electrical Code for branch circuits, ' +
-      'protection and the service calculation. Checking is not approval, jurisdictions amend the ' +
-      'codes they adopt, and the electrical work must be done by a licensed electrician and inspected.',
+      'roofs and light and ventilation, the 2023 National Electrical Code for branch circuits, ' +
+      'protection and the service calculation, and the 2021 International Plumbing Code for ' +
+      'drainage, venting and water supply. Checking is not approval, jurisdictions amend the ' +
+      'codes they adopt; the electrical work must be done by a licensed electrician and the ' +
+      'plumbing by a licensed plumber, and both must be inspected.',
     frame.x + 12,
     notice,
     frame.width - 24,
@@ -540,6 +595,195 @@ function drawElectricalSheet(
   drawNorthPoint(page, drawable.x + drawable.width - 20, frame.y + frame.height - 26, doc.site.northAngle);
 
   void block;
+  void size;
+}
+
+/** One storey's plumbing plan, with its legend. */
+function drawPlumbingSheet(
+  page: PdfPage,
+  doc: DesignDocument,
+  level: Level,
+  block: TitleBlock,
+  options: DrawingSetOptions,
+  size: PageSize,
+  setScale: (label: string) => void,
+): void {
+  const frame = frameOf(page);
+  const legendWidth = 190;
+  const drawable = {
+    x: frame.x + 20,
+    y: frame.y + 40,
+    width: frame.width - legendWidth - 50,
+    height: frame.height - 70,
+  };
+
+  const extent = boundsOf(planExtent(level));
+  const scale = fitScale(extent.width, extent.depth, drawable.width, drawable.height, options.imperial);
+  const projector = projectorFor(scale, extent, drawable);
+  setScale(scale.label);
+
+  drawPlumbingGhostPlan(page, level, projector);
+
+  /*
+   * Sizes come from the sizing module, not from anything stored, so the label
+   * on the drawing is the same number the checker judged and the panel shows.
+   * Three copies of that arithmetic is exactly how a drawing ends up passing
+   * its own checks while showing the wrong pipe.
+   */
+  const drainage = sizeAllDrainage(doc).map((entry) => ({
+    run: entry.run,
+    label: `${entry.size.asWritten}${
+      entry.slope !== null && entry.horizontalLength > 0.05
+        ? ` @ 1:${(1 / entry.slope).toFixed(0)}`
+        : ''
+    }`,
+  }));
+  const supply = sizeAllSupply(doc).map((entry) => ({
+    run: entry.run,
+    label: entry.size.asWritten,
+  }));
+
+  drawPipes(page, [...drainage, ...supply], level.id, projector);
+  drawPlumbingFittings(page, doc, level.id, projector);
+
+  // Room names, so somebody can tell which room a pipe is in.
+  page.save();
+  for (const region of findRegions(level.plan)) {
+    const at = projector.at(region.interiorPoint);
+    page.text(resolveRoomName(level, region.key).toUpperCase(), at.x, at.y - 22, {
+      size: 6.5,
+      align: 'center',
+      colour: GREY,
+    });
+  }
+  page.restore();
+
+  const used = new Set(
+    [...doc.plumbing.drainage, ...doc.plumbing.supply]
+      .filter((run) => run.points.some((point) => point.levelId === level.id))
+      .map((run) => run.system),
+  );
+
+  const legendX = frame.x + frame.width - legendWidth;
+  let cursor = drawPlumbingLegend(page, used, legendX, frame.y + frame.height - 14);
+
+  cursor -= 10;
+  drawParagraph(
+    page,
+    'Pipe sizes and falls are to the 2021 IPC, worked out from the fixtures shown. Horizontal ' +
+      'runs are drawn at the minimum fall their size allows; more fall is better than less. ' +
+      'Cleanouts are required and are not drawn. Work to be carried out by a licensed plumber ' +
+      'and inspected.',
+    legendX,
+    cursor,
+    legendWidth - 10,
+    { size: 6.2, colour: GREY },
+  );
+
+  drawScaleBar(page, projector, frame.x + 10, frame.y + 16, options.imperial);
+  drawNorthPoint(page, drawable.x + drawable.width - 20, frame.y + frame.height - 26, doc.site.northAngle);
+
+  void block;
+  void size;
+}
+
+/** The drainage riser, and the findings that are about topology. */
+function drawRiserSheet(page: PdfPage, doc: DesignDocument, block: TitleBlock): void {
+  const frame = frameOf(page);
+  const diagram = {
+    x: frame.x,
+    y: frame.y,
+    width: frame.width * 0.62,
+    height: frame.height,
+  };
+
+  drawRiserDiagram(page, doc, sizeAllDrainage(doc), diagram);
+
+  /* ---- The venting findings beside it, because that is what a riser is for -- */
+  const report = checkPlumbing(doc);
+  const rightX = frame.x + frame.width * 0.66;
+  let cursor = frame.y + frame.height - 14;
+
+  page.text('CODE CHECK', rightX, cursor, { size: 8, font: 'helvetica-bold' });
+  cursor -= 14;
+
+  for (const finding of report.findings) {
+    if (cursor < frame.y + 40) break;
+    const mark = finding.severity === 'violation' ? '!' : finding.severity === 'caution' ? '?' : '·';
+    page.text(mark, rightX, cursor, { size: 7, font: 'helvetica-bold' });
+    page.text(finding.title, rightX + 10, cursor, { size: 7 });
+    cursor -= 9;
+    // An empty section is guidance, not code — printing a citation that does
+    // not exist is how a reader stops trusting the ones that do.
+    page.text(finding.section ? `IPC ${finding.section}` : 'Guidance', rightX + 10, cursor, {
+      size: 6,
+      colour: GREY,
+    });
+    cursor -= 12;
+  }
+
+  if (report.findings.length === 0) {
+    page.text('Nothing to report.', rightX, cursor, { size: 7, colour: GREY });
+    cursor -= 14;
+  }
+
+  cursor -= 8;
+  drawParagraph(page, IPC_DISCLAIMER, rightX, cursor, frame.width * 0.32, {
+    size: 6.2,
+    colour: GREY,
+  });
+
+  void block;
+}
+
+/** The pipe schedules and the fixture unit schedule. */
+function drawPipeScheduleSheet(
+  pdf: PdfWriter,
+  page: PdfPage,
+  doc: DesignDocument,
+  block: TitleBlock,
+  size: PageSize,
+  queue: (page: PdfPage, block: TitleBlock) => void,
+): void {
+  const frame = frameOf(page);
+  const overflow = () => {
+    const extra = pdf.addPage(size);
+    queue(extra, { ...block, title: `${block.title} (continued)`, index: pdf.pageCount });
+    return extra;
+  };
+
+  let current = page;
+  let cursor = frame.y + frame.height - 14;
+
+  current.text('DRAINAGE', frame.x, cursor, { size: 8, font: 'helvetica-bold' });
+  cursor -= 14;
+  let result = drawDrainageSchedule(current, doc, sizeAllDrainage(doc), frame.x, cursor, frame, overflow);
+  current = result.page;
+  cursor = result.y - 24;
+
+  current.text('WATER SUPPLY', frame.x, cursor, { size: 8, font: 'helvetica-bold' });
+  cursor -= 14;
+  result = drawSupplySchedule(current, doc, sizeAllSupply(doc), frame.x, cursor, frame, overflow);
+  current = result.page;
+  cursor = result.y - 24;
+
+  current.text('FIXTURE UNITS', frame.x, cursor, { size: 8, font: 'helvetica-bold' });
+  cursor -= 14;
+  result = drawFixtureUnitSchedule(current, doc, frame.x, cursor, frame, overflow);
+  current = result.page;
+  cursor = result.y - 20;
+
+  drawParagraph(
+    current,
+    'DFU are drainage fixture units (IPC Table 709.1); WSFU are water supply fixture units ' +
+      '(Table E103.3(2)). They are different quantities and do not convert into one another — a ' +
+      'water closet is 3 DFU out and 2.2 WSFU in.',
+    frame.x,
+    cursor,
+    frame.width * 0.6,
+    { size: 6.2, colour: GREY },
+  );
+
   void size;
 }
 

@@ -18,6 +18,7 @@ import {
   LEVEL_LIMITS,
   OPENING_LIMITS,
   PLAN_LIMITS,
+  PLUMBING_LIMITS,
   ROOF_LIMITS,
   SCHEMA_VERSION,
   SITE_LIMITS,
@@ -28,6 +29,13 @@ import {
   type DesignDocument,
   type Dormer,
   type Circuit,
+  type WaterHeater,
+  type FixtureConnection,
+  type SoilStack,
+  type PipeSystem,
+  type PipePoint,
+  type PipeRun,
+  type PlumbingPlan,
   type CircuitKind,
   type DeviceKind,
   type ElectricalDevice,
@@ -146,6 +154,7 @@ export function defaultSite(): Site {
     northAngle: 0,
     boundary: [],
     sewerConnection: null,
+    waterService: null,
     terrain: defaultTerrain(),
     ground: 'grass',
     setbacks: null,
@@ -160,6 +169,26 @@ export function defaultSite(): Site {
  */
 export function defaultElectrical(): ElectricalPlan {
   return { devices: [], circuits: [], panel: null, heatingVa: 0, coolingVa: 0 };
+}
+
+/**
+ * An empty plumbing installation.
+ *
+ * Nothing routed, and the street pressure at a typical default that is flagged
+ * as a default. The supply sizing is only as good as that figure, so the check
+ * says plainly that nobody has measured it rather than quietly passing on an
+ * assumption.
+ */
+export function defaultPlumbing(): PlumbingPlan {
+  return {
+    drainage: [],
+    supply: [],
+    stacks: [],
+    connections: [],
+    heater: null,
+    mainPressureKpa: PLUMBING_LIMITS.defaultMainPressureKpa,
+    mainPressureMeasured: false,
+  };
 }
 
 /** A worktop somebody has not chosen anything about yet. */
@@ -216,6 +245,7 @@ export function createDefaultDocument(): DesignDocument {
     exterior: defaultExterior(),
     services: [],
     electrical: defaultElectrical(),
+    plumbing: defaultPlumbing(),
     runs: [],
     fixtures: [],
     lighting: {
@@ -1186,6 +1216,30 @@ function safeSetbacks(value: unknown): Setbacks | null {
   };
 }
 
+/** A sewer connection point, or null if there is not a usable one. */
+function safeSewer(value: unknown): { at: Point2; invertDepth: number } | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  const at = safePoint(raw.at);
+  if (!at) return null;
+  return {
+    at,
+    invertDepth: clamp(
+      raw.invertDepth,
+      PLUMBING_LIMITS.minInvertDepth,
+      PLUMBING_LIMITS.maxInvertDepth,
+      PLUMBING_LIMITS.defaultInvertDepth,
+    ),
+  };
+}
+
+/** A `{ at }` wrapper, for the water service point. */
+function safePoint2(value: unknown): { at: Point2 } | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const at = safePoint((value as Record<string, unknown>).at);
+  return at ? { at } : null;
+}
+
 function safeSite(value: unknown): Site {
   const base = defaultSite();
   if (typeof value !== 'object' || value === null) return base;
@@ -1193,7 +1247,12 @@ function safeSite(value: unknown): Site {
   return {
     northAngle: normalizeAngle(typeof raw.northAngle === 'number' ? raw.northAngle : 0),
     boundary: safePolygon(raw.boundary),
-    sewerConnection: null,
+    // Read back rather than dropped. Until session 11 nothing wrote to these,
+    // so hardcoding null was invisible; now that the drainage router works to
+    // a real invert, throwing the user's connection point away on every reload
+    // would silently move their sewer back to the default position.
+    sewerConnection: safeSewer(raw.sewerConnection),
+    waterService: safePoint2(raw.waterService),
     terrain: safeTerrain(raw.terrain),
     ground: oneOf(raw.ground, GROUND_COVERS, 'grass'),
     setbacks: safeSetbacks(raw.setbacks),
@@ -1370,6 +1429,189 @@ export function safeRoofs(value: unknown, levels: readonly Level[]): Roof[] {
 }
 
 /**
+ * Validates a plumbing plan out of arbitrary parsed JSON.
+ *
+ * Two things get thrown away rather than repaired, because a repaired version
+ * would be worse than nothing:
+ *
+ *   • A pipe run with fewer than two points is not a pipe. It would render as
+ *     nothing and size as a zero-length run, and a zero-length run passes every
+ *     fall check trivially — a silently compliant pipe that does not exist.
+ *   • A connection naming a fixture that is gone. Its trap would be checked
+ *     against a fixture the document no longer has.
+ *
+ * Downstream references are then swept so nothing points at a run that did not
+ * survive, which is what keeps the sizing walk from looping or dangling.
+ */
+function safePlumbing(
+  value: unknown,
+  levels: readonly Level[],
+  fixtures: readonly Fixture[],
+): PlumbingPlan {
+  const base = defaultPlumbing();
+  if (typeof value !== 'object' || value === null) return base;
+  const raw = value as Record<string, unknown>;
+
+  const levelIds = new Set(levels.map((level) => level.id));
+  const fallbackLevel = levels[0]?.id ?? '';
+  const fixtureIds = new Set(fixtures.map((fixture) => fixture.id));
+
+  const readRuns = (input: unknown, systems: readonly PipeSystem[]): PipeRun[] => {
+    const runs: PipeRun[] = [];
+    const seen = new Set<string>();
+    if (!Array.isArray(input)) return runs;
+
+    for (const entry of input.slice(0, 2000)) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const run = entry as Record<string, unknown>;
+
+      const id = safeString(run.id, `p${runs.length + 1}`, 60);
+      if (seen.has(id)) continue;
+
+      const points: PipePoint[] = [];
+      if (Array.isArray(run.points)) {
+        for (const raw of run.points.slice(0, 200)) {
+          if (typeof raw !== 'object' || raw === null) continue;
+          const point = raw as Record<string, unknown>;
+          const at = safePoint(point.at);
+          if (!at) continue;
+          const levelId =
+            typeof point.levelId === 'string' && levelIds.has(point.levelId)
+              ? point.levelId
+              : fallbackLevel;
+          points.push({
+            levelId,
+            at,
+            height: clamp(point.height, -20, 60, 0),
+          });
+        }
+      }
+      // A run of one point is not a pipe, and would pass every check trivially.
+      if (points.length < 2) continue;
+
+      seen.add(id);
+      runs.push({
+        id,
+        system: oneOf(run.system, systems, systems[0]!),
+        points,
+        serves: safeIdList(run.serves).filter((fixtureId) => fixtureIds.has(fixtureId)),
+        downstreamId: typeof run.downstreamId === 'string' ? run.downstreamId : null,
+        manual: run.manual === true,
+      });
+    }
+    return runs;
+  };
+
+  const drainage = readRuns(raw.drainage, ['soil', 'waste', 'vent']);
+  const supply = readRuns(raw.supply, ['cold', 'hot', 'hot-return']);
+
+  // Nothing may point at a run that did not survive validation.
+  const runIds = new Set([...drainage, ...supply].map((run) => run.id));
+  for (const run of [...drainage, ...supply]) {
+    if (run.downstreamId !== null && !runIds.has(run.downstreamId)) run.downstreamId = null;
+  }
+
+  const stacks: SoilStack[] = [];
+  const seenStacks = new Set<string>();
+  if (Array.isArray(raw.stacks)) {
+    for (const entry of raw.stacks.slice(0, 40)) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const stack = entry as Record<string, unknown>;
+      const at = safePoint(stack.at);
+      if (!at) continue;
+
+      const id = safeString(stack.id, `st${stacks.length + 1}`, 60);
+      if (seenStacks.has(id)) continue;
+      seenStacks.add(id);
+
+      stacks.push({
+        id,
+        at,
+        fromLevelId:
+          typeof stack.fromLevelId === 'string' && levelIds.has(stack.fromLevelId)
+            ? stack.fromLevelId
+            : fallbackLevel,
+        toLevelId:
+          typeof stack.toLevelId === 'string' && levelIds.has(stack.toLevelId)
+            ? stack.toLevelId
+            : fallbackLevel,
+        ventAboveRoof: clamp(stack.ventAboveRoof, 0.1, 3, PLUMBING_LIMITS.defaultVentAboveRoof),
+        wallId: typeof stack.wallId === 'string' ? stack.wallId : null,
+      });
+    }
+  }
+
+  const connections: FixtureConnection[] = [];
+  const seenFixtures = new Set<string>();
+  if (Array.isArray(raw.connections)) {
+    for (const entry of raw.connections.slice(0, 400)) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const connection = entry as Record<string, unknown>;
+
+      const fixtureId = safeString(connection.fixtureId, '', 60);
+      // A connection to a fixture that is gone would be checked against nothing.
+      if (!fixtureIds.has(fixtureId) || seenFixtures.has(fixtureId)) continue;
+      seenFixtures.add(fixtureId);
+
+      const trapAt = safePoint(connection.trapAt);
+      if (!trapAt) continue;
+
+      const ref = (key: string): string | null => {
+        const id = connection[key];
+        return typeof id === 'string' && runIds.has(id) ? id : null;
+      };
+
+      connections.push({
+        fixtureId,
+        trapAt,
+        trapHeight: clamp(connection.trapHeight, -5, 5, 0.2),
+        trapSize: clamp(connection.trapSize, 0.02, 0.2, 0.04),
+        drainRunId: ref('drainRunId'),
+        ventRunId: ref('ventRunId'),
+        coldRunId: ref('coldRunId'),
+        hotRunId: ref('hotRunId'),
+      });
+    }
+  }
+
+  let heater: WaterHeater | null = null;
+  if (typeof raw.heater === 'object' && raw.heater !== null) {
+    const entry = raw.heater as Record<string, unknown>;
+    const at = safePoint(entry.at);
+    if (at) {
+      const kind = entry.kind === 'instantaneous' ? 'instantaneous' : 'storage';
+      heater = {
+        id: safeString(entry.id, 'wh1', 60),
+        kind,
+        levelId:
+          typeof entry.levelId === 'string' && levelIds.has(entry.levelId)
+            ? entry.levelId
+            : fallbackLevel,
+        at,
+        // An instantaneous heater stores nothing, whatever the file claims.
+        litres: kind === 'instantaneous' ? 0 : clamp(entry.litres, 0, 1000, 150),
+        recirculation: entry.recirculation === true,
+      };
+    }
+  }
+
+  return {
+    drainage,
+    supply,
+    stacks,
+    connections,
+    heater,
+    mainPressureKpa: clamp(
+      raw.mainPressureKpa,
+      PLUMBING_LIMITS.minMainPressureKpa,
+      PLUMBING_LIMITS.maxMainPressureKpa,
+      base.mainPressureKpa,
+    ),
+    mainPressureMeasured: raw.mainPressureMeasured === true,
+  };
+}
+
+/**
  * Coerces an arbitrary parsed object into a valid DesignDocument.
  *
  * Deliberately forgiving rather than strict: a document saved by an older build
@@ -1387,6 +1629,9 @@ export function sanitizeDocument(input: unknown): DesignDocument {
   const rawLighting = (raw.lighting ?? {}) as Record<string, unknown>;
   const levels = safeLevels(raw.levels, raw.activeLevelId);
   const runs = safeRuns(raw.runs, levels.list);
+  // Validated against the runs, because a fixture built into a unit that is
+  // gone has to become free-standing rather than keep a dangling reference.
+  const fixtures = safeFixtures(raw.fixtures, levels.list, runs);
 
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -1404,9 +1649,10 @@ export function sanitizeDocument(input: unknown): DesignDocument {
     services: [],
     electrical: safeElectrical(raw.electrical, levels.list),
     runs,
-    // Validated against the runs, because a fixture built into a unit that is
-    // gone has to become free-standing rather than keep a dangling reference.
-    fixtures: safeFixtures(raw.fixtures, levels.list, runs),
+    fixtures,
+    // After the fixtures, because a connection to a fixture that did not
+    // survive validation has to be dropped rather than left dangling.
+    plumbing: safePlumbing(raw.plumbing, levels.list, fixtures),
     clearance: safeClearance(raw.clearance),
     currency: safeCurrency(raw.currency),
     lighting: {

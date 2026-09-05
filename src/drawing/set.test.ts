@@ -27,6 +27,8 @@ import { PAGE_SIZES } from './pdf';
 import { buildDrawingSet, type DrawingSetOptions } from './set';
 import { SCALES, pointsPerMetre } from './scale';
 import { doorSchedule, markOpenings, roomSchedule, windowSchedule } from './schedules';
+import { addFixture } from '@/state/fittingOps';
+import { routeAll } from '@/state/plumbingOps';
 
 /* -------------------------------- Fixtures -------------------------------- */
 
@@ -77,9 +79,16 @@ function house(): DesignDocument {
   addOpening(ground.plan, walls[1]!.id, 'window', 'window-casement', { width: 1.2, height: 1.2, sillHeight: 0.9 }, 2);
 
   placeFurniture(doc, ground, 'sofa-3-seat', { x: 0, z: 0 });
+
+  // Sanitaryware, so there is something for the plumbing sheets to draw.
+  addFixture(doc, ground.id, 'wc-close-coupled', { x: 6, z: -2 });
+  addFixture(doc, ground.id, 'basin-pedestal', { x: 6, z: 0 });
+  addFixture(doc, ground.id, 'sink-1.5-bowl', { x: 8, z: -2 });
+
   addLevel(doc);
   addRoof(doc);
   layOutElectrical(doc);
+  routeAll(doc);
 
   return doc;
 }
@@ -91,8 +100,35 @@ describe('the drawing set', () => {
     const doc = house();
     const pdf = buildDrawingSet(doc, options());
 
-    // Cover + 2 plans + 4 elevations + 2 electrical + panel + 4 schedules.
-    expect(pdf.pageCount).toBeGreaterThanOrEqual(12);
+    // Cover + 2 plans + 4 elevations + 2 electrical + panel + 2 plumbing plans
+    // + riser + pipe schedules + 4 schedules.
+    expect(pdf.pageCount).toBeGreaterThanOrEqual(16);
+  });
+
+  it('draws the plumbing sheets once there is pipework', () => {
+    const doc = house();
+    const pdf = buildDrawingSet(doc, options());
+
+    let text = '';
+    for (const byte of pdf.toBytes()) text += String.fromCharCode(byte);
+
+    // A plan per storey, the riser and the schedules, by their sheet numbers.
+    expect(text).toContain('P1.1');
+    expect(text).toContain('P2.1');
+    expect(text).toContain('P3.1');
+    // And the riser says outright that it is not to scale, because it is not.
+    expect(text).toContain('Schematic');
+  });
+
+  it('leaves the plumbing sheets out of a design with no pipework', () => {
+    const doc = house();
+    doc.plumbing.drainage = [];
+    doc.plumbing.supply = [];
+    doc.plumbing.stacks = [];
+
+    const withPipes = buildDrawingSet(house(), options()).pageCount;
+    const without = buildDrawingSet(doc, options()).pageCount;
+    expect(without).toBeLessThan(withPipes);
   });
 
   it('numbers every sheet against the same total', () => {

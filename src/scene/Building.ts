@@ -58,7 +58,10 @@ export type PickKind =
   | 'furniture'
   | 'device'
   | 'unit'
-  | 'fixture';
+  | 'fixture'
+  | 'pipe'
+  | 'stack'
+  | 'heater';
 
 export interface PickResult {
   kind: PickKind;

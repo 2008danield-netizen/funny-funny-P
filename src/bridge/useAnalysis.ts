@@ -36,6 +36,7 @@ import {
 } from '@/services/circuits';
 import { checkElectrical, type NecReport } from '@/services/necCheck';
 import { checkFittings, type FittingReport } from '@/services/fittingCheck';
+import { checkPlumbing, type PlumbingReport } from '@/services/plumbingCheck';
 import type { AdvisorReport } from '@/advisor/types';
 import { activeLevel } from '@/state/levels';
 import type { DesignDocument, Level } from '@/state/types';
@@ -152,6 +153,9 @@ export function useElectrical(): ElectricalAnalysis {
 let fittingKey: DesignDocument | null = null;
 let fittingCache: FittingReport | null = null;
 
+let plumbingKey: DesignDocument | null = null;
+let plumbingCache: PlumbingReport | null = null;
+
 /** The fitting checks for the whole building, computed at most once per version. */
 export function fittingsFor(doc: DesignDocument): FittingReport {
   if (fittingKey === doc && fittingCache) return fittingCache;
@@ -164,6 +168,20 @@ export function fittingsFor(doc: DesignDocument): FittingReport {
 export function useFittings(): FittingReport {
   const doc = useDesign();
   return useMemo(() => fittingsFor(doc), [doc]);
+}
+
+/** The plumbing checks for the whole building, computed at most once per version. */
+export function plumbingFor(doc: DesignDocument): PlumbingReport {
+  if (plumbingKey === doc && plumbingCache) return plumbingCache;
+  plumbingCache = checkPlumbing(doc);
+  plumbingKey = doc;
+  return plumbingCache;
+}
+
+/** Subscribes to the plumbing checks. */
+export function usePlumbing(): PlumbingReport {
+  const doc = useDesign();
+  return useMemo(() => plumbingFor(doc), [doc]);
 }
 
 /** Subscribes to the roof reports for the whole building. */

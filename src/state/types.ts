@@ -42,8 +42,12 @@
  *      their house, scaled, placed, and drawn over.
  * v8 — the electrical installation: outlets, switches, fittings, the circuits
  *      they sit on and the panel they come back to.
+ * v9 — kitchens and bathrooms: cabinet runs, the units filling them, and the
+ *      fixtures that carry what they connect to.
+ * v10 — water and drainage: the supply trees, the soil stack, the waste
+ *      branches, the vents, and where all of it meets the street.
  */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /** Which measurement system the UI displays. Storage is always metric. */
 export type UnitSystem = 'metric' | 'imperial';
@@ -685,6 +689,183 @@ export interface ElectricalPlan {
   coolingVa: number;
 }
 
+
+/* ═══════════════════════════ Water and drainage ══════════════════════════ */
+
+/**
+ * The whole plumbing installation.
+ *
+ * Like the electrical, this is its own typed model rather than a generic
+ * service network, for the same reason: almost every question worth asking —
+ * is this branch big enough, does this trap have a vent within six feet, is
+ * there enough pressure left at the top shower — is about loads and sizes, and
+ * none of it is answerable from a list of line segments.
+ *
+ * -----------------------------------------------------------------------------
+ * WHAT IS STORED AND WHAT IS DERIVED.
+ *
+ * The ROUTE is stored: where the stack is, which fixture joins which branch,
+ * where the pipe turns. That is a decision about somebody's house and it has to
+ * survive a fixture moving 200 mm.
+ *
+ * The SIZES are derived, every time, from the fixtures on each run. A stored
+ * diameter is a diameter that goes stale the moment a bath is added upstream of
+ * it, and a stale drain size is exactly the defect this whole session exists to
+ * prevent. So `PipeRun.size` is absent by design — ask `sizeDrainage()`.
+ */
+export interface PlumbingPlan {
+  /** Every drain, waste and vent pipe. */
+  drainage: PipeRun[];
+  /** Every hot and cold supply pipe. */
+  supply: PipeRun[];
+  /** The soil stacks, usually one. */
+  stacks: SoilStack[];
+  /** Where each fixture's trap sits, and what it connects to. */
+  connections: FixtureConnection[];
+  /** The water heater, once there is one. */
+  heater: WaterHeater | null;
+  /**
+   * Pressure at the main, in kPa.
+   *
+   * The user's own number — it comes off a gauge on their hose bib, or from the
+   * water company — because nothing in a drawing can tell you what the street
+   * pressure is, and the supply sizing is meaningless without it. The default
+   * is a typical suburban 60 psi, and the checker says when the figure is the
+   * default rather than something measured.
+   */
+  mainPressureKpa: number;
+  /** Whether the user has actually measured that, or is taking the default. */
+  mainPressureMeasured: boolean;
+}
+
+/** What a pipe is carrying. Decides its size rules, its colour and its symbol. */
+export type PipeSystem = 'cold' | 'hot' | 'hot-return' | 'waste' | 'soil' | 'vent';
+
+/**
+ * A length of pipe between two points, possibly turning corners on the way.
+ *
+ * Deliberately a polyline rather than a pair of endpoints: real pipe goes along
+ * a joist, turns, and drops, and drawing it as a straight line between fixture
+ * and stack would produce a drawing that reads as buildable and is not.
+ *
+ * Every vertex carries its own storey and height, so a run can climb from a
+ * ground-floor ceiling void into a first-floor wall without being split into
+ * two objects that then have to be kept in step.
+ */
+export interface PipeRun {
+  id: string;
+  system: PipeSystem;
+  /** In order, from the upstream end to the downstream end. */
+  points: PipePoint[];
+  /**
+   * What this run drains or feeds, by fixture id.
+   *
+   * The sizing reads this rather than working out geometrically which fixtures
+   * are upstream, because a fixture 50 mm from a pipe it does not connect to is
+   * a normal thing in a real house and no proximity test can tell the two
+   * apart.
+   */
+  serves: string[];
+  /** The run it discharges into, or null when it reaches the stack or the main. */
+  downstreamId: string | null;
+  /** Set when the user has moved this run by hand, so a re-route leaves it be. */
+  manual: boolean;
+}
+
+/** One vertex of a pipe run. */
+export interface PipePoint {
+  levelId: string;
+  at: Point2;
+  /**
+   * Height above that level's finished floor, in metres.
+   *
+   * Negative for anything in the floor void below — which is where most waste
+   * pipe actually lives — and that is the normal case rather than an error.
+   */
+  height: number;
+}
+
+/**
+ * A soil stack: the vertical pipe everything drains into.
+ *
+ * One object rather than a run per storey, because a stack is one physical pipe
+ * and its size is set by the total load on all of it. Splitting it per storey
+ * would let the ground-floor length be sized for the ground floor's fixtures
+ * alone, which is exactly the mistake.
+ */
+export interface SoilStack {
+  id: string;
+  /** Plan position, shared by every storey it passes through. */
+  at: Point2;
+  /** Bottom and top of the stack, as level ids. */
+  fromLevelId: string;
+  toLevelId: string;
+  /**
+   * How high the vent goes above the roof surface where it breaks through.
+   *
+   * IPC 904.1 wants 6 in; the default here is more, because a 6 in stub is the
+   * legal minimum rather than a good idea and it frosts shut in a cold place.
+   */
+  ventAboveRoof: number;
+  /** The wall the stack is boxed into, if it was routed against one. */
+  wallId: string | null;
+}
+
+/**
+ * Where one fixture meets the plumbing.
+ *
+ * A fixture in the catalogue says it needs hot, cold and a 40 mm trap. This
+ * says where that actually happens in the building and what it joins onto, and
+ * it is what turns a room full of sanitaryware into a system.
+ */
+export interface FixtureConnection {
+  fixtureId: string;
+  /** Where the trap sits, in plan and above the floor. */
+  trapAt: Point2;
+  trapHeight: number;
+  /** Trap size in metres — from the catalogue, or the code's minimum. */
+  trapSize: number;
+  /** The waste or soil run this fixture discharges into. */
+  drainRunId: string | null;
+  /** The vent that protects its seal — a dry vent, or the wet vent it shares. */
+  ventRunId: string | null;
+  /** Supply runs feeding it. */
+  coldRunId: string | null;
+  hotRunId: string | null;
+}
+
+/** How the hot water is made. */
+export type HeaterKind = 'storage' | 'instantaneous';
+
+export interface WaterHeater {
+  id: string;
+  kind: HeaterKind;
+  levelId: string;
+  at: Point2;
+  /** Storage volume in litres. Zero for an instantaneous heater. */
+  litres: number;
+  /** Whether a flow-and-return loop keeps the far taps hot. */
+  recirculation: boolean;
+}
+
+/** Bounds for the plumbing editor, and the defaults a route starts from. */
+export const PLUMBING_LIMITS = {
+  /** Typical suburban street pressure, in kPa. 60 psi. */
+  defaultMainPressureKpa: 414,
+  minMainPressureKpa: 100,
+  maxMainPressureKpa: 900,
+  /** How deep the building drain leaves the building, below the ground floor. */
+  defaultInvertDepth: 0.9,
+  minInvertDepth: 0.3,
+  maxInvertDepth: 4,
+  /** How far above the roof a vent terminates, by default. */
+  defaultVentAboveRoof: 0.3,
+  /** Where waste pipe runs: this far below the finished floor it serves. */
+  floorVoidDepth: 0.15,
+  /** Where supply pipe runs, above the floor, when it is not in a wall. */
+  supplyHeight: 0.35,
+} as const;
+
 /* ------------------------- Reserved for later sessions -------------------- */
 
 /* ─────────────────────────────── The site ────────────────────────────── */
@@ -762,8 +943,25 @@ export interface Site {
   northAngle: number;
   /** Plot outline, in world XZ. Empty until the user draws one. */
   boundary: Point2[];
-  /** Where the building's drainage meets the public sewer. Session 10. */
+  /**
+   * Where the building's drainage meets the public sewer.
+   *
+   * `invertDepth` is how far the pipe's invert sits BELOW the finished ground
+   * floor at that point, in metres. It is the datum the whole drainage design
+   * works back from: every fall in the building has to arrive here, and a
+   * sewer that is shallower than the fixtures need is the one drainage problem
+   * that cannot be solved by choosing a different pipe.
+   */
   sewerConnection: { at: Point2; invertDepth: number } | null;
+  /**
+   * Where the water service enters the plot.
+   *
+   * Separate from the sewer because they are separate utilities that arrive at
+   * separate points, and the distance from here to the furthest tap is what
+   * the supply pressure calculation is measured along. Null means "not placed",
+   * and the router assumes the front boundary — saying so in its assumptions.
+   */
+  waterService: { at: Point2 } | null;
   terrain: Terrain;
   ground: GroundCover;
   /** Null until the user enters their local ordinance's numbers. */
@@ -1039,6 +1237,8 @@ export interface DesignDocument {
   services: ServiceNetwork[];
   /** Outlets, switches, fittings, circuits and the panel. */
   electrical: ElectricalPlan;
+  /** Supply, drainage, vents, the stack and the water heater. */
+  plumbing: PlumbingPlan;
 
   /**
    * Kitchen and bathroom cabinetry, and the fixtures.

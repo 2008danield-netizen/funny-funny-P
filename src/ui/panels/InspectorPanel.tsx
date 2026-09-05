@@ -36,6 +36,14 @@ import { removeFixture, removeRun, rotateFixture, setUnitModule } from '@/state/
 import { getModule, modulesOfKind } from '@/fittings/modules';
 import { getFixture, fixturesOfKind } from '@/fittings/fixtures';
 import { fixtureName } from './FittingsPanel';
+import { sizeAllDrainage, sizeAllSupply } from '@/services/plumbingSize';
+import {
+  releaseRun,
+  removeRun as removePipeRun,
+  setHeaterKind,
+  setHeaterLitres,
+  setVentHeight,
+} from '@/state/plumbingOps';
 import { getCatalogEntry } from '@/furniture/catalog';
 import { itemDimensions } from '@/physics/colliders';
 import { OPENING_LIMITS, PLAN_LIMITS, type DeviceKind, type WallSide } from '@/state/types';
@@ -60,6 +68,9 @@ export function InspectorPanel({ onSplitWall, onRotate }: InspectorPanelProps) {
   if (selection.kind === 'device') return <DeviceInspector />;
   if (selection.kind === 'unit') return <UnitInspector />;
   if (selection.kind === 'fixture') return <FixtureInspector />;
+  if (selection.kind === 'pipe') return <PipeInspector />;
+  if (selection.kind === 'stack') return <StackInspector />;
+  if (selection.kind === 'heater') return <HeaterInspector />;
   if (wall) return <WallInspector onSplitWall={onSplitWall} />;
   if (openingSelection) return <OpeningInspector />;
   if (region) return <RoomInspector />;
@@ -826,6 +837,244 @@ function UnitInspector() {
 }
 
 /* --------------------------------- Fixture -------------------------------- */
+
+/* ------------------------------- Plumbing --------------------------------- */
+
+/**
+ * One run of pipe.
+ *
+ * Shows the two numbers somebody actually wants off a pipe — how big it is and
+ * how much it falls — beside the limits they are judged against, so a run that
+ * is marginal reads as marginal rather than as a green tick.
+ *
+ * The size is DERIVED here, not read off the run. Nothing stores a pipe size,
+ * because a stored diameter goes stale the moment a bath is added upstream.
+ */
+function PipeInspector() {
+  const doc = useDesign();
+  const edit = useDesignEdit();
+  const { selection } = useEditor();
+
+  const drainage = sizeAllDrainage(doc).find((entry) => entry.run.id === selection.id);
+  const supply = sizeAllSupply(doc).find((entry) => entry.run.id === selection.id);
+
+  if (!drainage && !supply) {
+    return (
+      <Panel title="Inspector">
+        <p className="field__hint">That pipe is gone.</p>
+      </Panel>
+    );
+  }
+
+  const run = (drainage?.run ?? supply!.run);
+  const names = run.serves
+    .map((fixtureId) => {
+      const fixture = doc.fixtures.find((candidate) => candidate.id === fixtureId);
+      return fixture ? getFixture(fixture.fixtureId)?.name : null;
+    })
+    .filter(Boolean);
+
+  const title =
+    drainage?.role === 'building-drain'
+      ? 'Building drain'
+      : drainage?.role === 'stack'
+        ? 'Soil stack'
+        : run.system === 'vent'
+          ? 'Vent'
+          : run.system === 'cold'
+            ? 'Cold supply'
+            : run.system === 'hot'
+              ? 'Hot supply'
+              : 'Waste branch';
+
+  return (
+    <Panel title={title}>
+      {names.length > 0 && <p className="field__hint">Serves the {names.join(', ').toLowerCase()}.</p>}
+
+      <table className="elec__table">
+        <tbody>
+          <tr>
+            <td>Size</td>
+            <td className="elec__amount">
+              {drainage ? drainage.size.asWritten : supply!.size.asWritten}
+            </td>
+          </tr>
+          {drainage && (
+            <tr>
+              <td>Fixture units</td>
+              <td className="elec__amount">{drainage.dfu} DFU</td>
+            </tr>
+          )}
+          {supply && (
+            <tr>
+              <td>Fixture units</td>
+              <td className="elec__amount">{supply.wsfu.toFixed(1)} WSFU</td>
+            </tr>
+          )}
+          <tr>
+            <td>Length</td>
+            <td className="elec__amount">
+              {formatLength(
+                drainage ? drainage.horizontalLength : supply!.developedLength,
+                doc.units,
+              )}
+            </td>
+          </tr>
+          {drainage && drainage.slope !== null && drainage.horizontalLength > 0.05 && (
+            <tr>
+              <td>Fall</td>
+              <td className="elec__amount">
+                1 in {(1 / drainage.slope).toFixed(0)}
+                {' '}
+                <span className="elec__meta">
+                  needs 1 in {(1 / drainage.requiredSlope).toFixed(0)}
+                </span>
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      {run.manual ? (
+        <>
+          <p className="field__hint">
+            You moved this pipe, so the router leaves it alone. Hand it back and the next routing
+            pass will redraw it.
+          </p>
+          <button
+            type="button"
+            className="btn btn--wide"
+            onClick={() => edit((draft) => releaseRun(draft, run.id))}
+          >
+            Hand it back to the router
+          </button>
+        </>
+      ) : (
+        <p className="field__hint">
+          Drawn by the router. Move any part of it and it becomes yours — re-routing will not touch
+          it again.
+        </p>
+      )}
+
+      <button
+        type="button"
+        className="btn btn--wide btn--danger"
+        onClick={() => {
+          edit((draft) => removePipeRun(draft, run.id));
+          editorStore.clearSelection();
+        }}
+      >
+        Delete this run
+      </button>
+    </Panel>
+  );
+}
+
+/** The soil stack: where it is, and how far its vent clears the roof. */
+function StackInspector() {
+  const doc = useDesign();
+  const edit = useDesignEdit();
+  const { selection } = useEditor();
+
+  const stack = doc.plumbing.stacks.find((entry) => entry.id === selection.id);
+  if (!stack) {
+    return (
+      <Panel title="Inspector">
+        <p className="field__hint">That stack is gone.</p>
+      </Panel>
+    );
+  }
+
+  const from = doc.levels.find((level) => level.id === stack.fromLevelId);
+  const to = doc.levels.find((level) => level.id === stack.toLevelId);
+
+  return (
+    <Panel title="Soil stack">
+      <p className="field__hint">
+        Everything in the building drains into this. It runs from {from?.name ?? 'the ground floor'}
+        {' '}up to {to?.name ?? 'the top floor'} and out through the roof as the vent.
+      </p>
+
+      <div className="field">
+        <span className="field__label">
+          Vent above the roof
+          <span className="field__value">{formatLength(stack.ventAboveRoof, doc.units)}</span>
+        </span>
+        <input
+          type="range"
+          className="slider"
+          min={0.15}
+          max={1.5}
+          step={0.05}
+          value={stack.ventAboveRoof}
+          onChange={(event) =>
+            edit((draft) => setVentHeight(draft, stack.id, Number(event.target.value)))
+          }
+        />
+        <p className="field__hint">
+          IPC 904.1 asks for 6 in. That is the legal minimum rather than a good idea — a short stub
+          frosts shut in a cold winter and a blocked vent is an unvented drain.
+        </p>
+      </div>
+    </Panel>
+  );
+}
+
+/** The water heater. */
+function HeaterInspector() {
+  const doc = useDesign();
+  const edit = useDesignEdit();
+
+  const heater = doc.plumbing.heater;
+  if (!heater) {
+    return (
+      <Panel title="Inspector">
+        <p className="field__hint">There is no water heater.</p>
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel title="Water heater">
+      <div className="field">
+        <span className="field__label">Kind</span>
+        <select
+          className="select"
+          value={heater.kind}
+          onChange={(event) =>
+            edit((draft) => setHeaterKind(draft, event.target.value as 'storage' | 'instantaneous'))
+          }
+        >
+          <option value="storage">Storage cylinder</option>
+          <option value="instantaneous">Instantaneous</option>
+        </select>
+      </div>
+
+      {heater.kind === 'storage' && (
+        <div className="field">
+          <span className="field__label">
+            Storage
+            <span className="field__value">{heater.litres} litres</span>
+          </span>
+          <input
+            type="range"
+            className="slider"
+            min={0}
+            max={400}
+            step={10}
+            value={heater.litres}
+            onChange={(event) => edit((draft) => setHeaterLitres(draft, Number(event.target.value)))}
+          />
+        </div>
+      )}
+
+      <p className="field__hint">
+        Sizing this is guidance, not code. IPC 501.1 asks for a heater big enough for the demand and
+        leaves the arithmetic to the manufacturer.
+      </p>
+    </Panel>
+  );
+}
 
 function FixtureInspector() {
   const doc = useDesign();

@@ -18,6 +18,7 @@ import { TracePanel } from './panels/TracePanel';
 import { SitePanel } from './panels/SitePanel';
 import { ElectricalPanel } from './panels/ElectricalPanel';
 import { FittingsPanel } from './panels/FittingsPanel';
+import { PlumbingPanel } from './panels/PlumbingPanel';
 import { DrawingsPanel } from './panels/DrawingsPanel';
 import { CataloguePanel } from './panels/CataloguePanel';
 import { AdvisorPanel } from './panels/AdvisorPanel';
@@ -147,6 +148,7 @@ export function App() {
             <SitePanel />
             <FittingsPanel />
             <ElectricalPanel />
+            <PlumbingPanel />
             <DrawingsPanel />
             <PlanPanel />
             <LightingPanel />

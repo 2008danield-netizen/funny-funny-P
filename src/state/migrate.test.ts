@@ -13,6 +13,7 @@ import { activeLevel } from '@/state/levels';
 import { SCHEMA_VERSION, type DesignDocument, type Level } from '@/state/types';
 
 import { sanitizeDocument } from './defaults';
+import { migrateDocument } from './migrate';
 import { findRegions } from '@/scene/planGraph';
 import { resolveRoomSpec } from './planOps';
 
@@ -747,5 +748,166 @@ describe('fitting validation', () => {
     expect(doc.fixtures[0]!.hostUnitId).toBeNull();
     // And it stays exactly where it was put.
     expect(doc.fixtures[0]!.at.x).toBeCloseTo(0.5, 6);
+  });
+});
+
+/* ------------------------------ v9 to v10 --------------------------------- */
+
+describe('schema v10 — water and drainage', () => {
+  function withPlumbing(plumbing: unknown, extra: Record<string, unknown> = {}) {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    return sanitizeDocument({ ...structuredClone(base), ...extra, plumbing });
+  }
+
+  it('gives a v9 document an empty plumbing plan rather than an invented one', () => {
+    const doc = migrateDocument({ ...v1Document(), schemaVersion: 9 } as Record<string, unknown>);
+
+    expect(doc.schemaVersion).toBe(10);
+    const plumbing = doc.plumbing as Record<string, unknown>;
+    expect(plumbing.drainage).toEqual([]);
+    expect(plumbing.supply).toEqual([]);
+    expect(plumbing.heater).toBeNull();
+    // And the pressure is flagged as an assumption, not passed off as measured.
+    expect(plumbing.mainPressureMeasured).toBe(false);
+  });
+
+  it('replaces nonsense with an empty plan rather than failing to load', () => {
+    for (const rubbish of [null, 42, 'plumbed', [], { drainage: 'yes' }]) {
+      const doc = withPlumbing(rubbish);
+      expect(doc.plumbing.drainage).toEqual([]);
+      expect(doc.plumbing.supply).toEqual([]);
+    }
+  });
+
+  it('throws away a pipe with fewer than two points', () => {
+    // A one-point run renders as nothing and has zero length, so it passes
+    // every fall check trivially — a silently compliant pipe that is not there.
+    const base = sanitizeDocument(v1Document());
+    const doc = withPlumbing({
+      drainage: [
+        {
+          id: 'stub',
+          system: 'soil',
+          points: [{ levelId: base.levels[0]!.id, at: { x: 0, z: 0 }, height: 0 }],
+          serves: [],
+          downstreamId: null,
+          manual: false,
+        },
+      ],
+      supply: [],
+      stacks: [],
+      connections: [],
+      heater: null,
+      mainPressureKpa: 414,
+      mainPressureMeasured: false,
+    });
+    expect(doc.plumbing.drainage).toEqual([]);
+  });
+
+  it('cuts a downstream reference to a run that did not survive', () => {
+    const base = sanitizeDocument(v1Document());
+    const levelId = base.levels[0]!.id;
+    const doc = withPlumbing({
+      drainage: [
+        {
+          id: 'good',
+          system: 'waste',
+          points: [
+            { levelId, at: { x: 0, z: 0 }, height: 0 },
+            { levelId, at: { x: 2, z: 0 }, height: -0.05 },
+          ],
+          serves: [],
+          downstreamId: 'a-run-that-was-deleted',
+          manual: false,
+        },
+      ],
+      supply: [],
+      stacks: [],
+      connections: [],
+      heater: null,
+      mainPressureKpa: 414,
+      mainPressureMeasured: false,
+    });
+
+    expect(doc.plumbing.drainage).toHaveLength(1);
+    expect(doc.plumbing.drainage[0]!.downstreamId).toBeNull();
+  });
+
+  it('drops a connection to a fixture that is gone', () => {
+    const doc = withPlumbing({
+      drainage: [],
+      supply: [],
+      stacks: [],
+      connections: [
+        {
+          fixtureId: 'a-basin-that-was-deleted',
+          trapAt: { x: 0, z: 0 },
+          trapHeight: 0.3,
+          trapSize: 0.032,
+          drainRunId: null,
+          ventRunId: null,
+          coldRunId: null,
+          hotRunId: null,
+        },
+      ],
+      heater: null,
+      mainPressureKpa: 414,
+      mainPressureMeasured: false,
+    });
+    expect(doc.plumbing.connections).toEqual([]);
+  });
+
+  it('gives an instantaneous heater no storage, whatever the file claims', () => {
+    const doc = withPlumbing({
+      drainage: [],
+      supply: [],
+      stacks: [],
+      connections: [],
+      heater: {
+        id: 'wh1',
+        kind: 'instantaneous',
+        levelId: 'lv1',
+        at: { x: 1, z: 1 },
+        litres: 250,
+        recirculation: false,
+      },
+      mainPressureKpa: 414,
+      mainPressureMeasured: false,
+    });
+    expect(doc.plumbing.heater!.kind).toBe('instantaneous');
+    expect(doc.plumbing.heater!.litres).toBe(0);
+  });
+
+  it('keeps the sewer connection across a reload', () => {
+    // It was hardcoded to null before session 11, which was invisible while
+    // nothing wrote to it and would have silently moved every user's sewer
+    // back to the default the moment the drainage router started reading it.
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const doc = sanitizeDocument({
+      ...structuredClone(base),
+      site: {
+        ...(base.site as Record<string, unknown>),
+        sewerConnection: { at: { x: 3, z: 9 }, invertDepth: 1.4 },
+        waterService: { at: { x: -2, z: 9 } },
+      },
+    });
+
+    expect(doc.site.sewerConnection).not.toBeNull();
+    expect(doc.site.sewerConnection!.at.x).toBeCloseTo(3, 6);
+    expect(doc.site.sewerConnection!.invertDepth).toBeCloseTo(1.4, 6);
+    expect(doc.site.waterService!.at.x).toBeCloseTo(-2, 6);
+  });
+
+  it('clamps an absurd sewer depth rather than trusting it', () => {
+    // A sewer 40 m down would make every fall check pass, silently.
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const doc = sanitizeDocument({
+      ...structuredClone(base),
+      site: {
+        ...(base.site as Record<string, unknown>),
+        sewerConnection: { at: { x: 0, z: 5 }, invertDepth: 40 },
+      },
+    });
+    expect(doc.site.sewerConnection!.invertDepth).toBeLessThanOrEqual(4);
   });
 });
