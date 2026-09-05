@@ -23,8 +23,9 @@ import * as THREE from 'three';
 
 import { Building, type PickResult } from '@/scene/Building';
 import type { Furnishings } from '@/scene/Furnishings';
+import type { Electrical } from '@/scene/Electrical';
 import { nearestSnapCandidates, snapPoint } from './snapping';
-import { distance } from '@/scene/planGraph';
+import { distance, indexVertices, resolveWall } from '@/scene/planGraph';
 import { getOpeningPreset } from '@/scene/openings/presets';
 import { designStore } from '@/state/store';
 import { activeLevel } from '@/state/levels';
@@ -36,6 +37,7 @@ import {
   drawWall,
   moveVertex,
   normalizePlan,
+  nearestWall,
   removeOpening,
   splitWall,
   updateOpening,
@@ -50,6 +52,7 @@ import {
   rotateFurniture,
 } from '@/state/furnitureOps';
 import { itemDimensions } from '@/physics/colliders';
+import { isReceptacle } from '@/services/layout';
 import { normalizeAngle } from '@/state/defaults';
 import type { Point2 } from '@/state/types';
 import { formatLength } from '@/state/units';
@@ -61,7 +64,7 @@ const OPENING_PICK_RADIUS = 0.6;
 const FURNITURE_ROTATION_STEP = 15;
 
 interface DragState {
-  kind: 'vertex' | 'wall' | 'opening' | 'furniture';
+  kind: 'vertex' | 'wall' | 'opening' | 'furniture' | 'device';
   id: string;
   /** Where on the floor the drag started. */
   origin: Point2;
@@ -77,6 +80,7 @@ export class EditController {
   private canvas: HTMLCanvasElement;
   private building: Building;
   private furnishings: Furnishings;
+  private electrical: Electrical;
   private orbit: { enabled: boolean };
 
   private raycaster = new THREE.Raycaster();
@@ -94,12 +98,14 @@ export class EditController {
     camera: THREE.Camera,
     building: Building,
     furnishings: Furnishings,
+    electrical: Electrical,
     orbit: { enabled: boolean },
   ) {
     this.canvas = canvas;
     this.camera = camera;
     this.building = building;
     this.furnishings = furnishings;
+    this.electrical = electrical;
     this.orbit = orbit;
 
     const onPointerDown = (event: PointerEvent) => this.handlePointerDown(event);
@@ -160,6 +166,19 @@ export class EditController {
    * under a chair steal the click.
    */
   private pick(): PickResult | null {
+    /*
+     * Devices first, for the same reason furniture beats the floor: a
+     * receptacle is a plate two centimetres deep sitting on a wall, so the wall
+     * behind it is always also under the pointer and would take every click.
+     * They are only pickable while the electrical layer is shown, so this costs
+     * nothing when it is off.
+     */
+    const devices = this.raycaster.intersectObjects(this.electrical.pickTargets(), false);
+    for (const intersection of devices) {
+      const result = Building.interpret(intersection);
+      if (result) return result;
+    }
+
     const furniture = this.raycaster.intersectObjects(this.furnishings.pickTargets(), false);
     for (const intersection of furniture) {
       const result = Building.interpret(intersection);
@@ -276,6 +295,13 @@ export class EditController {
     // behind the Move tool.
     if (pick.kind === 'furniture') {
       this.beginFurnitureDrag(pick.id, floor);
+      return;
+    }
+
+    // A device drags with the ordinary select tool, like furniture: switching
+    // to the move tool to nudge a socket would be a step nobody expects.
+    if (pick.kind === 'device') {
+      this.beginDeviceDrag(pick.id, floor);
       return;
     }
 
@@ -430,6 +456,30 @@ export class EditController {
     this.orbit.enabled = false;
   }
 
+  /**
+   * Picks a device up.
+   *
+   * Same shape as the furniture drag — the start position is remembered so that
+   * every frame computes an absolute target rather than accumulating deltas,
+   * which is what keeps a long drag from creeping.
+   */
+  private beginDeviceDrag(deviceId: string, origin: Point2): void {
+    const device = designStore
+      .getState()
+      .electrical.devices.find((candidate) => candidate.id === deviceId);
+    if (!device) return;
+
+    this.drag = {
+      kind: 'device',
+      id: deviceId,
+      origin,
+      startVertices: new Map([[deviceId, { x: device.at.x, z: device.at.z }]]),
+      startOffset: 0,
+      moved: false,
+    };
+    this.orbit.enabled = false;
+  }
+
   private continueDrag(): void {
     const drag = this.drag;
     if (!drag) return;
@@ -444,6 +494,61 @@ export class EditController {
     drag.moved = true;
 
     const units = designStore.getState().units;
+
+    if (drag.kind === 'device') {
+      const start = drag.startVertices.get(drag.id);
+      if (!start) return;
+      const target = { x: start.x + delta.x, z: start.z + delta.z };
+
+      designStore.edit(
+        (draft) => {
+          const device = draft.electrical.devices.find((entry) => entry.id === drag.id);
+          if (!device) return;
+
+          /*
+           * A wall-mounted device is put back ON the wall rather than left
+           * where the pointer is. A socket floating in the middle of a room is
+           * not a socket, and making the user place it to the millimetre is a
+           * worse experience than snapping — so the drag chooses the wall and
+           * the position along it, and the app keeps the device flush.
+           */
+          const wallMounted = isReceptacle(device.kind) || device.kind.startsWith('switch');
+          const near = wallMounted ? nearestWall(activeLevel(draft).plan, target, 1.2) : null;
+
+          if (near) {
+            const plan = activeLevel(draft).plan;
+            const segment = resolveWall(near.wall, indexVertices(plan));
+            if (segment) {
+              const along = Math.max(0.1, Math.min(segment.length - 0.1, near.t * segment.length));
+              // Which side of the wall the pointer is on decides which face the
+              // device ends up on, so dragging a socket round a corner works.
+              const toPointer = {
+                x: target.x - segment.center.x,
+                z: target.z - segment.center.z,
+              };
+              const side =
+                toPointer.x * segment.normal.x + toPointer.z * segment.normal.z >= 0 ? 1 : -1;
+              const offset = near.wall.thickness / 2 + 0.02;
+
+              device.at = {
+                x: segment.start.x + segment.direction.x * along + segment.normal.x * offset * side,
+                z: segment.start.z + segment.direction.z * along + segment.normal.z * offset * side,
+              };
+              device.wallId = near.wall.id;
+              device.rotation = Math.atan2(segment.normal.x * side, segment.normal.z * side);
+              return;
+            }
+          }
+
+          device.at = target;
+          device.wallId = null;
+        },
+        { history: 'coalesce', coalesceKey: this.dragCoalesceKey() },
+      );
+
+      editorStore.patch({ readout: `${target.x.toFixed(2)}, ${target.z.toFixed(2)}` });
+      return;
+    }
 
     if (drag.kind === 'vertex') {
       const start = drag.startVertices.get(drag.id);

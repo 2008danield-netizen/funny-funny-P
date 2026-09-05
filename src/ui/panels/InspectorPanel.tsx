@@ -21,7 +21,7 @@ import {
   wallLength,
 } from '@/bridge/useEditor';
 import { activeLevel } from '@/state/levels';
-import { useDesignEdit, useDesignSlice } from '@/bridge/useDesign';
+import { useDesign, useDesignEdit, useDesignSlice } from '@/bridge/useDesign';
 import { getFloorPreset, WALL_FINISHES, WALL_PAINTS, nearestFinishId } from '@/scene/materials/presets';
 import {
   openingPresetsOfKind,
@@ -31,9 +31,10 @@ import {
 import { editorStore } from '@/state/selection';
 import { removeOpening, deleteWall, resolveRoomSpec, setRoomSpec, updateOpening } from '@/state/planOps';
 import { duplicateFurniture, removeFurniture, resizeFurniture } from '@/state/furnitureOps';
+import { removeDevice, updateDevice } from '@/state/buildingOps';
 import { getCatalogEntry } from '@/furniture/catalog';
 import { itemDimensions } from '@/physics/colliders';
-import { OPENING_LIMITS, PLAN_LIMITS, type WallSide } from '@/state/types';
+import { OPENING_LIMITS, PLAN_LIMITS, type DeviceKind, type WallSide } from '@/state/types';
 import { formatArea, formatLength } from '@/state/units';
 
 type FinishId = (typeof WALL_FINISHES)[number]['id'];
@@ -52,6 +53,7 @@ export function InspectorPanel({ onSplitWall, onRotate }: InspectorPanelProps) {
   const region = useSelectedRegion();
 
   if (selection.kind === 'furniture') return <FurnitureInspector onRotate={onRotate} />;
+  if (selection.kind === 'device') return <DeviceInspector />;
   if (wall) return <WallInspector onSplitWall={onSplitWall} />;
   if (openingSelection) return <OpeningInspector />;
   if (region) return <RoomInspector />;
@@ -619,6 +621,114 @@ function RoomInspector() {
         This colour applies to every wall facing into this room. To make one wall
         an accent, select that wall and paint its side directly.
       </p>
+    </Panel>
+  );
+}
+
+/* -------------------------------- Device -------------------------------- */
+
+/**
+ * A selected electrical device.
+ *
+ * This is the "then let you adjust" half of the electrical: the app lays a
+ * house out to satisfy the code, and everything it placed is the user's to
+ * move, retype or delete. What it deliberately does NOT do is re-run the code
+ * checks quietly in the background and move things back — the checks report,
+ * the user decides.
+ *
+ * Changing a device does not re-assign circuits. That is a separate, explicit
+ * button on the Electrical panel, because re-wiring renumbers every circuit in
+ * the house and having that happen because somebody nudged a socket would be
+ * astonishing.
+ */
+const DEVICE_KINDS: ReadonlyArray<{ id: DeviceKind; label: string }> = [
+  { id: 'receptacle', label: 'Receptacle' },
+  { id: 'receptacle-gfci', label: 'Receptacle, GFCI' },
+  { id: 'receptacle-counter', label: 'Counter receptacle' },
+  { id: 'receptacle-appliance', label: 'Appliance receptacle' },
+  { id: 'switch', label: 'Switch' },
+  { id: 'switch-3way', label: 'Switch, three-way' },
+  { id: 'switch-dimmer', label: 'Dimmer' },
+  { id: 'light-ceiling', label: 'Ceiling light' },
+  { id: 'light-recessed', label: 'Recessed light' },
+  { id: 'light-wall', label: 'Wall light' },
+  { id: 'fan', label: 'Ceiling fan' },
+  { id: 'smoke-alarm', label: 'Smoke alarm' },
+  { id: 'thermostat', label: 'Thermostat' },
+];
+
+function DeviceInspector() {
+  const doc = useDesign();
+  const edit = useDesignEdit();
+  const { selection } = useEditor();
+
+  const device = doc.electrical.devices.find((entry) => entry.id === selection.id);
+  if (!device) {
+    return (
+      <Panel title="Inspector">
+        <p className="field__hint">That device is gone.</p>
+      </Panel>
+    );
+  }
+
+  const circuit = doc.electrical.circuits.find((entry) => entry.id === device.circuitId);
+
+  return (
+    <Panel title={device.label || 'Device'}>
+      <div className="field">
+        <span className="field__label">What it is</span>
+        <select
+          className="select"
+          value={device.kind}
+          onChange={(event) =>
+            edit((draft) =>
+              updateDevice(draft, device.id, { kind: event.target.value as DeviceKind }),
+            )
+          }
+        >
+          {DEVICE_KINDS.map((entry) => (
+            <option key={entry.id} value={entry.id}>
+              {entry.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <NumberField
+        label="Height above the floor"
+        value={device.height}
+        units={doc.units}
+        min={0}
+        max={3}
+        onChange={(height) =>
+          edit((draft) => updateDevice(draft, device.id, { height }), {
+            history: 'coalesce',
+            coalesceKey: `device.${device.id}.height`,
+          })
+        }
+      />
+
+      <p className="field__hint">
+        {circuit
+          ? `On circuit ${circuit.reference} — ${circuit.name}, ${circuit.amps} A on ${circuit.conductor}.`
+          : 'Not on a circuit yet. Press "Assign the circuits again" on the Electrical panel to sweep it up.'}
+      </p>
+
+      <p className="field__hint">
+        Drag it in the 3D view to move it. A receptacle or a switch stays flush against the nearest
+        wall and turns to face into the room; anything else goes where you put it.
+      </p>
+
+      <button
+        type="button"
+        className="btn btn--danger btn--wide"
+        onClick={() => {
+          edit((draft) => removeDevice(draft, device.id));
+          editorStore.clearSelection();
+        }}
+      >
+        Delete this device
+      </button>
     </Panel>
   );
 }

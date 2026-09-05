@@ -472,3 +472,113 @@ describe('roof and site validation', () => {
     expect(Object.keys(doc.exterior.overrides)).toEqual(['w1']);
   });
 });
+
+/* ------------------------------ v6, v7 and v8 ----------------------------- */
+
+/*
+ * The two most recent steps, which had no coverage until the whole-project
+ * audit went looking for it. Both are additive, which is exactly the kind of
+ * migration that looks too simple to test — and exactly the kind that silently
+ * drops a field when the next one is written on top of it.
+ */
+describe('v6 to v8 migration', () => {
+  /** A document as session 7 left it: a building with a roof, and no more. */
+  function v6Document() {
+    const current = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const rewound = structuredClone(current) as Record<string, unknown>;
+    delete rewound.electrical;
+
+    const levels = (rewound.levels as Array<Record<string, unknown>>).map((entry) => {
+      const copy = { ...entry };
+      delete copy.underlay;
+      return copy;
+    });
+
+    return { ...rewound, schemaVersion: 6, levels };
+  }
+
+  it('gives every storey somewhere to put a traced plan, and puts nothing in it', () => {
+    const doc = sanitizeDocument(v6Document());
+    for (const storey of doc.levels) expect(storey.underlay).toBeNull();
+  });
+
+  it('wires nothing at all', () => {
+    // An existing design suddenly claiming to have forty outlets in it would be
+    // a decision made on the user's behalf that they may only find on a
+    // drawing — and one they would then have to check against the code.
+    const doc = sanitizeDocument(v6Document());
+    expect(doc.electrical.devices).toEqual([]);
+    expect(doc.electrical.circuits).toEqual([]);
+    expect(doc.electrical.panel).toBeNull();
+    expect(doc.electrical.heatingVa).toBe(0);
+    expect(doc.electrical.coolingVa).toBe(0);
+  });
+
+  it('arrives at the current schema version', () => {
+    expect(sanitizeDocument(v6Document()).schemaVersion).toBe(SCHEMA_VERSION);
+  });
+
+  it('keeps the building it was given', () => {
+    const before = sanitizeDocument(v1Document());
+    const after = sanitizeDocument(v6Document());
+    expect(after.levels).toHaveLength(before.levels.length);
+    expect(after.roofs).toEqual(before.roofs);
+    expect(findRegions(level(after).plan)[0]!.area).toBeCloseTo(20, 4);
+  });
+});
+
+describe('electrical validation', () => {
+  function withElectrical(electrical: unknown) {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    return sanitizeDocument({ ...structuredClone(base), electrical });
+  }
+
+  it('replaces nonsense with an empty installation rather than failing to load', () => {
+    for (const rubbish of [null, 42, 'wired', [], { devices: 'lots' }]) {
+      const doc = withElectrical(rubbish);
+      expect(doc.electrical.devices).toEqual([]);
+      expect(doc.electrical.circuits).toEqual([]);
+    }
+  });
+
+  it('drops a device standing on a storey that no longer exists', () => {
+    const doc = withElectrical({
+      devices: [
+        {
+          id: 'ghost',
+          levelId: 'a-storey-that-was-deleted',
+          kind: 'receptacle',
+          at: { x: 0, z: 0 },
+          height: 0.38,
+          rotation: 0,
+          wallId: null,
+          circuitId: null,
+          va: null,
+          label: 'Orphan',
+        },
+      ],
+      circuits: [],
+      panel: null,
+      heatingVa: 0,
+      coolingVa: 0,
+    });
+    expect(doc.electrical.devices).toEqual([]);
+  });
+
+  it('keeps a panel the document can still place, and its rotation', () => {
+    const base = sanitizeDocument(v1Document());
+    const levelId = base.levels[0]!.id;
+
+    const doc = withElectrical({
+      devices: [],
+      circuits: [],
+      panel: { levelId, at: { x: 1, z: 2 }, rotation: 1.5, mainAmps: 150, volts: 240, spaces: 30 },
+      heatingVa: 9000,
+      coolingVa: 0,
+    });
+
+    expect(doc.electrical.panel?.mainAmps).toBe(150);
+    expect(doc.electrical.panel?.rotation).toBeCloseTo(1.5, 6);
+    expect(doc.electrical.heatingVa).toBe(9000);
+  });
+});

@@ -318,6 +318,21 @@ function migrateV6ToV7(doc: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * v7 to v8 — the building gets its wiring.
+ *
+ * Additive and empty. No outlets are invented: an electrical layout is a set of
+ * decisions about somebody's house, and producing forty of them unasked would
+ * mean every existing design suddenly claiming to have been wired.
+ */
+function migrateV7ToV8(doc: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...doc,
+    schemaVersion: 8,
+    electrical: { devices: [], circuits: [], panel: null, heatingVa: 0, coolingVa: 0 },
+  };
+}
+
+/**
  * Brings a document up to the current schema.
  *
  * Migrations are applied in sequence, so a v1 document passes through every
@@ -350,6 +365,9 @@ export function migrateDocument(input: Record<string, unknown>): Record<string, 
   }
   if (declared < 7) {
     doc = migrateV6ToV7(doc);
+  }
+  if (declared < 8) {
+    doc = migrateV7ToV8(doc);
   }
 
   return doc;

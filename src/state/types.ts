@@ -40,8 +40,10 @@
  *      skylights, exterior cladding, and a site with real ground under it.
  * v7 — a traced plan under each storey: the image somebody actually has of
  *      their house, scaled, placed, and drawn over.
+ * v8 — the electrical installation: outlets, switches, fittings, the circuits
+ *      they sit on and the panel they come back to.
  */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /** Which measurement system the UI displays. Storage is always metric. */
 export type UnitSystem = 'metric' | 'imperial';
@@ -438,6 +440,142 @@ export interface Underlay {
   } | null;
 }
 
+/* ────────────────────────────── The electrical ───────────────────────────── */
+
+/**
+ * What a device on the wall actually is.
+ *
+ * The list is the one an electrical plan uses, because the drawing has to be
+ * readable by an electrician and the checks have to know what each thing is
+ * for. A receptacle satisfies the six-foot rule; a switch does not. A GFCI
+ * receptacle protects everything downstream of it; an ordinary one does not.
+ */
+export type DeviceKind =
+  | 'receptacle'
+  | 'receptacle-gfci'
+  | 'receptacle-counter'
+  | 'receptacle-appliance'
+  | 'switch'
+  | 'switch-3way'
+  | 'switch-dimmer'
+  | 'light-ceiling'
+  | 'light-wall'
+  | 'light-recessed'
+  | 'fan'
+  | 'smoke-alarm'
+  | 'thermostat'
+  | 'panel';
+
+/**
+ * One outlet, switch or fitting.
+ *
+ * `at` is where it sits in plan and `height` how far up the wall — both of
+ * which the drawing needs and the checks measure against. `wallId` is the wall
+ * it is mounted on where there is one, so that moving a wall takes its outlets
+ * with it rather than leaving them standing in mid-air.
+ */
+export interface ElectricalDevice {
+  id: string;
+  levelId: string;
+  kind: DeviceKind;
+  at: Point2;
+  /** Above this storey's finished floor, in metres. */
+  height: number;
+  /** Which way it faces — into the room, for a wall device. Radians. */
+  rotation: number;
+  /** The wall it is fixed to, or null for a ceiling fitting. */
+  wallId: string | null;
+  /** The circuit it is fed from, or null while it is unassigned. */
+  circuitId: string | null;
+  /**
+   * Connected load in volt-amperes, for the things that have one.
+   *
+   * Null for a general-purpose receptacle: those are covered by the 3 VA per
+   * square foot of NEC 220.12 and counting them individually would double-count
+   * the same load. An appliance outlet or a fixed fitting names its own.
+   */
+  va: number | null;
+  /** What it is, on the schedule: "Dishwasher", "Porch light". */
+  label: string;
+}
+
+/** How a circuit is classified, which decides what may share it. */
+export type CircuitKind =
+  | 'general'
+  | 'lighting'
+  | 'small-appliance'
+  | 'laundry'
+  | 'bathroom'
+  | 'individual';
+
+/**
+ * A branch circuit: a breaker, a cable, and everything on the end of it.
+ *
+ * NOTE that a circuit is a SET, not a route. What matters electrically is which
+ * devices share a breaker, not the path the cable takes through the joists —
+ * and the path is decided on site by whoever is drilling. So this models the
+ * membership, and the drawing shows a home run rather than pretending to know
+ * where the cable goes. (The routed-network shape reserved in v5 is still there
+ * for the disciplines where the route IS the design: a drain has a fall, and a
+ * duct has a length that costs you pressure.)
+ */
+export interface Circuit {
+  id: string;
+  /** "A1", "B7" — the number on the panel schedule. */
+  reference: string;
+  name: string;
+  kind: CircuitKind;
+  /** Breaker rating in amperes. */
+  amps: number;
+  volts: number;
+  /** Conductor size, e.g. "12 AWG". Derived from the rating; stored for export. */
+  conductor: string;
+  gfci: boolean;
+  afci: boolean;
+}
+
+/** Where the service lands and what it is rated at. */
+export interface Panel {
+  levelId: string;
+  at: Point2;
+  /**
+   * Which way the enclosure faces, in radians.
+   *
+   * A panel is screwed to a wall, not stood in the middle of the room, so it
+   * carries a rotation for the same reason every wall-mounted device does.
+   */
+  rotation: number;
+  /** Main breaker rating in amperes. */
+  mainAmps: number;
+  volts: number;
+  /** How many single-pole spaces the enclosure has. */
+  spaces: number;
+}
+
+/**
+ * The whole electrical installation.
+ *
+ * Kept as its own typed model rather than inside the generic service networks,
+ * because almost every question worth asking about an electrical plan — is
+ * every wall within six feet of an outlet, is this circuit overloaded, does
+ * this bathroom have GFCI — is about devices and circuits, and none of them is
+ * about geometry of a route.
+ */
+export interface ElectricalPlan {
+  devices: ElectricalDevice[];
+  circuits: Circuit[];
+  panel: Panel | null;
+  /**
+   * Heating and cooling loads in volt-amperes, for NEC 220.82.
+   *
+   * The user's own numbers: the app cannot know what equipment is going in
+   * until session 11 works the heating out, and the load calculation is wrong
+   * without them. Zero means "not entered", and the calculation says so.
+   */
+  heatingVa: number;
+  coolingVa: number;
+}
+
 /* ------------------------- Reserved for later sessions -------------------- */
 
 /* ─────────────────────────────── The site ────────────────────────────── */
@@ -790,6 +928,8 @@ export interface DesignDocument {
   exterior: Exterior;
   /** Empty until session 9. See `ServiceNetwork`. */
   services: ServiceNetwork[];
+  /** Outlets, switches, fittings, circuits and the panel. */
+  electrical: ElectricalPlan;
 
   lighting: LightingSpec;
   clearance: ClearanceSettings;
@@ -933,6 +1073,19 @@ export const UNDERLAY_LIMITS = {
   opacity: { min: 0.05, max: 1, step: 0.05 },
   /** Longest side an imported image is kept at, in pixels. */
   maxPixels: 3200,
+} as const;
+
+export const ELECTRICAL_LIMITS = {
+  /** Mounting height above the finished floor, in metres. */
+  height: { min: 0.1, max: 2.6, step: 0.01 },
+  /** Breaker rating, in amperes. */
+  amps: { min: 15, max: 100 },
+  /** Connected load for one device, in volt-amperes. */
+  va: { min: 0, max: 20000 },
+  /** Service size, in amperes. */
+  service: { min: 100, max: 400 },
+  maxDevices: 600,
+  maxCircuits: 60,
 } as const;
 
 export const SITE_LIMITS = {

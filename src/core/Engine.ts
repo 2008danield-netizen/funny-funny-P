@@ -25,6 +25,7 @@ import { Building } from '@/scene/Building';
 import { Furnishings } from '@/scene/Furnishings';
 import { ClearanceOverlay } from '@/scene/ClearanceOverlay';
 import { Staircases } from '@/scene/Staircases';
+import { Electrical } from '@/scene/Electrical';
 import { GhostLevel } from '@/scene/GhostLevel';
 import { Roofs } from '@/scene/Roofs';
 import { PlanUnderlay } from '@/scene/PlanUnderlay';
@@ -55,6 +56,7 @@ export class Engine {
   private furnishings: Furnishings;
   private clearanceOverlay: ClearanceOverlay;
   private staircases: Staircases;
+  private electrical: Electrical;
   private ghost: GhostLevel;
   private roofs: Roofs;
   private ground: Ground;
@@ -89,6 +91,9 @@ export class Engine {
   /** The document last applied, used to skip redundant scene updates. */
   private appliedDocument: DesignDocument | null = null;
 
+  /** The user's own "show roofs" setting, which the cutaway then overrides. */
+  private showRoofs = true;
+
   constructor(container: HTMLElement) {
     this.renderer = new Renderer(container);
 
@@ -118,6 +123,10 @@ export class Engine {
     this.levelGroup.add(this.clearanceOverlay.group);
     this.staircases = new Staircases();
     this.levelGroup.add(this.staircases.group);
+    // Inside the storey group: a device belongs to one storey and rides at its
+    // height, and its mounting height is measured from that storey's floor.
+    this.electrical = new Electrical();
+    this.levelGroup.add(this.electrical.group);
     this.ghost = new GhostLevel();
     this.levelGroup.add(this.ghost.group);
 
@@ -145,6 +154,7 @@ export class Engine {
       this.cameraController.camera,
       this.building,
       this.furnishings,
+      this.electrical,
       this.cameraController.controls,
     );
 
@@ -277,6 +287,24 @@ export class Engine {
     if (levelSwitched || previous?.stairs !== doc.stairs || planChanged) {
       this.staircases.update(doc, level.id);
     }
+    if (levelSwitched || !previous || previous.electrical !== doc.electrical) {
+      this.electrical.update(doc, level.id);
+    }
+
+    /*
+     * A device selected on one storey must not stay selected when the user
+     * changes to another: the inspector would still be offering to move and
+     * delete something that is no longer on screen, and deleting a thing you
+     * cannot see is the worst kind of undo-able mistake — the user has no idea
+     * what to undo.
+     */
+    if (levelSwitched) {
+      const selection = editorStore.getState().selection;
+      if (selection.kind === 'device') {
+        const device = doc.electrical.devices.find((entry) => entry.id === selection.id);
+        if (!device || device.levelId !== level.id) editorStore.clearSelection();
+      }
+    }
 
     if (
       !previous ||
@@ -286,7 +314,8 @@ export class Engine {
     ) {
       this.roofs.update(doc);
     }
-    this.roofs.setVisible(doc.showRoofs);
+    this.showRoofs = doc.showRoofs;
+    this.roofs.setVisible(this.showRoofs && !this.building.isCutaway);
     if (!previous || previous.site !== doc.site || previous.levels !== doc.levels) {
       this.ground.update(doc);
     }
@@ -336,6 +365,16 @@ export class Engine {
     this.planUnderlay.setProposals(state.traceCandidates, new Set(state.acceptedTraceIds));
     this.clearanceOverlay.setVisible(state.showClearance);
     if (state.showClearance) this.refreshClearance();
+
+    // The electrical layer builds nothing while hidden, so switching it on has
+    // to trigger the build the document change would otherwise have done.
+    this.electrical.setVisible(state.showElectrical);
+    this.electrical.setShowRuns(state.showElectricalRuns);
+    this.electrical.setSelection(state.selection.kind === 'device' ? state.selection.id : null);
+    if (state.showElectrical) {
+      const doc = designStore.getState();
+      this.electrical.update(doc, activeLevel(doc).id);
+    }
     // Corner handles and the grid belong to the plan tools; showing them while
     // arranging furniture is clutter the user cannot act on.
     const planTool = state.tool === 'move' || state.tool === 'draw';
@@ -358,6 +397,13 @@ export class Engine {
 
       this.cameraController.update(delta);
       this.building.updateForCamera(this.cameraController.camera);
+      /*
+       * The roof follows the walls. `updateForCamera` has just decided whether
+       * the near walls are hidden, and the roof has to make the same decision
+       * from the same frame's camera — a roof left on over hidden walls is a
+       * house you can see into from the side and not at all from above.
+       */
+      this.roofs.setVisible(this.showRoofs && !this.building.isCutaway);
 
       this.renderer.webgl.render(this.scene, this.cameraController.camera);
 
@@ -405,6 +451,7 @@ export class Engine {
     this.editController.dispose();
     this.clearanceOverlay.dispose();
     this.staircases.dispose();
+    this.electrical.dispose();
     this.ghost.dispose();
     this.planUnderlay.dispose();
     this.roofs.dispose();

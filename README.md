@@ -192,6 +192,33 @@ builder would price from: wall area net of its openings, gable ends, roof
 measured on the slope rather than in plan, and the eave, ridge, hip, valley and
 rake lengths that fascia and flashing are sold by.
 
+**Wire it, to the code.**
+Press one button and the app lays out receptacles, switches, lights and smoke
+alarms to satisfy the NEC's spacing rules — the six-foot rule walked wall by
+wall, not "an outlet every twelve feet" — then groups them onto circuits room by
+room, with the two small-appliance circuits, the bathroom circuit and the laundry
+circuit Article 210 demands, GFCI and AFCI where the code names them. Everything
+it placed is then yours: click a device in the 3D view to drag it, retype it or
+delete it, and a receptacle or a switch stays flush against the nearest wall and
+turns to face into the room.
+
+**All the way to the panel schedule.**
+Every circuit with its breaker, its conductor, its protection and how hard it is
+worked; and the service sized by a full Article 220 optional-method calculation
+that shows its working line by line — 3 VA a square foot, the small-appliance
+and laundry circuits, the fixed appliances, then the demand factor that is the
+whole point of the method. Heating and cooling are yours to enter, and the
+calculation says so rather than quietly assuming zero.
+
+**A printable drawing set, drawn to scale.**
+Not a screenshot: a real set, written by a PDF writer built from scratch for
+this. A cover, a dimensioned plan of every storey, an elevation of each side, an
+electrical plan per storey with its legend, the panel schedule and the load
+calculation, and schedules of the doors, windows, rooms and fittings. Walls are
+poché, doors show their swing on the side they open, dimensions run in two
+strings, and each sheet carries a title block, a north point and a printed scale
+bar — so you can measure the bar and know whether the print is true.
+
 **Never lose work.** Continuous autosave, full undo/redo, JSON export/import, PNG
 screenshots — and designs saved by session 1 are migrated forward automatically.
 
@@ -352,6 +379,7 @@ src/
 │   ├── Staircases.ts   Stair meshes, extruded from the derived geometry
 │   ├── Roofs.ts        Roof planes with their openings cut out, in world space
 │   ├── PlanUnderlay.ts The scan being traced, and the walls proposed on it
+│   ├── Electrical.ts   Devices at their real mounting heights, and home runs
 │   ├── Ground.ts       The terrain surface, the plot line, the north arrow
 │   ├── GhostLevel.ts   The storey below, as an outline to align to
 │   ├── wallBuilder.ts  Wall extrusion with holes; door and window furniture
@@ -359,6 +387,22 @@ src/
 │   ├── Lighting.ts     Lighting presets, IBL environment, shadow fitting
 │   ├── openings/       Door and window catalogue
 │   └── materials/      Procedural texture generation (noise → PBR maps)
+│
+├── services/         The building's systems
+│   ├── rooms.ts        What a room is FOR, from the name the user typed
+│   ├── layout.ts       Where the outlets, switches and lights go
+│   ├── circuits.ts     Grouping onto breakers, the panel schedule, Article 220
+│   └── necCheck.ts     The NEC checks, each citing its article
+│
+├── drawing/          The printable set
+│   ├── pdf.ts          A PDF writer, from scratch — no dependency
+│   ├── scale.ts        Architectural scales, and metres onto paper
+│   ├── sheet.ts        Border, title block, scale bar, north point, dimensions
+│   ├── floorPlan.ts    Poché walls, door swings, room labels, dimension chains
+│   ├── elevation.ts    Each side, from the storey envelopes and the roof
+│   ├── electricalSheet.ts  Plan symbols, legend, panel schedule
+│   ├── schedules.ts    Doors, windows, rooms, fittings
+│   └── set.ts          The whole set, assembled and numbered
 │
 ├── controls/
 │   └── CameraController.ts  Orbit controls, limits, eased viewpoints
@@ -453,23 +497,49 @@ src/
     Never display or export a figure without it — a guessed number that reads
     like a quoted one is how somebody budgets a room wrong.
 
+20. **A room's purpose comes from its name, not from its furniture.** Almost
+    every NEC requirement is conditional on the kind of room, and a house traced
+    from a plan has no furniture in it at all — which is exactly the case the
+    classifier exists for. The name is what the user typed and what appears on
+    the drawing; if they call it a kitchen then it is a kitchen.
+
+21. **The layout satisfies the code; the checks are written separately.** The
+    two never share a function. When they disagree, one of them has the code
+    wrong and a test says so — which is the point, and is how the six-foot rule
+    stays honest rather than merely self-consistent.
+
+22. **The drawing set is derived at the moment of export.** There is no stored
+    drawing state at all: no saved layouts, no cached sheets, no remembered
+    scales. A plan that could drift from the model it documents is worse than no
+    plan, and the only way to guarantee it cannot is to have nothing to drift.
+
+23. **A drawing states its scale, and the scale is true.** One module converts
+    metres to points and the same object carries both the arithmetic and the
+    name printed in the title block, so they cannot part company. Scales come
+    from the standard architectural series — a drawing at 1:63.7 fits the sheet
+    perfectly and is useless, because nobody owns that rule. Every sheet carries
+    a printed scale bar, because a PDF printed "fit to page" is no longer at its
+    stated scale and the bar is the only thing on it that stays true.
+
 ### Tests
 
 ```bash
 npm test
 ```
 
-464 tests covering the parts where a bug is invisible on screen: placing and
-scaling a traced plan, straightening a photographed one, the wall detector, the
-straight
+539 tests covering the parts where a bug is invisible on screen: the PDF writer
+and the drawing set it produces, the NEC spacing rule and every electrical check
+with its article, circuit grouping and the Article 220 load calculation, placing
+and scaling a traced plan, straightening a photographed one, the wall detector,
+the straight
 skeleton and every roof form it produces, dormers and skylights meeting the roof
 they are cut into, the roof code checks and their citations, terrain, setbacks
 and earthworks, the exterior takeoff, stair geometry and every IRC check, storey elevations and the v5 migration, room detection
 (L-shapes, partitions, disconnected structures, winding, stable identity),
 collision (penetration depth, sliding, wall-snap orientation, wedged pieces),
 furniture placement end to end, clearance zones and circulation analysis,
-structural plan edits, document validation, the schema migrations, every advisor
-rule (does it fire when it should, and stay quiet when it should not), and the
+structural plan edits, document validation, the schema migrations from v1 all the
+way to v8, every advisor rule (does it fire when it should, and stay quiet when it should not), and the
 generator. They are pure logic — no browser, no GPU — so they run in about two
 seconds and gate every deploy.
 
@@ -518,6 +588,31 @@ small house, imperial formatting that turned -0.3 m into "-1 ft 3/16 in", gable
 rakes measured along the bottom of the gable instead of up the slope, and the
 roof being solved several times per keystroke.
 
+The drawing set's tests do the same thing the stair tests do, one level up: they
+check that the file is a valid PDF *by opening it with a real PDF reader* —
+`pdfjs` is already a dependency for reading plans, so it costs nothing to point
+it at what the writer produced and ask it how many pages it sees, how big they
+are, and what the text says. Every other test in that file checks that the bytes
+look the way the specification says they should, which is precisely the kind of
+check that passes while the file refuses to open. They also check the one thing a
+drawing must never get wrong: that a metre of building comes out the exact number
+of points on paper that the stated scale claims, and that the scale named in the
+title block is one somebody owns a rule for.
+
+Session 9 swept the whole project again, and the sweep paid for itself. It found
+a soffit that rendered almost black because it is the one surface in the building
+facing straight down, a roof that stayed on over hidden walls so a house looked
+sawn open with the lid glued down, a breaker table that stopped at 100 A and so
+reported every house needing a 150 A service as compliant with 100 A, a room
+classifier that read "Upstairs Hall" as a stairway because it matched "stair"
+mid-word, device meshes that used the wrong key for pick metadata and so could
+never be clicked at all, and — worst of the lot — three places where a colour was
+set *between* starting a path and painting it. That is illegal PDF, and a strict
+reader does not ignore it: it abandons the rest of the content stream, so every
+symbol drawn after the mistake silently vanished too. The writer now hoists a
+state operator out of an open path to where it is legal, which makes the whole
+class of bug unwritable rather than merely fixed.
+
 The detector's fixtures are all plans the test file DRAWS, so the right answer
 is known exactly and a failure says which part of the pipeline moved: four walls
 of a room, a wall drawn as two faces that must come back as one wall with a
@@ -549,16 +644,19 @@ their valleys across each other.
 - ~~**Session 6** — storeys, staircases and the IRC.~~ ✅
 - ~~**Session 7** — roofs, dormers, skylights, cladding and the site.~~ ✅
 - ~~**Session 8** — tracing a real floor plan: import, straighten, scale, detect.~~ ✅
-- **Session 9 — the services foundation, and electrical.** The routed-network
-  primitive built once, then receptacles, switches, fittings, circuits, the
-  panel, cable safe-zones and per-circuit load, to the NEC.
+- ~~**Session 9** — electrical to the panel schedule, and the drawing set.~~ ✅
 - **Session 10 — water and drainage.** Supply runs and pipe sizing; then the
   soil stack, waste branches, falls, traps, vents and the connection to the
-  sewer, to the IPC.
+  sewer, to the IPC — with its own plan, its own schedule and its own sheets in
+  the set that already exists.
 - **Session 11 — heating and ventilation.** Room-by-room load to ACCA Manual J,
-  equipment selection to Manual S, ducts to Manual D.
-- **Session 12 — the drawing set.** A plan and a schedule per discipline, plus
-  elevations, dimension lines and annotations.
+  equipment selection to Manual S, ducts to Manual D. The Manual J load then
+  feeds the heating and cooling figures the electrical service calculation
+  currently has to ask the user for.
+- **Session 12 — sections, and the drawing set finished.** A building section
+  cut anywhere through the model, hidden-line removal on the elevations so a
+  facade that steps in and out reads correctly, and window and door marks
+  printed on the plans beside the openings they name.
 - **Elsewhere in the queue** — a VR walkthrough, and accounts with cloud sync
   (designs currently live only in this browser's `localStorage`, so one cleared
   cache loses everything).
@@ -572,7 +670,14 @@ their valleys across each other.
 The app is built to **US codes**: the IRC for the shell, and — as those sessions
 land — the NEC for electrical, the IPC for plumbing and ACCA's manuals for
 heating. Choosing your jurisdiction comes later; for now the figures are the
-2021 IRC and the app says so.
+2021 IRC and the 2023 NEC, and the app says so.
+
+Nothing the app produces is a permit set, and nothing has been checked or
+stamped by a licensed professional. **No structural design is done at all** — no
+beam, header, footing or connection is sized, and nothing in the app says the
+building stands up. The electrical work must be done by a licensed electrician
+and inspected. Every sheet of the drawing set says all of this on it, because
+sheets get separated and one of them ends up on a notice board on its own.
 
 **Checking is not approval.** Nothing here is certified by anybody. A real build
 needs a permit, an inspection, and for anything structural, electrical or gas, a

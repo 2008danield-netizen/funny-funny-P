@@ -7,6 +7,7 @@
 import {
   CLEARANCE_DEFAULTS,
   DORMER_LIMITS,
+  ELECTRICAL_LIMITS,
   LEVEL_LIMITS,
   OPENING_LIMITS,
   PLAN_LIMITS,
@@ -19,6 +20,11 @@ import {
   type Cladding,
   type DesignDocument,
   type Dormer,
+  type Circuit,
+  type CircuitKind,
+  type DeviceKind,
+  type ElectricalDevice,
+  type ElectricalPlan,
   type Exterior,
   type GroundCover,
   type FloorSpec,
@@ -26,6 +32,7 @@ import {
   type FurnitureItem,
   type Level,
   type Opening,
+  type Panel,
   type PlanModel,
   type Point2,
   type Roof,
@@ -45,6 +52,7 @@ import {
   type WallFaceSpec,
 } from './types';
 import { defaultLevelName } from './levels';
+import { conductorFor } from '@/code/nec';
 import { migrateDocument } from './migrate';
 import { addRectangle, normalizePlan } from './planOps';
 import { getCatalogEntry, isKnownCatalogId } from '@/furniture/catalog';
@@ -135,6 +143,16 @@ export function defaultSite(): Site {
   };
 }
 
+/**
+ * An empty electrical installation.
+ *
+ * No devices, no circuits and no panel — and no heating or cooling figures,
+ * which the load calculation then reports as missing rather than guessing at.
+ */
+export function defaultElectrical(): ElectricalPlan {
+  return { devices: [], circuits: [], panel: null, heatingVa: 0, coolingVa: 0 };
+}
+
 export function defaultExterior(): Exterior {
   return {
     cladding: 'lap-siding',
@@ -183,6 +201,7 @@ export function createDefaultDocument(): DesignDocument {
     site: defaultSite(),
     exterior: defaultExterior(),
     services: [],
+    electrical: defaultElectrical(),
     lighting: {
       presetId: 'daylight',
       intensity: 1,
@@ -538,6 +557,149 @@ export function safeLevels(
   return {
     list,
     activeId: list.some((level) => level.id === wanted) ? wanted : list[0]!.id,
+  };
+}
+
+const DEVICE_KINDS: readonly DeviceKind[] = [
+  'receptacle',
+  'receptacle-gfci',
+  'receptacle-counter',
+  'receptacle-appliance',
+  'switch',
+  'switch-3way',
+  'switch-dimmer',
+  'light-ceiling',
+  'light-wall',
+  'light-recessed',
+  'fan',
+  'smoke-alarm',
+  'thermostat',
+  'panel',
+];
+
+const CIRCUIT_KINDS: readonly CircuitKind[] = [
+  'general',
+  'lighting',
+  'small-appliance',
+  'laundry',
+  'bathroom',
+  'individual',
+];
+
+/**
+ * Validates the electrical installation.
+ *
+ * A device on a storey that no longer exists is dropped, for the same reason a
+ * stranded staircase is: it has no wall to be fixed to, and quietly moving it
+ * to another floor would put somebody's socket in a different room.
+ *
+ * A device naming a circuit that is not in the list keeps its position and
+ * loses the reference, rather than being deleted. An unassigned outlet is a
+ * real state — it is what every outlet is between being placed and being
+ * wired — and the checks report it.
+ */
+function safeElectrical(value: unknown, levels: readonly Level[]): ElectricalPlan {
+  const base = defaultElectrical();
+  if (typeof value !== 'object' || value === null) return base;
+  const raw = value as Record<string, unknown>;
+
+  const levelIds = new Set(levels.map((level) => level.id));
+
+  const circuits: Circuit[] = [];
+  const seenCircuits = new Set<string>();
+  if (Array.isArray(raw.circuits)) {
+    for (const entry of raw.circuits.slice(0, ELECTRICAL_LIMITS.maxCircuits)) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const circuit = entry as Record<string, unknown>;
+
+      const id = safeString(circuit.id, `c${circuits.length + 1}`, 60);
+      if (seenCircuits.has(id)) continue;
+      seenCircuits.add(id);
+
+      const amps = clamp(circuit.amps, ELECTRICAL_LIMITS.amps.min, ELECTRICAL_LIMITS.amps.max, 15);
+      circuits.push({
+        id,
+        reference: safeString(circuit.reference, `${circuits.length + 1}`, 8),
+        name: safeString(circuit.name, 'Circuit', 60),
+        kind: oneOf(circuit.kind, CIRCUIT_KINDS, 'general'),
+        amps,
+        volts: circuit.volts === 240 ? 240 : 120,
+        conductor: safeString(circuit.conductor, conductorFor(amps).size, 16),
+        gfci: circuit.gfci === true,
+        afci: circuit.afci === true,
+      });
+    }
+  }
+
+  const devices: ElectricalDevice[] = [];
+  const seenDevices = new Set<string>();
+  if (Array.isArray(raw.devices)) {
+    for (const entry of raw.devices.slice(0, ELECTRICAL_LIMITS.maxDevices)) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const device = entry as Record<string, unknown>;
+
+      const levelId = typeof device.levelId === 'string' ? device.levelId : '';
+      if (!levelIds.has(levelId)) continue;
+
+      const at = safePoint(device.at);
+      if (!at) continue;
+
+      const id = safeString(device.id, `d${devices.length + 1}`, 60);
+      if (seenDevices.has(id)) continue;
+      seenDevices.add(id);
+
+      const circuitId = typeof device.circuitId === 'string' ? device.circuitId : null;
+      devices.push({
+        id,
+        levelId,
+        kind: oneOf(device.kind, DEVICE_KINDS, 'receptacle'),
+        at,
+        height: clamp(
+          device.height,
+          ELECTRICAL_LIMITS.height.min,
+          ELECTRICAL_LIMITS.height.max,
+          0.38,
+        ),
+        rotation: normalizeAngle(typeof device.rotation === 'number' ? device.rotation : 0),
+        wallId: typeof device.wallId === 'string' ? device.wallId : null,
+        circuitId: circuitId && seenCircuits.has(circuitId) ? circuitId : null,
+        va:
+          typeof device.va === 'number' && Number.isFinite(device.va)
+            ? clamp(device.va, ELECTRICAL_LIMITS.va.min, ELECTRICAL_LIMITS.va.max, 0)
+            : null,
+        label: safeString(device.label, 'Outlet', 80),
+      });
+    }
+  }
+
+  let panel: Panel | null = null;
+  if (typeof raw.panel === 'object' && raw.panel !== null) {
+    const entry = raw.panel as Record<string, unknown>;
+    const at = safePoint(entry.at);
+    const levelId = typeof entry.levelId === 'string' ? entry.levelId : '';
+    if (at && levelIds.has(levelId)) {
+      panel = {
+        levelId,
+        at,
+        rotation: normalizeAngle(typeof entry.rotation === 'number' ? entry.rotation : 0),
+        mainAmps: clamp(
+          entry.mainAmps,
+          ELECTRICAL_LIMITS.service.min,
+          ELECTRICAL_LIMITS.service.max,
+          200,
+        ),
+        volts: entry.volts === 120 ? 120 : 240,
+        spaces: Math.round(clamp(entry.spaces, 8, 84, 40)),
+      };
+    }
+  }
+
+  return {
+    devices,
+    circuits,
+    panel,
+    heatingVa: clamp(raw.heatingVa, 0, 60000, 0),
+    coolingVa: clamp(raw.coolingVa, 0, 60000, 0),
   };
 }
 
@@ -1063,6 +1225,7 @@ export function sanitizeDocument(input: unknown): DesignDocument {
     site: safeSite(raw.site),
     exterior: safeExterior(raw.exterior),
     services: [],
+    electrical: safeElectrical(raw.electrical, levels.list),
     clearance: safeClearance(raw.clearance),
     currency: safeCurrency(raw.currency),
     lighting: {

@@ -2085,3 +2085,183 @@ select {
   height: 100%;
   pointer-events: none;
 }
+
+/* ─────────────────────────────── Electrical ─────────────────────────────── */
+
+/* What the layout had to guess. Given its own block, in the accent colour,
+   because an assumption presented in the same typeface as a result reads as a
+   result — and these are the places the app is least sure of. */
+.elec__assumptions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--accent-dim);
+  border-radius: 0 4px 4px 0;
+}
+
+.elec__assumptions-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+}
+
+.elec__assumption {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.elec__section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.elec__section-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.elec__meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-muted);
+}
+
+.elec__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.elec__table th {
+  padding: 3px 4px 5px;
+  text-align: left;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.elec__table td {
+  padding: 5px 4px;
+  vertical-align: top;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.elec__ref,
+.elec__amount {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.elec__amount {
+  text-align: right;
+  color: var(--text-primary);
+}
+
+/* The article a figure comes from, in the same badge style the code findings
+   use — a number without its citation is an opinion. */
+.elec__section-ref {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* How the figure was arrived at, in words, under the figure itself. */
+.elec__working {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.elec__total td {
+  border-bottom: none;
+  padding-top: 7px;
+  color: var(--text-primary);
+}
+
+.elec__total--headline td {
+  font-weight: 600;
+  border-top: 1px solid var(--border-strong);
+}
+
+.elec__tags {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: 5px;
+}
+
+.elec__tag {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.03em;
+  padding: 1px 3px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+}
+
+/* How hard a breaker is worked, as a bar behind the number. Over its
+   continuous rating it goes red, which is the one case worth catching. */
+.elec__bar {
+  display: block;
+  width: 100%;
+  height: 3px;
+  margin-bottom: 3px;
+  background: var(--surface-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.elec__bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.elec__bar-fill--over {
+  background: #c86458;
+}
+
+.elec__climate {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.elec__climate-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* The kind picker and its Add button, side by side. */
+.elec__add {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: center;
+}

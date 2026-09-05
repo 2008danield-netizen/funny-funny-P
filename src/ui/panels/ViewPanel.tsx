@@ -40,6 +40,11 @@ export function ViewPanel({ onAutoHideWallsChange }: ViewPanelProps) {
           onAutoHideWallsChange(checked);
         }}
       />
+      <p className="field__hint">
+        The roof comes off with them, because a house with its near walls hidden and its roof still
+        on can be seen into from the side and not at all from above. Switch this off to look at the
+        building from outside as it would be built.
+      </p>
 
       <Toggle
         label="Snap while dragging"

@@ -50,7 +50,7 @@ const HANDLE_RADIUS = 0.11;
  * is the single place that decodes a mesh's pick metadata, and `Furnishings`
  * tags its pick volumes the same way rather than duplicating the decoder.
  */
-export type PickKind = 'wall' | 'vertex' | 'opening' | 'floor' | 'furniture';
+export type PickKind = 'wall' | 'vertex' | 'opening' | 'floor' | 'furniture' | 'device';
 
 export interface PickResult {
   kind: PickKind;
@@ -138,6 +138,17 @@ export class Building {
 
   private editMode = false;
   private autoHideWalls = true;
+
+  /**
+   * Whether walls are currently being hidden to show the interior.
+   *
+   * Read by the engine so the roof can come off at the same moment. Taking the
+   * near walls away and leaving the roof on produces a house that looks sawn
+   * open with the lid still glued down — you see into rooms from the side and
+   * nothing at all from above, which is the worst of both. Hiding the walls
+   * and hiding the roof are the same act: "let me see inside".
+   */
+  private cutaway = false;
   private selection: SelectionState = { kind: null, id: null };
   private hovered: SelectionState = { kind: null, id: null };
 
@@ -249,6 +260,11 @@ export class Building {
 
   setAutoHideWalls(enabled: boolean): void {
     this.autoHideWalls = enabled;
+  }
+
+  /** Whether the near walls are currently hidden. See `cutaway`. */
+  get isCutaway(): boolean {
+    return this.cutaway;
   }
 
   setSelection(selection: SelectionState): void {
@@ -698,6 +714,9 @@ export class Building {
     const inside =
       !this.autoHideWalls ||
       this.regions.some((region) => pointInPolygon(position, region.polygon));
+
+    // Remembered so the roof can follow suit. See `cutaway` below.
+    this.cutaway = !inside;
 
     for (const entry of this.walls.values()) {
       let visible = true;

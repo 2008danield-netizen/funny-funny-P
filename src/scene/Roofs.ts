@@ -31,8 +31,10 @@ const EDGE_THICKNESS = 0.06;
 
 interface RoofMaterials {
   covering: THREE.MeshStandardMaterial;
-  /** Fascia, barge boards and the soffit under the eave. */
+  /** Fascia and barge boards, which face outwards and are lit like a wall. */
   trim: THREE.MeshStandardMaterial;
+  /** The underside of the overhang, which faces the ground. */
+  soffit: THREE.MeshStandardMaterial;
   /** The walls of a dormer, which are clad like the rest of the house. */
   cladding: THREE.MeshStandardMaterial;
   glass: THREE.MeshPhysicalMaterial;
@@ -63,6 +65,27 @@ export class Roofs {
         color: 0xf7f5f0,
         roughness: 0.7,
         metalness: 0,
+        side: THREE.DoubleSide,
+      }),
+      /*
+       * The soffit is the one surface in the whole building that faces straight
+       * DOWN. The sun is above it, the hemisphere light gives a downward face
+       * its ground colour, and the fill is directional — so with the trim
+       * material it rendered almost black, and the eaves read as a dark band
+       * under every roof.
+       *
+       * A real soffit is not dark: it is a white board a foot above head height
+       * catching light bounced off the ground and the wall. Nothing in the
+       * scene simulates that bounce, so a small emissive term stands in for it.
+       * It is a cheat, and it is the right cheat — the alternative is either a
+       * global-illumination pass or eaves that look burnt.
+       */
+      soffit: new THREE.MeshStandardMaterial({
+        color: 0xf7f5f0,
+        roughness: 0.8,
+        metalness: 0,
+        emissive: 0xf7f5f0,
+        emissiveIntensity: 0.34,
         side: THREE.DoubleSide,
       }),
       cladding: new THREE.MeshStandardMaterial({
@@ -160,7 +183,7 @@ export class Roofs {
             { x: geometry.wallLine[j]!.x, y: soffitHeight, z: geometry.wallLine[j]!.z },
             { x: geometry.wallLine[i]!.x, y: soffitHeight, z: geometry.wallLine[i]!.z },
           ],
-          this.materials.trim,
+          this.materials.soffit,
         );
         if (panel) this.add(panel);
       }

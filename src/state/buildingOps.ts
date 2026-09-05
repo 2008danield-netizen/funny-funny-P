@@ -11,12 +11,17 @@ import { getOpeningPreset } from '@/scene/openings/presets';
 import { defaultStairFor, stairGeometry } from '@/building/stairs';
 import { footprintsOf } from '@/building/footprint';
 import { roofGeometry } from '@/building/roof';
+import { isLighting, layoutElectrical } from '@/services/layout';
+import { assignCircuits, calculateLoad } from '@/services/circuits';
+import { MOUNTING } from '@/code/nec';
+import { findRegions, representativePoint } from '@/scene/planGraph';
 import { defaultRoofFor } from './defaults';
 import {
   activeLevel,
   defaultLevelName,
   levelAbove,
   levelBelow,
+  levelById,
   levelIndex,
   riseAbove,
 } from './levels';
@@ -25,7 +30,9 @@ import {
   DORMER_LIMITS,
   LEVEL_LIMITS,
   type DesignDocument,
+  type DeviceKind,
   type Dormer,
+  type ElectricalDevice,
   type Level,
   type Point2,
   type Roof,
@@ -479,4 +486,136 @@ export function setRectangularPlot(doc: DesignDocument, width: number, depth: nu
   // The front is the edge the arrangement suggests: the one at -z, which is the
   // bottom of the screen in plan and where a street would be drawn.
   if (doc.site.setbacks) doc.site.setbacks.frontAt = { x: 0, z: -halfDepth };
+}
+
+/* ------------------------------- Electrical ------------------------------- */
+
+/**
+ * Lays the electrical out and wires it, in one edit.
+ *
+ * Everything at once — devices, circuits, the panel — because they are one
+ * decision as far as the user is concerned ("wire this house"), and because
+ * leaving the devices unassigned between two edits would put an undo step in
+ * the middle of a half-wired house.
+ *
+ * Replaces whatever was there. Laying out again is how you recover from having
+ * moved half the walls, and a merge would leave orphaned outlets standing in
+ * rooms that no longer exist.
+ */
+export function layOutElectrical(doc: DesignDocument): {
+  devices: number;
+  circuits: number;
+  assumptions: string[];
+} {
+  const layout = layoutElectrical(doc);
+
+  doc.electrical.devices = layout.devices;
+  doc.electrical.panel =
+    layout.panelAt && layout.panelLevelId
+      ? {
+          levelId: layout.panelLevelId,
+          at: layout.panelAt,
+          rotation: layout.panelRotation,
+          // Sized after the circuits are assigned, just below.
+          mainAmps: 100,
+          volts: 240,
+          spaces: 40,
+        }
+      : null;
+
+  wireElectrical(doc);
+
+  return {
+    devices: doc.electrical.devices.length,
+    circuits: doc.electrical.circuits.length,
+    assumptions: layout.assumptions,
+  };
+}
+
+/**
+ * Groups whatever devices exist onto circuits, and sizes the service.
+ *
+ * Separate from the layout so that somebody who has added or moved outlets by
+ * hand can re-wire without losing their placement.
+ */
+export function wireElectrical(doc: DesignDocument): void {
+  const { circuits, assignment } = assignCircuits(doc);
+
+  doc.electrical.circuits = circuits;
+  for (const device of doc.electrical.devices) {
+    device.circuitId = assignment.get(device.id) ?? null;
+  }
+
+  if (doc.electrical.panel) {
+    // The panel is sized from the calculation rather than left at a default: a
+    // service too small for the house is the finding people act on first.
+    doc.electrical.panel.mainAmps = calculateLoad(doc).serviceAmps;
+    doc.electrical.panel.spaces = Math.max(20, Math.ceil((circuits.length + 6) / 2) * 2);
+  }
+}
+
+/**
+ * Adds one device by hand, in the middle of the biggest room on a storey.
+ *
+ * Placed rather than left for the user to position because a device you cannot
+ * see is a device you cannot drag: it goes somewhere obvious, gets selected,
+ * and the user moves it. Its mounting height comes from the code's own figures
+ * so a hand-placed receptacle sits at the same height as every laid-out one.
+ *
+ * It is NOT put on a circuit. Assigning circuits renumbers the whole panel, so
+ * that stays an explicit act; until then the NEC check reports it as unfinished
+ * work rather than as a violation, which is exactly what it is.
+ */
+export function addDevice(doc: DesignDocument, levelId: string, kind: DeviceKind): string | null {
+  const level = levelById(doc, levelId);
+  if (!level) return null;
+
+  const regions = findRegions(level.plan);
+  if (regions.length === 0) return null;
+
+  const biggest = regions.reduce((best, region) => (region.area > best.area ? region : best));
+  const at = representativePoint(biggest.polygon);
+
+  const ceilingMounted = isLighting(kind) || kind === 'smoke-alarm';
+  const device: ElectricalDevice = {
+    id: `dev-${Math.random().toString(36).slice(2, 9)}`,
+    levelId,
+    kind,
+    at,
+    height: ceilingMounted
+      ? level.wallHeight
+      : kind.startsWith('switch')
+        ? MOUNTING.switch
+        : kind === 'receptacle-counter'
+          ? MOUNTING.counterReceptacle
+          : MOUNTING.receptacle,
+    rotation: 0,
+    wallId: null,
+    circuitId: null,
+    va: null,
+    label: 'Added by hand',
+  };
+
+  doc.electrical.devices.push(device);
+  return device.id;
+}
+
+export function removeDevice(doc: DesignDocument, id: string): void {
+  doc.electrical.devices = doc.electrical.devices.filter((device) => device.id !== id);
+}
+
+export function updateDevice(
+  doc: DesignDocument,
+  id: string,
+  changes: Partial<ElectricalDevice>,
+): void {
+  const device = doc.electrical.devices.find((entry) => entry.id === id);
+  if (device) Object.assign(device, changes);
+}
+
+/** Clears the whole installation, for starting again. */
+export function clearElectrical(doc: DesignDocument): void {
+  doc.electrical.devices = [];
+  doc.electrical.circuits = [];
+  doc.electrical.panel = null;
 }

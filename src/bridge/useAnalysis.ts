@@ -27,6 +27,14 @@ import { analyseClearance, type ClearanceReport } from '@/clearance/analyze';
 import { adviseDesign } from '@/advisor/advise';
 import { checkAllRoofs, type RoofReport } from '@/building/roofCode';
 import { exteriorTakeoff, type ExteriorTakeoff } from '@/building/exterior';
+import {
+  calculateLoad,
+  groupByRoom,
+  panelSchedule,
+  type LoadResult,
+  type ScheduleRow,
+} from '@/services/circuits';
+import { checkElectrical, type NecReport } from '@/services/necCheck';
 import type { AdvisorReport } from '@/advisor/types';
 import { activeLevel } from '@/state/levels';
 import type { DesignDocument, Level } from '@/state/types';
@@ -92,6 +100,44 @@ export function takeoffFor(doc: DesignDocument): ExteriorTakeoff {
   takeoffCache = exteriorTakeoff(doc);
   takeoffKey = doc;
   return takeoffCache;
+}
+
+/*
+ * The electrical: the checks, the load and the panel schedule.
+ *
+ * All three walk every room of every storey — the spacing check samples every
+ * wall at 10 cm, and the load calculation runs `findRegions` over the whole
+ * building — and the panel wants all three at once. Computed together and once
+ * per document version, for the same reason the roof reports are.
+ */
+export interface ElectricalAnalysis {
+  report: NecReport;
+  load: LoadResult;
+  schedule: ScheduleRow[];
+  /** Devices grouped by the room they stand in, which is how they are wired. */
+  rooms: ReturnType<typeof groupByRoom>;
+}
+
+let electricalKey: DesignDocument | null = null;
+let electricalCache: ElectricalAnalysis | null = null;
+
+/** The whole electrical analysis, computed at most once per version. */
+export function electricalFor(doc: DesignDocument): ElectricalAnalysis {
+  if (electricalKey === doc && electricalCache) return electricalCache;
+  electricalCache = {
+    report: checkElectrical(doc),
+    load: calculateLoad(doc),
+    schedule: panelSchedule(doc),
+    rooms: groupByRoom(doc),
+  };
+  electricalKey = doc;
+  return electricalCache;
+}
+
+/** Subscribes to the electrical analysis for the whole building. */
+export function useElectrical(): ElectricalAnalysis {
+  const doc = useDesign();
+  return useMemo(() => electricalFor(doc), [doc]);
 }
 
 /** Subscribes to the roof reports for the whole building. */

@@ -16,6 +16,8 @@ import { StoreyPanel } from './panels/StoreyPanel';
 import { RoofPanel } from './panels/RoofPanel';
 import { TracePanel } from './panels/TracePanel';
 import { SitePanel } from './panels/SitePanel';
+import { ElectricalPanel } from './panels/ElectricalPanel';
+import { DrawingsPanel } from './panels/DrawingsPanel';
 import { CataloguePanel } from './panels/CataloguePanel';
 import { AdvisorPanel } from './panels/AdvisorPanel';
 import { IssuesPanel } from './panels/IssuesPanel';
@@ -142,6 +144,8 @@ export function App() {
             <TracePanel />
             <RoofPanel />
             <SitePanel />
+            <ElectricalPanel />
+            <DrawingsPanel />
             <PlanPanel />
             <LightingPanel />
             <ViewPanel

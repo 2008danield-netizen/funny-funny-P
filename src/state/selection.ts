@@ -13,7 +13,14 @@
 
 import type { TraceCandidate } from './traceOps';
 
-export type SelectionKind = 'wall' | 'vertex' | 'opening' | 'floor' | 'furniture' | 'stair';
+export type SelectionKind =
+  | 'wall'
+  | 'vertex'
+  | 'opening'
+  | 'floor'
+  | 'furniture'
+  | 'stair'
+  | 'device';
 
 export interface Selection {
   kind: SelectionKind | null;
@@ -66,6 +73,17 @@ export interface EditorState {
   showClearance: boolean;
 
   /**
+   * Whether the electrical is drawn in the model.
+   *
+   * View state, like the clearance overlay and for the same reason: which
+   * layers somebody has switched on while working is not part of their design
+   * and has no business in an export or on the undo stack.
+   */
+  showElectrical: boolean;
+  /** Whether home runs are drawn back to the panel as well as the devices. */
+  showElectricalRuns: boolean;
+
+  /**
    * Walls the detector has proposed on the traced plan, and which are ticked.
    *
    * View state, deliberately: a proposal is not part of the design until it is
@@ -98,6 +116,10 @@ function initialState(): EditorState {
     // Off by default: the zones are analysis, and a first-time visitor should
     // see their room rather than a floor covered in blue rectangles.
     showClearance: false,
+    // Same reasoning. Switching the layer on is the first thing the electrical
+    // panel does, so nobody has to find this to see what they just laid out.
+    showElectrical: false,
+    showElectricalRuns: true,
   };
 }
 
