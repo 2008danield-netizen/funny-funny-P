@@ -140,11 +140,40 @@ export function assignCircuits(doc: DesignDocument): Grouping {
   /** Devices grouped by the room they stand in, per storey. */
   const byRoom = groupByRoom(doc);
 
+  /* ---- Individual circuits, one per appliance that needs one ---- */
+
+  /*
+   * NEC 422.12 and 210.23: a fixed appliance big enough to want its own
+   * circuit gets one, sized from its nameplate. A cooker at 9,600 VA is 40 A
+   * at 240 V and 8 AWG; putting it on the general lighting circuit — which is
+   * what happens when nobody models the appliances — is how a kitchen refit
+   * ends up tripping every time the oven and the kettle are on together.
+   *
+   * These are taken out FIRST, before the code's named circuits, because an
+   * appliance outlet must not also be counted as a small-appliance receptacle.
+   */
+  const dedicated = doc.electrical.devices.filter(
+    (device) => device.kind === 'receptacle-appliance' && (device.va ?? 0) >= 1500,
+  );
+
+  for (const device of dedicated) {
+    const va = device.va ?? 0;
+    // Anything over 1,800 VA is a 240 V appliance in a US dwelling — a cooker,
+    // an oven, a dryer. Below that it is an ordinary 120 V circuit.
+    const volts = va > 1800 ? 240 : 120;
+    const amps = breakerFor(va / volts);
+    add(device.label || 'Appliance', 'individual', amps, false, true, [device], volts);
+  }
+
+  const spoken = new Set(dedicated.map((device) => device.id));
+
   /* ---- The circuits the code names ---- */
 
   const smallAppliance = byRoom
     .filter((room) => room.purpose === 'kitchen' || room.purpose === 'dining')
-    .flatMap((room) => room.devices.filter((device) => isReceptacle(device.kind)));
+    .flatMap((room) =>
+      room.devices.filter((device) => isReceptacle(device.kind) && !spoken.has(device.id)),
+    );
 
   if (smallAppliance.length > 0) {
     // Two of them, minimum, and split evenly: 210.11(C)(1).
@@ -163,12 +192,16 @@ export function assignCircuits(doc: DesignDocument): Grouping {
 
   const bathroomReceptacles = byRoom
     .filter((room) => room.purpose === 'bathroom')
-    .flatMap((room) => room.devices.filter((device) => isReceptacle(device.kind)));
+    .flatMap((room) =>
+      room.devices.filter((device) => isReceptacle(device.kind) && !spoken.has(device.id)),
+    );
   add('Bathroom receptacles', 'bathroom', 20, true, false, bathroomReceptacles);
 
   const laundry = byRoom
     .filter((room) => room.purpose === 'laundry')
-    .flatMap((room) => room.devices.filter((device) => isReceptacle(device.kind)));
+    .flatMap((room) =>
+      room.devices.filter((device) => isReceptacle(device.kind) && !spoken.has(device.id)),
+    );
   add('Laundry', 'laundry', 20, true, true, laundry);
 
   /* ---- Everything else, by room ---- */
@@ -334,9 +367,24 @@ export function calculateLoad(doc: DesignDocument): LoadResult {
     working: `${laundryCircuits} circuit at ${NEC_LOAD.laundryVa.va} VA`,
   });
 
-  // Fixed appliances and fittings that named their own load.
+  /*
+   * Fixed appliances and fittings that named their own load.
+   *
+   * An APPLIANCE outlet counts; a general receptacle does not. That distinction
+   * is 220.14(J) — dwelling receptacle outlets are already inside the 3 VA per
+   * square foot above, and counting them again would inflate the service. But
+   * a cooker on its own circuit is a fastened-in-place appliance under 220.53
+   * and its nameplate load is real, additional, and the single biggest item in
+   * most kitchens. Excluding it — which the earlier rule did, because it is
+   * plugged into something that looks like a receptacle — quietly produced a
+   * service calculation that took no account of the cooker at all.
+   */
   const fixed = doc.electrical.devices.reduce(
-    (total, device) => total + (isReceptacle(device.kind) ? 0 : (device.va ?? 0)),
+    (total, device) =>
+      total +
+      (device.kind === 'receptacle-appliance' || !isReceptacle(device.kind)
+        ? (device.va ?? 0)
+        : 0),
     0,
   );
   if (fixed > 0) {

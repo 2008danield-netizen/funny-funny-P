@@ -30,10 +30,14 @@
 
 import { MOUNTING, NEC_OUTLETS } from '@/code/nec';
 import { blankSpans, pointOnFace, roomWalls, type RoomWall } from '@/advisor/geometry';
-import { findRegions, representativePoint, type Region } from '@/scene/planGraph';
+import { findRegions, pointInPolygon, representativePoint, type Region } from '@/scene/planGraph';
+import { runSegments } from '@/building/cabinetRun';
+import { rotationFacing } from '@/advisor/geometry';
+import { getFixture } from '@/fittings/fixtures';
 import { resolveRoomSpec } from '@/state/planOps';
 import { isHabitable, needsGfci, roomPurpose, type RoomPurpose } from './rooms';
 import type {
+  CabinetRun,
   DesignDocument,
   DeviceKind,
   ElectricalDevice,
@@ -146,6 +150,58 @@ function switchPosition(walls: readonly RoomWall[]): { wall: RoomWall; along: nu
   return longest ? { wall: longest, along: Math.min(0.4, longest.length / 2) } : null;
 }
 
+/* ---------------------------- Reading the fittings ------------------------ */
+
+/**
+ * The base runs whose worktop is in this room.
+ *
+ * Tested by stepping off the run into the room it faces rather than by testing
+ * the path, which lies exactly on the room's boundary where a point-in-polygon
+ * test is a coin toss.
+ */
+function baseRunsIn(doc: DesignDocument, level: Level, region: Region): CabinetRun[] {
+  return doc.runs.filter((run) => {
+    if (run.levelId !== level.id || run.kind !== 'base') return false;
+    return runSegments(run.path).some((segment) =>
+      pointInPolygon(
+        {
+          x: (segment.from.x + segment.to.x) / 2 + segment.normal.x * 0.1,
+          z: (segment.from.z + segment.to.z) / 2 + segment.normal.z * 0.1,
+        },
+        region.polygon,
+      ),
+    );
+  });
+}
+
+/** The room wall nearest a point, and where along it that point falls. */
+function nearestWallTo(
+  walls: readonly RoomWall[],
+  point: Point2,
+): { wall: RoomWall; along: number } | null {
+  let best: { wall: RoomWall; along: number; distance: number } | null = null;
+
+  for (const wall of walls) {
+    const dx = wall.faceEnd.x - wall.faceStart.x;
+    const dz = wall.faceEnd.z - wall.faceStart.z;
+    const lengthSquared = dx * dx + dz * dz;
+    if (lengthSquared < 1e-9) continue;
+
+    const t = Math.max(
+      0,
+      Math.min(1, ((point.x - wall.faceStart.x) * dx + (point.z - wall.faceStart.z) * dz) / lengthSquared),
+    );
+    const closest = { x: wall.faceStart.x + dx * t, z: wall.faceStart.z + dz * t };
+    const distance = Math.hypot(closest.x - point.x, closest.z - point.z);
+
+    if (!best || distance < best.distance) {
+      best = { wall, along: t * wall.length, distance };
+    }
+  }
+
+  return best ? { wall: best.wall, along: best.along } : null;
+}
+
 /* ------------------------------- One room --------------------------------- */
 
 export interface RoomLayout {
@@ -156,8 +212,15 @@ export interface RoomLayout {
   assumptions: string[];
 }
 
-/** Lays out one room. */
-export function layoutRoom(level: Level, region: Region): RoomLayout {
+/**
+ * Lays out one room.
+ *
+ * Takes the whole document, not just the storey, because the two places this
+ * used to have to GUESS — where the counter is and where the basin is — are now
+ * things the model may actually know. When it does, the guess and its apology
+ * are both withdrawn.
+ */
+export function layoutRoom(doc: DesignDocument, level: Level, region: Region): RoomLayout {
   const spec = resolveRoomSpec(level.plan, region.key);
   const purpose = roomPurpose(spec.name);
   const walls = roomWalls(level.plan, region);
@@ -192,40 +255,141 @@ export function layoutRoom(level: Level, region: Region): RoomLayout {
   /* ---- The special receptacles the code asks for by fixture ---- */
   const longest = [...walls].sort((a, b) => b.length - a.length)[0];
 
-  if (purpose === 'kitchen' && longest) {
-    // Counter receptacles: 210.52(C)(1) wants one within 24 in of any point
-    // along the counter, which is an outlet every 4 ft.
-    for (const offset of spacingAlong(longest.length, NEC_OUTLETS.maxCounterDistance.metres)) {
+  if (purpose === 'kitchen') {
+    /*
+     * 210.52(C)(1): no point along a countertop more than 24 in from a
+     * receptacle, and every counter 12 in or wider gets one.
+     *
+     * If there are base runs in this room the app now knows exactly where the
+     * counters ARE, and puts the outlets along them. Before session 10 it had
+     * to assume the counter ran along the longest wall and say so — that guess
+     * is still here for a kitchen nobody has fitted yet, and it is still
+     * labelled, because a guess presented as a fact is the worst thing a code
+     * check can do.
+     */
+    const counters = baseRunsIn(doc, level, region);
+
+    if (counters.length > 0) {
+      for (const run of counters) {
+        for (const segment of runSegments(run.path)) {
+          if (segment.length < NEC_OUTLETS.minCounterWidth.metres) continue;
+
+          for (const offset of spacingAlong(
+            segment.length,
+            NEC_OUTLETS.maxCounterDistance.metres,
+            NEC_OUTLETS.minCounterWidth.metres,
+          )) {
+            const at = {
+              x: segment.from.x + segment.direction.x * offset + segment.normal.x * OFF_WALL,
+              z: segment.from.z + segment.direction.z * offset + segment.normal.z * OFF_WALL,
+            };
+            devices.push({
+              id: nextId('dev'),
+              levelId: level.id,
+              kind: 'receptacle-counter',
+              at,
+              height: MOUNTING.counterReceptacle,
+              rotation: rotationFacing(segment.normal),
+              wallId: null,
+              circuitId: null,
+              va: null,
+              label: 'Counter receptacle',
+            });
+          }
+        }
+      }
+    } else if (longest) {
+      for (const offset of spacingAlong(longest.length, NEC_OUTLETS.maxCounterDistance.metres)) {
+        devices.push(
+          deviceOnWall(
+            longest,
+            offset,
+            level.id,
+            'receptacle-counter',
+            MOUNTING.counterReceptacle,
+            'Counter receptacle',
+          ),
+        );
+      }
+      assumptions.push(
+        'There is no cabinetry in this kitchen yet, so the counter is assumed to run along the longest wall. Lay the kitchen out and wire it again, and these will follow the real worktop.',
+      );
+    }
+  }
+
+  if (purpose === 'bathroom') {
+    /*
+     * 210.52(D): a receptacle within 3 ft of the OUTSIDE EDGE of each basin.
+     * With a basin in the model that is a measurement; without one it is the
+     * same apology it always was.
+     */
+    const basins = doc.fixtures.filter((fixture) => {
+      if (fixture.levelId !== level.id) return false;
+      if (!pointInPolygon(fixture.at, region.polygon)) return false;
+      const entry = getFixture(fixture.fixtureId);
+      return entry?.kind === 'basin' || entry?.kind === 'vanity-basin';
+    });
+
+    if (basins.length > 0) {
+      for (const basin of basins) {
+        const near = nearestWallTo(walls, basin.at);
+        if (!near) continue;
+        devices.push(
+          deviceOnWall(
+            near.wall,
+            near.along,
+            level.id,
+            'receptacle-gfci',
+            MOUNTING.counterReceptacle,
+            'Basin receptacle',
+          ),
+        );
+      }
+    } else if (longest) {
       devices.push(
         deviceOnWall(
           longest,
-          offset,
+          Math.min(longest.length / 2, longest.length - CORNER_MARGIN),
           level.id,
-          'receptacle-counter',
+          'receptacle-gfci',
           MOUNTING.counterReceptacle,
-          'Counter receptacle',
+          'Basin receptacle',
         ),
       );
+      assumptions.push(
+        'There is no basin in this bathroom yet, so it is assumed to be on the longest wall. NEC 210.52(D) wants a receptacle within 3 ft of its outside edge — lay the bathroom out and wire it again to place this properly.',
+      );
     }
-    assumptions.push(
-      'The counter is assumed to run along the longest wall, because the app has no model of your cabinets yet. Move these to where the counter really is.',
-    );
   }
 
-  if (purpose === 'bathroom' && longest) {
-    devices.push(
-      deviceOnWall(
-        longest,
-        Math.min(longest.length / 2, longest.length - CORNER_MARGIN),
-        level.id,
-        'receptacle-gfci',
-        MOUNTING.counterReceptacle,
-        'Basin receptacle',
-      ),
-    );
-    assumptions.push(
-      'The basin is assumed to be on the longest wall. NEC 210.52(D) wants a receptacle within 3 ft of its outside edge, so check this one against where the basin actually goes.',
-    );
+  /* ---- A dedicated outlet for every appliance that needs one ---- */
+
+  for (const fixture of doc.fixtures) {
+    if (fixture.levelId !== level.id) continue;
+    if (!pointInPolygon(fixture.at, region.polygon)) continue;
+
+    const entry = getFixture(fixture.fixtureId);
+    if (!entry?.connections.va) continue;
+
+    /*
+     * A cooker, an oven, a dishwasher and a washing machine each get their own
+     * outlet carrying their nameplate load, which is what puts them on their
+     * own circuit and into the Article 220 calculation as a fixed appliance.
+     * Before this the app had no idea they existed, and a kitchen refit came
+     * out needing the same service as an empty room.
+     */
+    devices.push({
+      id: nextId('dev'),
+      levelId: level.id,
+      kind: entry.connections.dedicatedCircuit ? 'receptacle-appliance' : 'receptacle',
+      at: { x: fixture.at.x, z: fixture.at.z },
+      height: MOUNTING.receptacle,
+      rotation: fixture.rotation,
+      wallId: null,
+      circuitId: null,
+      va: entry.connections.va,
+      label: `${entry.name} outlet`,
+    });
   }
 
   if (purpose === 'laundry' && longest) {
@@ -311,7 +475,7 @@ export function layoutElectrical(doc: DesignDocument): LayoutResult {
 
   for (const level of doc.levels) {
     for (const region of findRegions(level.plan)) {
-      const layout = layoutRoom(level, region);
+      const layout = layoutRoom(doc, level, region);
       devices.push(...layout.devices);
       for (const note of layout.assumptions) {
         if (!assumptions.includes(note)) assumptions.push(note);

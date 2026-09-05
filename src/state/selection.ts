@@ -20,7 +20,11 @@ export type SelectionKind =
   | 'floor'
   | 'furniture'
   | 'stair'
-  | 'device';
+  | 'device'
+  /** One cabinet in a run. */
+  | 'unit'
+  /** A sanitary fixture or an appliance. */
+  | 'fixture';
 
 export interface Selection {
   kind: SelectionKind | null;
@@ -42,7 +46,11 @@ export type EditTool =
   /** Click inside a room to drop the armed catalogue item. */
   | 'furnish'
   /** Click a spot on the floor to put the foot of a staircase there. */
-  | 'stair';
+  | 'stair'
+  /** Drag along a wall to draw a run of cabinets, which fills itself. */
+  | 'cabinet'
+  /** Click inside a room to drop the armed fixture. */
+  | 'fixture';
 
 export interface EditorState {
   tool: EditTool;
@@ -65,6 +73,15 @@ export interface EditorState {
    * part of the design, and it must not survive a reload or land in an export.
    */
   pendingCatalogId: string | null;
+
+  /**
+   * The fixture armed for placement, or null.
+   *
+   * View state for the same reason `pendingCatalogId` is: an armed fixture is
+   * an intention, not part of the design, and it must not survive a reload or
+   * land in somebody's exported file.
+   */
+  pendingFixtureId: string | null;
 
   /** Items currently overlapping something, for the warning tint. */
   collidingIds: string[];
@@ -112,6 +129,7 @@ function initialState(): EditorState {
     windowPresetId: 'window-casement',
     readout: null,
     pendingCatalogId: null,
+    pendingFixtureId: null,
     collidingIds: [],
     // Off by default: the zones are analysis, and a first-time visitor should
     // see their room rather than a floor covered in blue rectangles.
@@ -202,6 +220,7 @@ class EditorStore {
       selection: tool === 'select' ? this.state.selection : EMPTY,
       // Switching away from furnishing disarms whatever was on the cursor.
       pendingCatalogId: tool === 'furnish' ? this.state.pendingCatalogId : null,
+      pendingFixtureId: tool === 'fixture' ? this.state.pendingFixtureId : null,
     });
   }
 

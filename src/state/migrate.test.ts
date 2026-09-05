@@ -582,3 +582,170 @@ describe('electrical validation', () => {
     expect(doc.electrical.heatingVa).toBe(9000);
   });
 });
+
+/* --------------------------- v8 to v9: the fittings ----------------------- */
+
+describe('v8 to v9 migration', () => {
+  /** A document as session 9 left it: wired, but with no kitchen in it. */
+  function v8Document() {
+    const current = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const rewound = structuredClone(current) as Record<string, unknown>;
+    delete rewound.runs;
+    delete rewound.fixtures;
+    return { ...rewound, schemaVersion: 8 };
+  }
+
+  it('fits nothing at all', () => {
+    // The same reasoning as v7 to v8: a kitchen is a set of decisions about
+    // somebody's house, and inventing one would mean every existing design
+    // suddenly claiming to have cabinetry — which they would then find on a
+    // drawing, and have to price.
+    const doc = sanitizeDocument(v8Document());
+    expect(doc.runs).toEqual([]);
+    expect(doc.fixtures).toEqual([]);
+    expect(doc.schemaVersion).toBe(SCHEMA_VERSION);
+  });
+
+  it('keeps the electrical it was given', () => {
+    const doc = sanitizeDocument(v8Document());
+    expect(doc.electrical).toBeDefined();
+    expect(doc.electrical.devices).toEqual([]);
+  });
+});
+
+describe('fitting validation', () => {
+  function withFittings(runs: unknown, fixtures: unknown) {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    return sanitizeDocument({ ...structuredClone(base), runs, fixtures });
+  }
+
+  it('replaces nonsense with nothing rather than failing to load', () => {
+    for (const rubbish of [null, 42, 'fitted', {}, ['a run']]) {
+      const doc = withFittings(rubbish, rubbish);
+      expect(doc.runs).toEqual([]);
+      expect(doc.fixtures).toEqual([]);
+    }
+  });
+
+  it('drops a run on a storey that no longer exists', () => {
+    const doc = withFittings(
+      [
+        {
+          id: 'ghost',
+          levelId: 'a-storey-that-was-deleted',
+          path: [{ x: 0, z: 0 }, { x: 2, z: 0 }],
+          kind: 'base',
+          units: [],
+          worktop: null,
+          finishId: 'white',
+        },
+      ],
+      [],
+    );
+    expect(doc.runs).toEqual([]);
+  });
+
+  it('drops a run whose path encloses nothing', () => {
+    const base = sanitizeDocument(v1Document());
+    const doc = withFittings(
+      [
+        {
+          id: 'stub',
+          levelId: base.levels[0]!.id,
+          path: [{ x: 0, z: 0 }],
+          kind: 'base',
+          units: [],
+          worktop: null,
+          finishId: 'white',
+        },
+      ],
+      [],
+    );
+    expect(doc.runs).toEqual([]);
+  });
+
+  it('turns an unknown module into a filler of the width it claimed', () => {
+    // Keeps the run the length it was, and makes the problem visible on the
+    // drawing instead of silently shortening somebody's kitchen.
+    const base = sanitizeDocument(v1Document());
+    const doc = withFittings(
+      [
+        {
+          id: 'r1',
+          levelId: base.levels[0]!.id,
+          path: [{ x: 0, z: 0 }, { x: 2, z: 0 }],
+          kind: 'base',
+          units: [{ id: 'u1', moduleId: 'a-module-from-the-future', width: 0.6, offset: 0 }],
+          worktop: null,
+          finishId: 'white',
+        },
+      ],
+      [],
+    );
+
+    expect(doc.runs).toHaveLength(1);
+    expect(doc.runs[0]!.units[0]!.moduleId).toBe('base-filler');
+    expect(doc.runs[0]!.units[0]!.width).toBeCloseTo(0.6, 6);
+  });
+
+  it('gives a base run a worktop and never gives a wall run one', () => {
+    const base = sanitizeDocument(v1Document());
+    const make = (kind: string) => ({
+      id: `r-${kind}`,
+      levelId: base.levels[0]!.id,
+      path: [{ x: 0, z: 0 }, { x: 2, z: 0 }],
+      kind,
+      units: [],
+      worktop: { material: 'quartz', colour: '#e8e6e1', splashback: true },
+      finishId: 'white',
+    });
+
+    const doc = withFittings([make('base'), make('wall')], []);
+    expect(doc.runs[0]!.worktop?.material).toBe('quartz');
+    expect(doc.runs[1]!.worktop).toBeNull();
+  });
+
+  it('drops a fixture naming a product this build does not have', () => {
+    // Substituting one would pass every check and be wrong in a way nobody
+    // would look for — a WC quietly becoming a basin.
+    const base = sanitizeDocument(v1Document());
+    const doc = withFittings(
+      [],
+      [
+        {
+          id: 'fx1',
+          levelId: base.levels[0]!.id,
+          fixtureId: 'a-bath-from-the-future',
+          at: { x: 0, z: 0 },
+          rotation: 0,
+          y: 0,
+          hostUnitId: null,
+        },
+      ],
+    );
+    expect(doc.fixtures).toEqual([]);
+  });
+
+  it('frees a fixture whose host unit is gone rather than losing it', () => {
+    const base = sanitizeDocument(v1Document());
+    const doc = withFittings(
+      [],
+      [
+        {
+          id: 'fx1',
+          levelId: base.levels[0]!.id,
+          fixtureId: 'wc-close-coupled',
+          at: { x: 0.5, z: 0.5 },
+          rotation: 1,
+          y: 0,
+          hostUnitId: 'a-unit-that-was-redrawn',
+        },
+      ],
+    );
+
+    expect(doc.fixtures).toHaveLength(1);
+    expect(doc.fixtures[0]!.hostUnitId).toBeNull();
+    // And it stays exactly where it was put.
+    expect(doc.fixtures[0]!.at.x).toBeCloseTo(0.5, 6);
+  });
+});

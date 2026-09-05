@@ -28,6 +28,9 @@ import { findRegions, polygonPerimeter, resolveWalls } from '@/scene/planGraph';
 import { resolveRoomSpec } from '@/state/planOps';
 import { pointInPolygon } from '@/physics/collision';
 import { basisLabel, buildShoppingList } from '@/furniture/pricing';
+import { getModule } from '@/fittings/modules';
+import { getFixture } from '@/fittings/fixtures';
+import { runGeometry } from '@/building/cabinetRun';
 import type { DesignDocument, Opening } from '@/state/types';
 
 export interface ScheduleFormats {
@@ -225,6 +228,159 @@ export function fittingSchedule(
         ? 'Some pieces have no price at all, so no total is given. Prices in this schedule are estimates written from general knowledge, not quotations, and are not connected to any retailer.'
         : `Total ${formats.money(list.total)} — ${basisLabel(list.basis).toLowerCase()}. Prices are estimates written from general knowledge, not quotations, and are not connected to any retailer. havavamama is not affiliated with, endorsed by, or sponsored by IKEA.`,
   };
+}
+
+/* ------------------------------- Cabinetry -------------------------------- */
+
+/**
+ * The cabinet schedule: what a joiner or a kitchen supplier would order from.
+ *
+ * Grouped by module, not by unit, because six identical 600 door bases are one
+ * line on an order. Fillers are listed too, and separately — they are cut on
+ * site from a length of board rather than ordered as units, and a schedule that
+ * lists nine fillers as nine products is a schedule that gets nine panels
+ * delivered.
+ */
+export function cabinetSchedule(
+  doc: DesignDocument,
+  formats: ScheduleFormats,
+): { headers: string[]; rows: string[][]; note: string } {
+  const grouped = new Map<string, { module: ReturnType<typeof getModule>; count: number; storeys: Set<string> }>();
+  let fillerCount = 0;
+  let fillerLength = 0;
+
+  const levelNames = new Map(doc.levels.map((level) => [level.id, level.name]));
+
+  for (const run of doc.runs) {
+    const storey = levelNames.get(run.levelId) ?? 'Unknown';
+    for (const unit of run.units) {
+      const module = getModule(unit.moduleId);
+      if (!module) continue;
+
+      if (module.front === 'filler') {
+        fillerCount += 1;
+        fillerLength += unit.width;
+        continue;
+      }
+
+      const existing = grouped.get(module.id);
+      if (existing) {
+        existing.count += 1;
+        existing.storeys.add(storey);
+      } else {
+        grouped.set(module.id, { module, count: 1, storeys: new Set([storey]) });
+      }
+    }
+  }
+
+  const rows = [...grouped.values()]
+    .sort((a, b) => (b.module?.width ?? 0) - (a.module?.width ?? 0))
+    .map((entry) => {
+      const module = entry.module!;
+      const each = module.price?.amount ?? null;
+      return [
+        module.label,
+        module.kind,
+        formats.length(module.width),
+        String(entry.count),
+        [...entry.storeys].join(', '),
+        each === null ? '—' : formats.money(each * entry.count),
+      ];
+    });
+
+  if (fillerCount > 0) {
+    rows.push([
+      'Filler panel, cut on site',
+      '—',
+      formats.length(fillerLength),
+      String(fillerCount),
+      'total length',
+      '—',
+    ]);
+  }
+
+  const worktopArea = doc.runs.reduce((total, run) => total + runGeometry(run).worktopArea, 0);
+
+  return {
+    headers: ['Unit', 'Family', 'Width', 'Qty', 'Storey', 'Total'],
+    rows,
+    note:
+      `Worktop ${worktopArea.toFixed(1)} m², before cut-outs for the sink and the hob. ` +
+      'Module widths follow the IKEA METOD series; dimensions and prices here are written from ' +
+      'general knowledge, nothing has been checked against a listing, and there is no affiliation ' +
+      'with or endorsement by IKEA. Prices are estimates, never quotations.',
+  };
+}
+
+/* ---------------------- Sanitaryware and appliances ----------------------- */
+
+/**
+ * Every fixture, with what it needs connecting to.
+ *
+ * The services column is the point of this schedule: it is what a plumber and
+ * an electrician read, and it is the thing a fixture schedule that only lists
+ * sizes fails to tell anybody. Session 11 will size the pipes from the same
+ * figures.
+ */
+export function fixtureSchedule(
+  doc: DesignDocument,
+  formats: ScheduleFormats,
+): { headers: string[]; rows: string[][]; note: string } {
+  const levelNames = new Map(doc.levels.map((level) => [level.id, level.name]));
+  const rooms = roomIndex(doc);
+
+  const rows = doc.fixtures
+    .map((fixture) => {
+      const entry = getFixture(fixture.fixtureId);
+      if (!entry) return null;
+
+      const services = [
+        entry.connections.cold && 'cold',
+        entry.connections.hot && 'hot',
+        entry.connections.waste ? `${entry.connections.waste} mm waste` : null,
+        entry.connections.soil && 'soil',
+        entry.connections.va ? `${entry.connections.va.toLocaleString('en-US')} VA` : null,
+        entry.connections.dedicatedCircuit && 'own circuit',
+      ]
+        .filter(Boolean)
+        .join(', ');
+
+      return [
+        entry.name,
+        levelNames.get(fixture.levelId) ?? '—',
+        rooms.get(fixture.id) ?? '—',
+        `${formats.length(entry.width)} × ${formats.length(entry.depth)}`,
+        services || 'none',
+        entry.price ? formats.money(fixture.price ?? entry.price.amount) : '—',
+        fixture.price === undefined ? 'Estimate' : 'Confirmed',
+      ];
+    })
+    .filter((row): row is string[] => row !== null);
+
+  return {
+    headers: ['Fixture', 'Storey', 'Room', 'W × D', 'Services', 'Price', 'Price basis'],
+    rows,
+    note:
+      'Sizes are typical figures written from general knowledge, not measured from any particular ' +
+      'product. Check them against what you actually buy — a bathroom is planned to the ' +
+      'centimetre, and a bath 50 mm longer than the one scheduled here may not go in.',
+  };
+}
+
+/** Which room each fixture stands in, by name. */
+function roomIndex(doc: DesignDocument): Map<string, string> {
+  const index = new Map<string, string>();
+
+  for (const level of doc.levels) {
+    const regions = findRegions(level.plan);
+    for (const fixture of doc.fixtures) {
+      if (fixture.levelId !== level.id) continue;
+      const region = regions.find((entry) => pointInPolygon(fixture.at, entry.polygon));
+      if (region) index.set(fixture.id, resolveRoomSpec(level.plan, region.key).name);
+    }
+  }
+
+  return index;
 }
 
 /* -------------------------------- Helpers --------------------------------- */

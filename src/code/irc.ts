@@ -244,6 +244,105 @@ export const IRC_CEILINGS = {
   ),
 } as const;
 
+/* ------------------------ R307 Toilet, bath and shower -------------------- */
+
+/**
+ * The clear floor space a sanitary fixture needs.
+ *
+ * These are the numbers that decide whether a small bathroom is a bathroom or
+ * a cupboard with a WC in it, and they are the ones people get wrong: the
+ * 21 inches is measured from the FRONT EDGE of the fixture, not from the wall
+ * behind it, so a deep pan in a shallow room fails where a shallow one passes.
+ *
+ * The 15 inches is a half-width, from the centre line to whatever is beside it
+ * — so two fixtures side by side need 30 inches between their centres, which is
+ * the mistake that shows up in almost every DIY bathroom plan.
+ */
+export const IRC_BATHROOM = {
+  clearInFront: limit('R307.1', 'Clear floor in front of a fixture', inches(21), '21 in'),
+  wcCentreToWall: limit(
+    'R307.1',
+    'WC or bidet centre line to any wall or obstruction',
+    inches(15),
+    '15 in',
+  ),
+  showerOpening: limit('R307.1', 'Clear floor at a shower opening', inches(24), '24 in'),
+  /** R307.2 — the shower itself. */
+  showerArea: {
+    section: 'R307.2',
+    title: 'Shower compartment area',
+    squareMetres: inches(30) * inches(30),
+    asWritten: '900 square inches, and not less than 30 in in any dimension',
+    minDimension: inches(30),
+  },
+} as const;
+
+/* ------------------- R303 Light, ventilation and heating ------------------ */
+
+/**
+ * What a room needs by way of daylight and air.
+ *
+ * R303.1 is the one everybody knows: glazing at 8 percent of the floor area,
+ * openable at 4 percent. R303.3 is the one that matters for a bathroom, and it
+ * has an exception people rely on without reading — a bathroom with no window
+ * at all is fine PROVIDED there is mechanical ventilation to the outside, and
+ * "to the outside" is the part that gets skipped.
+ */
+export const IRC_VENTILATION = {
+  glazingRatio: {
+    section: 'R303.1',
+    title: 'Glazing area, habitable rooms',
+    ratio: 0.08,
+    asWritten: 'not less than 8 percent of the floor area',
+  },
+  openableRatio: {
+    section: 'R303.1',
+    title: 'Openable area, habitable rooms',
+    ratio: 0.04,
+    asWritten: 'not less than 4 percent of the floor area',
+  },
+  bathroom: {
+    section: 'R303.3',
+    title: 'Bathroom ventilation',
+    /** Intermittent extract, in cubic feet per minute. */
+    cfm: 50,
+    asWritten: '50 cfm intermittent, or 20 cfm continuous, exhausted to the outside',
+  },
+  kitchen: {
+    section: 'M1503.4',
+    title: 'Kitchen extract',
+    cfm: 100,
+    asWritten: '100 cfm intermittent, ducted to the outside',
+  },
+} as const;
+
+/* ----------------------- Kitchen ergonomics, not code --------------------- */
+
+/**
+ * The working triangle, and the clearances round it.
+ *
+ * NONE of this is code. There is no section anywhere that says a kitchen must
+ * have a working triangle, and a kitchen that fails every figure below is
+ * perfectly legal. They are here because they are the difference between a
+ * kitchen that works and one that does not, and because they are measurable —
+ * which is the standard everything in this app has to meet before it is allowed
+ * to tell somebody their design is wrong.
+ *
+ * They are reported as ERGONOMICS, never as violations, and the UI says so.
+ */
+export const KITCHEN_ERGONOMICS = {
+  triangleLeg: { min: feet(4), max: feet(9), asWritten: 'each leg between 4 ft and 9 ft' },
+  trianglePerimeter: { max: feet(26), asWritten: 'the three legs adding to no more than 26 ft' },
+  /** Between opposing runs, or a run and an island. */
+  walkway: { min: feet(3) + inches(6), asWritten: '42 in between opposing runs' },
+  walkwayTwoCooks: { min: feet(4), asWritten: '48 in where two people cook' },
+  /** Worktop beside the hob and the sink, where hot pans and wet dishes land. */
+  landingBesideHob: { min: inches(12), asWritten: '12 in of worktop beside a hob' },
+  landingBesideSink: { min: inches(18), asWritten: '18 in of worktop beside a sink' },
+  /** Total worktop a kitchen wants, ignoring the sink and hob themselves. */
+  totalCounter: { min: feet(6), asWritten: '6 ft of usable worktop' },
+} as const;
+
 /* --------------------- R905 Roof coverings: minimum slope ------------------ */
 
 /**

@@ -333,6 +333,18 @@ function migrateV7ToV8(doc: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * v8 to v9 — the kitchen and the bathroom.
+ *
+ * Additive and empty, for the same reason v7 to v8 was: a kitchen is a set of
+ * decisions about somebody's house, and inventing one would mean every existing
+ * design suddenly claiming to have cabinetry in it — which they would then find
+ * on a drawing, and have to price.
+ */
+function migrateV8ToV9(doc: Record<string, unknown>): Record<string, unknown> {
+  return { ...doc, schemaVersion: 9, runs: [], fixtures: [] };
+}
+
+/**
  * Brings a document up to the current schema.
  *
  * Migrations are applied in sequence, so a v1 document passes through every
@@ -368,6 +380,9 @@ export function migrateDocument(input: Record<string, unknown>): Record<string, 
   }
   if (declared < 8) {
     doc = migrateV7ToV8(doc);
+  }
+  if (declared < 9) {
+    doc = migrateV8ToV9(doc);
   }
 
   return doc;

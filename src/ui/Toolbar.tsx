@@ -68,6 +68,20 @@ const TOOLS: ToolDefinition[] = [
     hint: 'Click the floor to put the foot of a staircase there.',
     shortcut: 'T',
   },
+  {
+    id: 'cabinet',
+    label: 'Cabinet',
+    icon: 'C',
+    hint: 'Click each end of a run along a wall. It fills itself with real module widths.',
+    shortcut: 'C',
+  },
+  {
+    id: 'fixture',
+    label: 'Fixture',
+    icon: 'X',
+    hint: 'Pick a fixture on the Kitchen & Bathroom panel, then click inside a room.',
+    shortcut: 'X',
+  },
 ];
 
 export function Toolbar() {

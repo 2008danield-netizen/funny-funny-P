@@ -24,6 +24,7 @@ import * as THREE from 'three';
 import { Building, type PickResult } from '@/scene/Building';
 import type { Furnishings } from '@/scene/Furnishings';
 import type { Electrical } from '@/scene/Electrical';
+import type { Fittings } from '@/scene/Fittings';
 import { nearestSnapCandidates, snapPoint } from './snapping';
 import { distance, indexVertices, resolveWall } from '@/scene/planGraph';
 import { getOpeningPreset } from '@/scene/openings/presets';
@@ -53,6 +54,8 @@ import {
 } from '@/state/furnitureOps';
 import { itemDimensions } from '@/physics/colliders';
 import { isReceptacle } from '@/services/layout';
+import { addFixture, addRun, moveFixture } from '@/state/fittingOps';
+import { snapRunToWall } from '@/state/fittingOps';
 import { normalizeAngle } from '@/state/defaults';
 import type { Point2 } from '@/state/types';
 import { formatLength } from '@/state/units';
@@ -64,7 +67,7 @@ const OPENING_PICK_RADIUS = 0.6;
 const FURNITURE_ROTATION_STEP = 15;
 
 interface DragState {
-  kind: 'vertex' | 'wall' | 'opening' | 'furniture' | 'device';
+  kind: 'vertex' | 'wall' | 'opening' | 'furniture' | 'device' | 'fixture';
   id: string;
   /** Where on the floor the drag started. */
   origin: Point2;
@@ -81,6 +84,7 @@ export class EditController {
   private building: Building;
   private furnishings: Furnishings;
   private electrical: Electrical;
+  private fittings: Fittings;
   private orbit: { enabled: boolean };
 
   private raycaster = new THREE.Raycaster();
@@ -90,6 +94,8 @@ export class EditController {
   private drag: DragState | null = null;
   /** First point of a wall being drawn, or null when not drawing. */
   private drawAnchor: Point2 | null = null;
+  /** First point of a cabinet run being drawn. */
+  private cabinetAnchor: Point2 | null = null;
 
   private disposers: Array<() => void> = [];
 
@@ -99,6 +105,7 @@ export class EditController {
     building: Building,
     furnishings: Furnishings,
     electrical: Electrical,
+    fittings: Fittings,
     orbit: { enabled: boolean },
   ) {
     this.canvas = canvas;
@@ -106,6 +113,7 @@ export class EditController {
     this.building = building;
     this.furnishings = furnishings;
     this.electrical = electrical;
+    this.fittings = fittings;
     this.orbit = orbit;
 
     const onPointerDown = (event: PointerEvent) => this.handlePointerDown(event);
@@ -185,6 +193,13 @@ export class EditController {
       if (result) return result;
     }
 
+    // Cabinetry and fixtures beat the walls behind them for the same reason.
+    const fittings = this.raycaster.intersectObjects(this.fittings.pickTargets(), false);
+    for (const intersection of fittings) {
+      const result = Building.interpret(intersection);
+      if (result) return result;
+    }
+
     const building = this.raycaster.intersectObjects(this.building.pickTargets(), false);
     for (const intersection of building) {
       const result = Building.interpret(intersection);
@@ -249,6 +264,65 @@ export class EditController {
     }
 
 
+    /* ---- Drawing a run of cabinets ---- */
+    if (state.tool === 'cabinet') {
+      if (!floor) return;
+
+      /*
+       * Two clicks, like the wall tool: the first sets the start, the second
+       * finishes. The path is then snapped ONTO the wall it was drawn against,
+       * because a run is a thing fitted to a wall — drawing one 40 mm off it
+       * and leaving the gap would be a drawing of a kitchen rather than a
+       * kitchen.
+       */
+      if (!this.cabinetAnchor) {
+        this.cabinetAnchor = floor;
+        editorStore.patch({ readout: 'Click again to finish the run' });
+      } else {
+        const from = this.cabinetAnchor;
+        this.cabinetAnchor = null;
+
+        const placed: Array<string | null> = [];
+        designStore.edit((draft) => {
+          const level = activeLevel(draft);
+          const path = snapRunToWall(level.plan, from, floor);
+          placed.push(path ? addRun(draft, level.id, path, 'base') : null);
+        });
+
+        const id = placed[0];
+        if (id) {
+          editorStore.select('unit', null);
+          editorStore.patch({ readout: 'Run drawn. Click a cabinet to swap it.' });
+        } else {
+          editorStore.patch({
+            readout: 'A run has to be drawn along a wall, and long enough for a cupboard.',
+          });
+        }
+      }
+      this.suppressOrbit();
+      return;
+    }
+
+    /* ---- Dropping a fixture ---- */
+    if (state.tool === 'fixture') {
+      if (!floor || !state.pendingFixtureId) return;
+
+      const placed: Array<string | null> = [];
+      designStore.edit((draft) => {
+        placed.push(addFixture(draft, activeLevel(draft).id, state.pendingFixtureId!, floor));
+      });
+
+      const id = placed[0];
+      if (id) {
+        editorStore.select('fixture', id);
+        editorStore.patch({ readout: 'Placed. Drag it where you want it.' });
+      } else {
+        editorStore.patch({ readout: 'That fixture could not be placed there.' });
+      }
+      this.suppressOrbit();
+      return;
+    }
+
     /* ---- Setting the foot of a staircase ---- */
     if (state.tool === 'stair') {
       if (!floor) return;
@@ -304,6 +378,15 @@ export class EditController {
       this.beginDeviceDrag(pick.id, floor);
       return;
     }
+
+    // A fixture drags like furniture. A cabinet does not: a unit's position is
+    // decided by the run it is in, so clicking one selects it to be swapped or
+    // to take a sink, and moving it means moving the run.
+    if (pick.kind === 'fixture') {
+      this.beginFixtureDrag(pick.id, floor);
+      return;
+    }
+    if (pick.kind === 'unit') return;
 
     if (state.tool !== 'move') return;
     if (pick.kind === 'vertex') this.beginVertexDrag(pick.id, floor);
@@ -480,6 +563,22 @@ export class EditController {
     this.orbit.enabled = false;
   }
 
+  /** Picks a fixture up. Same shape as the furniture and device drags. */
+  private beginFixtureDrag(fixtureId: string, origin: Point2): void {
+    const fixture = designStore.getState().fixtures.find((entry) => entry.id === fixtureId);
+    if (!fixture) return;
+
+    this.drag = {
+      kind: 'fixture',
+      id: fixtureId,
+      origin,
+      startVertices: new Map([[fixtureId, { x: fixture.at.x, z: fixture.at.z }]]),
+      startOffset: 0,
+      moved: false,
+    };
+    this.orbit.enabled = false;
+  }
+
   private continueDrag(): void {
     const drag = this.drag;
     if (!drag) return;
@@ -494,6 +593,25 @@ export class EditController {
     drag.moved = true;
 
     const units = designStore.getState().units;
+
+    if (drag.kind === 'fixture') {
+      const start = drag.startVertices.get(drag.id);
+      if (!start) return;
+      const target = { x: start.x + delta.x, z: start.z + delta.z };
+
+      designStore.edit(
+        (draft) => {
+          // Seated against the nearest wall as it goes: a bath floating in the
+          // middle of a bathroom is never what somebody meant, and making them
+          // line it up by eye is work the app can do.
+          moveFixture(draft, drag.id, target);
+        },
+        { history: 'coalesce', coalesceKey: this.dragCoalesceKey() },
+      );
+
+      editorStore.patch({ readout: `${target.x.toFixed(2)}, ${target.z.toFixed(2)}` });
+      return;
+    }
 
     if (drag.kind === 'device') {
       const start = drag.startVertices.get(drag.id);
@@ -848,6 +966,7 @@ export class EditController {
 
   /** Cancels an in-progress wall being drawn. */
   cancelDrawing(): void {
+    this.cabinetAnchor = null;
     this.drawAnchor = null;
     editorStore.patch({ readout: null });
   }

@@ -45,6 +45,8 @@ import { resolveRoomSpec } from '@/state/planOps';
 import { itemDimensions } from '@/physics/colliders';
 import { obbCorners } from '@/physics/collision';
 import { stairGeometry } from '@/building/stairs';
+import { runGeometry } from '@/building/cabinetRun';
+import { getFixture } from '@/fittings/fixtures';
 import { floorHoles, stairsOn } from '@/state/levels';
 import type { DesignDocument, Level, Opening, Point2 } from '@/state/types';
 
@@ -59,6 +61,8 @@ import type { DesignDocument, Level, Opening, Point2 } from '@/state/types';
 const WALL_FILL: Colour = [0.6, 0.6, 0.6];
 
 export interface PlanOptions {
+  /** Draw the cabinetry and the fixtures. */
+  showFittings?: boolean;
   /** How a length is written — the caller owns units. */
   format: (metres: number) => string;
   /** How an area is written. */
@@ -107,6 +111,7 @@ export function drawFloorPlan(
 
   drawVoids(page, doc, level, projector);
   if (options.showFurniture) drawFurniture(page, level, projector);
+  if (options.showFittings !== false) drawFittings(page, doc, level, projector);
   drawStairs(page, doc, level, projector);
   drawWalls(page, level, projector);
   drawRoomLabels(page, level, regions, projector, options);
@@ -296,6 +301,118 @@ function drawFurniture(page: PdfPage, level: Level, projector: Projector): void 
     page.path(corners.map(projector.at), true).stroke();
   }
 
+  page.restore();
+}
+
+/**
+ * The cabinetry and the fixtures.
+ *
+ * Drawn in the plan convention, which is not the same as drawing what is there:
+ *
+ *   • BASE UNITS are solid outlines, because the cut passes above them and you
+ *     are looking down at a worktop.
+ *   • WALL UNITS are DASHED, because they are above the cut line — you cannot
+ *     see them from the cut, and hidden work is dashed on every drawing ever
+ *     made. A kitchen plan that draws them solid reads as two rows of cabinets
+ *     on the floor.
+ *   • A LINE ACROSS each base unit marks where one carcass ends and the next
+ *     begins, which is what makes a run read as cupboards rather than as a
+ *     rectangle.
+ */
+function drawFittings(
+  page: PdfPage,
+  doc: DesignDocument,
+  level: Level,
+  projector: Projector,
+): void {
+  /* ---- Wall units first, so base units draw over them ---- */
+  page.save().lineWidth(WEIGHTS.hidden).strokeColour(GREY).dash(HIDDEN_DASH);
+  for (const run of doc.runs) {
+    if (run.levelId !== level.id || run.kind !== 'wall') continue;
+    for (const placed of runGeometry(run).units) {
+      for (const polygon of placed.polygons) {
+        page.path(polygon.map(projector.at), true).stroke();
+      }
+    }
+  }
+  page.restore();
+
+  /* ---- Base and tall units ---- */
+  page.save().lineWidth(WEIGHTS.object).strokeColour([0, 0, 0]).dash(null);
+  for (const run of doc.runs) {
+    if (run.levelId !== level.id || run.kind === 'wall') continue;
+
+    const geometry = runGeometry(run);
+    for (const placed of geometry.units) {
+      for (const polygon of placed.polygons) {
+        page.path(polygon.map(projector.at), true).stroke();
+      }
+
+      // A filler is hatched, so it reads as a blank panel rather than as a
+      // cupboard nobody drew a door on.
+      if (placed.module.front === 'filler') {
+        const polygon = placed.polygons[0];
+        if (polygon && polygon.length === 4) {
+          page.save().lineWidth(WEIGHTS.thin).strokeColour(GREY);
+          page
+            .path([projector.at(polygon[0]!), projector.at(polygon[2]!)])
+            .stroke();
+          page.restore();
+        }
+      }
+    }
+
+    // The worktop edge, which is what overhangs the doors.
+    page.save().lineWidth(WEIGHTS.thin).strokeColour(GREY);
+    for (const quad of geometry.worktop) {
+      page.path(quad.map(projector.at), true).stroke();
+    }
+    page.restore();
+  }
+  page.restore();
+
+  /* ---- Fixtures ---- */
+  page.save().lineWidth(WEIGHTS.object).strokeColour([0, 0, 0]).dash(null);
+  for (const fixture of doc.fixtures) {
+    if (fixture.levelId !== level.id) continue;
+    const entry = getFixture(fixture.fixtureId);
+    if (!entry) continue;
+
+    const corners = obbCorners({
+      center: fixture.at,
+      halfWidth: entry.width / 2,
+      halfDepth: entry.depth / 2,
+      rotation: fixture.rotation,
+    });
+    page.path(corners.map(projector.at), true).stroke();
+
+    /*
+     * A basin and a WC get an ellipse inside their rectangle, which is the
+     * symbol everybody reads. Drawn as a circle scaled by the transform rather
+     * than as a true ellipse, because a scaled circle is what an ellipse is.
+     */
+    if (entry.kind === 'wc' || entry.kind === 'basin' || entry.kind === 'vanity-basin' || entry.kind === 'sink') {
+      const centre = projector.at(fixture.at);
+      const radius = projector.length(Math.min(entry.width, entry.depth) * 0.34);
+      page.save().lineWidth(WEIGHTS.thin);
+      page.circle(centre.x, centre.y, radius).stroke();
+      page.restore();
+    }
+
+    // A hob gets its four rings, which is how you tell it from a worktop.
+    if (entry.kind === 'hob') {
+      const centre = projector.at(fixture.at);
+      const spread = projector.length(entry.width * 0.22);
+      const radius = projector.length(0.075);
+      page.save().lineWidth(WEIGHTS.thin);
+      for (const dx of [-spread, spread]) {
+        for (const dy of [-spread, spread]) {
+          page.circle(centre.x + dx, centre.y + dy, radius).stroke();
+        }
+      }
+      page.restore();
+    }
+  }
   page.restore();
 }
 

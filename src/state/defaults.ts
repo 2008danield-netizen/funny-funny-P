@@ -5,6 +5,13 @@
  */
 
 import {
+  FITTING_LIMITS,
+  type CabinetKind,
+  type CabinetRun,
+  type CabinetUnit,
+  type Fixture,
+  type WorktopMaterial,
+  type WorktopSpec,
   CLEARANCE_DEFAULTS,
   DORMER_LIMITS,
   ELECTRICAL_LIMITS,
@@ -56,6 +63,8 @@ import { conductorFor } from '@/code/nec';
 import { migrateDocument } from './migrate';
 import { addRectangle, normalizePlan } from './planOps';
 import { getCatalogEntry, isKnownCatalogId } from '@/furniture/catalog';
+import { getModule, isKnownModule, worktopMaterial } from '@/fittings/modules';
+import { isKnownFixture } from '@/fittings/fixtures';
 
 /** Warm off-white -- reads as "freshly painted" rather than clinical white. */
 export const DEFAULT_WALL_COLOR = '#ece7df';
@@ -153,6 +162,11 @@ export function defaultElectrical(): ElectricalPlan {
   return { devices: [], circuits: [], panel: null, heatingVa: 0, coolingVa: 0 };
 }
 
+/** A worktop somebody has not chosen anything about yet. */
+export function defaultWorktop(): WorktopSpec {
+  return { material: 'laminate', colour: worktopMaterial('laminate').colour, splashback: true };
+}
+
 export function defaultExterior(): Exterior {
   return {
     cladding: 'lap-siding',
@@ -202,6 +216,8 @@ export function createDefaultDocument(): DesignDocument {
     exterior: defaultExterior(),
     services: [],
     electrical: defaultElectrical(),
+    runs: [],
+    fixtures: [],
     lighting: {
       presetId: 'daylight',
       intensity: 1,
@@ -598,6 +614,166 @@ const CIRCUIT_KINDS: readonly CircuitKind[] = [
  * real state — it is what every outlet is between being placed and being
  * wired — and the checks report it.
  */
+/* ------------------------------- Fittings --------------------------------- */
+
+const CABINET_KINDS: readonly CabinetKind[] = ['base', 'wall', 'tall'];
+const WORKTOP_MATERIALS_LIST: readonly WorktopMaterial[] = [
+  'laminate',
+  'solid-wood',
+  'quartz',
+  'granite',
+  'stainless',
+];
+
+/**
+ * Cabinet runs, validated.
+ *
+ * A run whose path has fewer than two points is dropped: it encloses nothing
+ * and there is no honest way to repair it. Everything else is repaired rather
+ * than discarded — an unknown module becomes a filler of the width it claimed,
+ * which keeps the run the length it was and makes the problem visible on the
+ * drawing instead of silently shortening somebody's kitchen.
+ */
+function safeRuns(value: unknown, levels: readonly Level[]): CabinetRun[] {
+  if (!Array.isArray(value)) return [];
+  const levelIds = new Set(levels.map((level) => level.id));
+
+  const runs: CabinetRun[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of value.slice(0, 200)) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const raw = entry as Record<string, unknown>;
+
+    const levelId = typeof raw.levelId === 'string' ? raw.levelId : '';
+    if (!levelIds.has(levelId)) continue;
+
+    const path = Array.isArray(raw.path)
+      ? raw.path.map(safePoint).filter((point): point is Point2 => point !== null)
+      : [];
+    if (path.length < 2) continue;
+
+    const id = safeString(raw.id, `run${runs.length + 1}`, 60);
+    if (seen.has(id)) continue;
+    seen.add(id);
+
+    const kind = oneOf(raw.kind, CABINET_KINDS, 'base');
+
+    const units: CabinetUnit[] = [];
+    const seenUnits = new Set<string>();
+    if (Array.isArray(raw.units)) {
+      for (const unitValue of raw.units.slice(0, 120)) {
+        if (typeof unitValue !== 'object' || unitValue === null) continue;
+        const unit = unitValue as Record<string, unknown>;
+
+        const unitId = safeString(unit.id, `u${units.length + 1}`, 60);
+        if (seenUnits.has(unitId)) continue;
+        seenUnits.add(unitId);
+
+        const moduleId = safeString(unit.moduleId, '', 60);
+        const known = isKnownModule(moduleId) ? moduleId : `${kind}-filler`;
+        units.push({
+          id: unitId,
+          moduleId: isKnownModule(known) ? known : 'base-filler',
+          // Up to 3 m: a corner consumes its width on both legs, so an 880
+          // corner is 1.76 m of path, and a hand-widened one more still.
+          width: clamp(unit.width, 0.02, 3, getModule(known)?.width || 0.6),
+          offset: clamp(unit.offset, 0, FITTING_LIMITS.maxRunLength, 0),
+        });
+      }
+    }
+    units.sort((a, b) => a.offset - b.offset);
+
+    runs.push({
+      id,
+      levelId,
+      path,
+      kind,
+      units,
+      // Only a base run carries a worktop: a wall unit has nothing to put one
+      // on, and storing a worktop it can never show is a field that eventually
+      // gets read.
+      worktop: kind === 'base' ? safeWorktop(raw.worktop) : null,
+      finishId: safeString(raw.finishId, 'white', 40),
+    });
+  }
+
+  return runs;
+}
+
+function safeWorktop(value: unknown): WorktopSpec {
+  const base = defaultWorktop();
+  if (typeof value !== 'object' || value === null) return base;
+  const raw = value as Record<string, unknown>;
+
+  const material = oneOf(raw.material, WORKTOP_MATERIALS_LIST, base.material);
+  return {
+    material,
+    colour: safeColor(raw.colour, worktopMaterial(material).colour),
+    splashback: raw.splashback !== false,
+  };
+}
+
+/**
+ * Fixtures, validated.
+ *
+ * A fixture naming a product this build does not have is dropped rather than
+ * substituted: a WC quietly becoming a basin would pass every check and be
+ * wrong in a way nobody would look for.
+ */
+function safeFixtures(
+  value: unknown,
+  levels: readonly Level[],
+  runs: readonly CabinetRun[],
+): Fixture[] {
+  if (!Array.isArray(value)) return [];
+
+  const levelIds = new Set(levels.map((level) => level.id));
+  const unitIds = new Set(runs.flatMap((run) => run.units.map((unit) => unit.id)));
+
+  const fixtures: Fixture[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of value.slice(0, 400)) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const raw = entry as Record<string, unknown>;
+
+    const levelId = typeof raw.levelId === 'string' ? raw.levelId : '';
+    if (!levelIds.has(levelId)) continue;
+
+    const fixtureId = safeString(raw.fixtureId, '', 60);
+    if (!isKnownFixture(fixtureId)) continue;
+
+    const at = safePoint(raw.at);
+    if (!at) continue;
+
+    const id = safeString(raw.id, `fx${fixtures.length + 1}`, 60);
+    if (seen.has(id)) continue;
+    seen.add(id);
+
+    const hostUnitId = typeof raw.hostUnitId === 'string' ? raw.hostUnitId : null;
+    const fixture: Fixture = {
+      id,
+      levelId,
+      fixtureId,
+      at,
+      rotation: normalizeAngle(typeof raw.rotation === 'number' ? raw.rotation : 0),
+      y: clamp(raw.y, 0, 4, 0),
+      // A host that no longer exists means the run was redrawn under it. The
+      // fixture stays where it is and becomes free-standing, which is visible;
+      // dropping it would lose a sink somebody paid for.
+      hostUnitId: hostUnitId && unitIds.has(hostUnitId) ? hostUnitId : null,
+    };
+
+    if (typeof raw.price === 'number' && Number.isFinite(raw.price) && raw.price >= 0) {
+      fixture.price = raw.price;
+    }
+    fixtures.push(fixture);
+  }
+
+  return fixtures;
+}
+
 function safeElectrical(value: unknown, levels: readonly Level[]): ElectricalPlan {
   const base = defaultElectrical();
   if (typeof value !== 'object' || value === null) return base;
@@ -1210,6 +1386,7 @@ export function sanitizeDocument(input: unknown): DesignDocument {
   const raw = migrateDocument(input as Record<string, unknown>);
   const rawLighting = (raw.lighting ?? {}) as Record<string, unknown>;
   const levels = safeLevels(raw.levels, raw.activeLevelId);
+  const runs = safeRuns(raw.runs, levels.list);
 
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -1226,6 +1403,10 @@ export function sanitizeDocument(input: unknown): DesignDocument {
     exterior: safeExterior(raw.exterior),
     services: [],
     electrical: safeElectrical(raw.electrical, levels.list),
+    runs,
+    // Validated against the runs, because a fixture built into a unit that is
+    // gone has to become free-standing rather than keep a dangling reference.
+    fixtures: safeFixtures(raw.fixtures, levels.list, runs),
     clearance: safeClearance(raw.clearance),
     currency: safeCurrency(raw.currency),
     lighting: {

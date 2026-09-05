@@ -35,6 +35,7 @@ import {
   type ScheduleRow,
 } from '@/services/circuits';
 import { checkElectrical, type NecReport } from '@/services/necCheck';
+import { checkFittings, type FittingReport } from '@/services/fittingCheck';
 import type { AdvisorReport } from '@/advisor/types';
 import { activeLevel } from '@/state/levels';
 import type { DesignDocument, Level } from '@/state/types';
@@ -138,6 +139,31 @@ export function electricalFor(doc: DesignDocument): ElectricalAnalysis {
 export function useElectrical(): ElectricalAnalysis {
   const doc = useDesign();
   return useMemo(() => electricalFor(doc), [doc]);
+}
+
+/*
+ * The kitchens and bathrooms.
+ *
+ * Walks every room of every storey and steps clearances outwards in 25 mm
+ * increments, so it is the same kind of expensive as the clearance report and
+ * gets the same one-slot memo. The fittings panel and the issues list both want
+ * it, and during a fixture drag both re-render on every frame.
+ */
+let fittingKey: DesignDocument | null = null;
+let fittingCache: FittingReport | null = null;
+
+/** The fitting checks for the whole building, computed at most once per version. */
+export function fittingsFor(doc: DesignDocument): FittingReport {
+  if (fittingKey === doc && fittingCache) return fittingCache;
+  fittingCache = checkFittings(doc);
+  fittingKey = doc;
+  return fittingCache;
+}
+
+/** Subscribes to the fitting checks. */
+export function useFittings(): FittingReport {
+  const doc = useDesign();
+  return useMemo(() => fittingsFor(doc), [doc]);
 }
 
 /** Subscribes to the roof reports for the whole building. */

@@ -210,11 +210,38 @@ and laundry circuits, the fixed appliances, then the demand factor that is the
 whole point of the method. Heating and cooling are yours to enter, and the
 calculation says so rather than quietly assuming zero.
 
+**Fit the kitchen and the bathroom.**
+Press one button and the app reads the room's shape, doors and windows and
+proposes cabinetry — the sink under the window, the hob on a different run,
+nothing across a doorway, and a corner unit where the run turns so two doors
+don't open into the same square. The units are real module widths, and the run
+is solved rather than filled greedily: 3.05 m comes out 1000 + 1000 + 600 + 450
+exactly, where taking the widest that fits each time leaves 50 mm of blank panel
+in the middle of the kitchen. Or draw it yourself, a run at a time — a rough
+drag near a wall snaps onto it and fills as it goes.
+
+A bathroom is the opposite problem, and is solved the opposite way: three large
+objects into a room that is usually too small, each needing clear floor the code
+specifies to the inch. Fixtures are placed hardest-first and each is checked
+against its clearance *before* it is committed, so the app never draws a
+bathroom that cannot be built and then apologises underneath.
+
+**And the electrical stops guessing.**
+Two things the wiring used to have to assume — where the counter is and where
+the basin is — are now things the model knows. Counter receptacles follow the
+real worktop under NEC 210.52(C), the basin receptacle goes at the basin under
+210.52(D), and the cooker, oven, dishwasher and washing machine each get their
+own circuit sized from their nameplate and their load into the Article 220
+calculation. The two apologies are withdrawn when they no longer apply, and
+still printed when they do.
+
 **A printable drawing set, drawn to scale.**
 Not a screenshot: a real set, written by a PDF writer built from scratch for
 this. A cover, a dimensioned plan of every storey, an elevation of each side, an
 electrical plan per storey with its legend, the panel schedule and the load
-calculation, and schedules of the doors, windows, rooms and fittings. Walls are
+calculation, an elevation of every run of cabinetry dimensioned unit by unit —
+the drawing a joiner actually works from — and schedules of the doors, windows,
+rooms, cabinets, sanitaryware and fittings. Walls are
 poché, doors show their swing on the side they open, dimensions run in two
 strings, and each sheet carries a title block, a north point and a printed scale
 bar — so you can measure the bar and know whether the print is true.
@@ -380,6 +407,7 @@ src/
 │   ├── Roofs.ts        Roof planes with their openings cut out, in world space
 │   ├── PlanUnderlay.ts The scan being traced, and the walls proposed on it
 │   ├── Electrical.ts   Devices at their real mounting heights, and home runs
+│   ├── Fittings.ts     Carcasses, fronts, handles, worktops and fixtures
 │   ├── Ground.ts       The terrain surface, the plot line, the north arrow
 │   ├── GhostLevel.ts   The storey below, as an outline to align to
 │   ├── wallBuilder.ts  Wall extrusion with holes; door and window furniture
@@ -388,11 +416,18 @@ src/
 │   ├── openings/       Door and window catalogue
 │   └── materials/      Procedural texture generation (noise → PBR maps)
 │
+├── fittings/         Kitchens and bathrooms
+│   ├── modules.ts      Cabinet module widths, carcass sizes, worktops, finishes
+│   └── fixtures.ts     Sanitaryware and appliances, with what they connect to
+│
 ├── services/         The building's systems
 │   ├── rooms.ts        What a room is FOR, from the name the user typed
 │   ├── layout.ts       Where the outlets, switches and lights go
 │   ├── circuits.ts     Grouping onto breakers, the panel schedule, Article 220
-│   └── necCheck.ts     The NEC checks, each citing its article
+│   ├── necCheck.ts     The NEC checks, each citing its article
+│   ├── kitchen.ts      Laying a kitchen out: runs, sink, hob, fridge
+│   ├── bathroom.ts     Packing a bathroom: hardest fixture first, checked first
+│   └── fittingCheck.ts R307, R303, and the working triangle as ergonomics
 │
 ├── drawing/          The printable set
 │   ├── pdf.ts          A PDF writer, from scratch — no dependency
@@ -400,6 +435,7 @@ src/
 │   ├── sheet.ts        Border, title block, scale bar, north point, dimensions
 │   ├── floorPlan.ts    Poché walls, door swings, room labels, dimension chains
 │   ├── elevation.ts    Each side, from the storey envelopes and the roof
+│   ├── kitchenElevation.ts  One run flat on, dimensioned unit by unit
 │   ├── electricalSheet.ts  Plan symbols, legend, panel schedule
 │   ├── schedules.ts    Doors, windows, rooms, fittings
 │   └── set.ts          The whole set, assembled and numbered
@@ -521,13 +557,35 @@ src/
     a printed scale bar, because a PDF printed "fit to page" is no longer at its
     stated scale and the bar is the only thing on it that stays true.
 
+24. **The units of a run always sum to its length.** That is the invariant
+    everything about a kitchen depends on, and it is the reason a corner unit's
+    stored width is the PATH LENGTH it consumes — 1.76 m for an 880 corner,
+    because the path turns inside it — rather than its carcass width. Without
+    that, every worktop and every dimension on an L-shaped kitchen is short by
+    one corner.
+
+25. **A layout never knowingly produces a violation.** The checks and the
+    layouts are written separately and never share a function, so a
+    disagreement means one of them has the code wrong — but when the checker is
+    right, the LAYOUT is fixed. An app that lays out a bathroom failing R307.1
+    and then reports it teaches people to ignore the report.
+
+26. **Code and ergonomics are never blurred.** A finding with a section is code:
+    fail it and you fail an inspection. A finding with an empty section is
+    guidance — the working triangle, the worktop landings — and the UI prints
+    "Guidance" where it would otherwise print a citation. There is no section
+    anywhere requiring a working triangle, and inventing one is the fastest way
+    to make somebody stop believing the citations that are real.
+
 ### Tests
 
 ```bash
 npm test
 ```
 
-539 tests covering the parts where a bug is invisible on screen: the PDF writer
+590 tests covering the parts where a bug is invisible on screen: filling a run
+of cabinets and the corners it turns, the kitchen and bathroom layouts against
+their own code checks, the PDF writer
 and the drawing set it produces, the NEC spacing rule and every electrical check
 with its article, circuit grouping and the Article 220 load calculation, placing
 and scaling a traced plan, straightening a photographed one, the wall detector,
@@ -613,6 +671,25 @@ symbol drawn after the mistake silently vanished too. The writer now hoists a
 state operator out of an open path to where it is legal, which makes the whole
 class of bug unwritable rather than merely fixed.
 
+The cabinet tests check one property above all others, and check it by walking
+lengths in millimetre steps rather than by picking a few convenient ones: the
+units of a run must sum to its length EXACTLY, at every length. A kitchen whose
+units do not add up either overhangs the wall or leaves a gap nobody drew, and
+both are invisible until somebody measures the drawing.
+
+Session 10's tests found three real defects the moment they were written, all of
+the same shape — the layout and the checker disagreeing. The bathroom layout put
+a WC 9 13/16 in from its centre line to the wall where IRC R307.1 asks for 15,
+because the layout checked the clearance in FRONT of a fixture and not the one
+BESIDE it. The kitchen layout sent the sink to the wall opposite the window,
+because the span finder treated a window as an obstruction — which is right for
+a wall unit, which has nothing to fix to, and exactly wrong for a base unit,
+where a sink under a window is the entire point. And the anchor that puts the
+sink under the window was measured along the WALL while the run's path may be
+ordered the other way round, so on half the walls of any room it landed at the
+far end. In each case the checker was right and the layout was fixed, which is
+the only useful direction for that argument to go.
+
 The detector's fixtures are all plans the test file DRAWS, so the right answer
 is known exactly and a failure says which part of the pipeline moved: four walls
 of a room, a wall drawn as two faces that must come back as one wall with a
@@ -645,15 +722,18 @@ their valleys across each other.
 - ~~**Session 7** — roofs, dormers, skylights, cladding and the site.~~ ✅
 - ~~**Session 8** — tracing a real floor plan: import, straighten, scale, detect.~~ ✅
 - ~~**Session 9** — electrical to the panel schedule, and the drawing set.~~ ✅
-- **Session 10 — water and drainage.** Supply runs and pipe sizing; then the
-  soil stack, waste branches, falls, traps, vents and the connection to the
-  sewer, to the IPC — with its own plan, its own schedule and its own sheets in
-  the set that already exists.
-- **Session 11 — heating and ventilation.** Room-by-room load to ACCA Manual J,
+- ~~**Session 10** — kitchens and bathrooms: cabinetry, fixtures, R307 and the
+  counter receptacles the electrical used to guess at.~~ ✅
+- **Session 11 — water and drainage.** Supply runs and pipe sizing by fixture
+  unit; then the soil stack, waste branches, falls, traps, vents and the
+  connection to the sewer, to the IPC. Every fixture already carries what it
+  connects to — hot, cold, the trap size, whether it is soil — so this is the
+  first discipline that starts with its inputs already modelled.
+- **Session 12 — heating and ventilation.** Room-by-room load to ACCA Manual J,
   equipment selection to Manual S, ducts to Manual D. The Manual J load then
   feeds the heating and cooling figures the electrical service calculation
   currently has to ask the user for.
-- **Session 12 — sections, and the drawing set finished.** A building section
+- **Session 13 — sections, and the drawing set finished.** A building section
   cut anywhere through the model, hidden-line removal on the elevations so a
   facade that steps in and out reads correctly, and window and door marks
   printed on the plans beside the openings they name.
@@ -671,6 +751,13 @@ The app is built to **US codes**: the IRC for the shell, and — as those sessio
 land — the NEC for electrical, the IPC for plumbing and ACCA's manuals for
 heating. Choosing your jurisdiction comes later; for now the figures are the
 2021 IRC and the 2023 NEC, and the app says so.
+
+Some of what the app reports is deliberately NOT code, and is labelled as such
+where it appears: the kitchen working triangle, the worktop landings beside a
+sink and a hob, and the walkway between opposing runs are ergonomics. No section
+anywhere requires them and a kitchen that fails every one of them is perfectly
+legal — they are here because they are measurable and because they are the
+difference between a kitchen that works and one that does not.
 
 Nothing the app produces is a permit set, and nothing has been checked or
 stamped by a licensed professional. **No structural design is done at all** — no

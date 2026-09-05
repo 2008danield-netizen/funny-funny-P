@@ -50,7 +50,15 @@ const HANDLE_RADIUS = 0.11;
  * is the single place that decodes a mesh's pick metadata, and `Furnishings`
  * tags its pick volumes the same way rather than duplicating the decoder.
  */
-export type PickKind = 'wall' | 'vertex' | 'opening' | 'floor' | 'furniture' | 'device';
+export type PickKind =
+  | 'wall'
+  | 'vertex'
+  | 'opening'
+  | 'floor'
+  | 'furniture'
+  | 'device'
+  | 'unit'
+  | 'fixture';
 
 export interface PickResult {
   kind: PickKind;

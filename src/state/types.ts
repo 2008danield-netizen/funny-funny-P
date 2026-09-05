@@ -43,7 +43,7 @@
  * v8 — the electrical installation: outlets, switches, fittings, the circuits
  *      they sit on and the panel they come back to.
  */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /** Which measurement system the UI displays. Storage is always metric. */
 export type UnitSystem = 'metric' | 'imperial';
@@ -552,6 +552,115 @@ export interface Panel {
   spaces: number;
 }
 
+/* ------------------------------ Fittings ---------------------------------- */
+
+/**
+ * A run of cabinetry along one or more walls.
+ *
+ * -----------------------------------------------------------------------------
+ * THE PATH IS THE RUN; THE UNITS ARE WHAT FILLS IT.
+ *
+ * A run is drawn as a polyline against the walls, and the units filling it are
+ * WORKED OUT from its length and the module widths available — but they are
+ * then STORED, which is a deliberate exception to the derived-not-stored rule
+ * the rest of the app follows.
+ *
+ * The reason is that the units are not a consequence of the path alone: the
+ * user swaps a door base for a drawer base, puts the sink in a different one,
+ * and moves the oven housing along. Those are decisions, and a decision that
+ * cannot survive its input changing is not a decision. Redrawing the path
+ * re-fills the run and says so; nudging a wall does not.
+ */
+export interface CabinetRun {
+  id: string;
+  levelId: string;
+  /**
+   * The BACK of the run, in order, in world metres.
+   *
+   * The back rather than the centreline, because a run is set against a wall
+   * and its back is the thing that has to be flat against it. Base and wall
+   * units of different depths then grow forward from the same line, which is
+   * how they are actually fitted.
+   */
+  path: Point2[];
+  kind: CabinetKind;
+  /** Left to right along the path, in order. */
+  units: CabinetUnit[];
+  /** Only base runs have one. */
+  worktop: WorktopSpec | null;
+  /** Door and drawer fronts. Carcasses are always white, as they are in life. */
+  finishId: string;
+}
+
+export interface CabinetUnit {
+  id: string;
+  /** An entry in `fittings/modules.ts`, or a filler. */
+  moduleId: string;
+  /**
+   * How much of the PATH this unit consumes, in metres.
+   *
+   * Normally the module's own width. Two cases where it is not:
+   *   • A filler's width is whatever was left over.
+   *   • A CORNER consumes its width on each of the two legs it joins — 1.76 m
+   *     of path for an 880 corner — because the path turns inside it. The
+   *     module width is still 880, and the geometry reads it from the module.
+   *
+   * Defining it as path length rather than as carcass width is what makes the
+   * units of a run sum to its length, which is the invariant everything else
+   * relies on.
+   */
+  width: number;
+  /** Distance from the start of the path to this unit's left edge. */
+  offset: number;
+}
+
+/** Base, wall or tall. Repeated here so `types.ts` stays self-contained. */
+export type CabinetKind = 'base' | 'wall' | 'tall';
+
+export type WorktopMaterial = 'laminate' | 'solid-wood' | 'quartz' | 'granite' | 'stainless';
+
+export interface WorktopSpec {
+  material: WorktopMaterial;
+  colour: string;
+  /** Whether a splashback runs up the wall behind it. */
+  splashback: boolean;
+}
+
+/**
+ * A sanitary fixture or an appliance.
+ *
+ * Flat on the storey rather than owned by a run, even for the ones that sit in
+ * a cabinet — because every other discipline wants to ask "where is the sink"
+ * without first knowing which run it is in, and because a fixture outlives the
+ * run it happens to be sitting in when somebody redraws the kitchen.
+ */
+export interface Fixture {
+  id: string;
+  levelId: string;
+  /** An entry in `fittings/fixtures.ts`. */
+  fixtureId: string;
+  /** Centre of the footprint, in world metres. */
+  at: Point2;
+  /** About Y, in radians. Zero faces +Z, like everything else here. */
+  rotation: number;
+  /** Base above the floor. Zero for anything standing on it. */
+  y: number;
+  /** The cabinet unit it is built into, if any. */
+  hostUnitId: string | null;
+  /** A price somebody actually looked up, overriding the estimate. */
+  price?: number;
+}
+
+/** Bounds for the fitting editor. */
+export const FITTING_LIMITS = {
+  /** A run shorter than this cannot hold even a filler worth having. */
+  minRunLength: 0.2,
+  maxRunLength: 30,
+  /** How far a run may sit off the wall behind it before it stops being a run. */
+  maxWallGap: 0.35,
+  worktopThickness: { min: 0.02, max: 0.1 },
+} as const;
+
 /**
  * The whole electrical installation.
  *
@@ -926,10 +1035,21 @@ export interface DesignDocument {
   roofs: Roof[];
   site: Site;
   exterior: Exterior;
-  /** Empty until session 9. See `ServiceNetwork`. */
+  /** Empty until session 11. See `ServiceNetwork`. */
   services: ServiceNetwork[];
   /** Outlets, switches, fittings, circuits and the panel. */
   electrical: ElectricalPlan;
+
+  /**
+   * Kitchen and bathroom cabinetry, and the fixtures.
+   *
+   * On the document rather than on each level because a run and a fixture both
+   * name the storey they are on, and keeping them in one place is what lets the
+   * electrical, and later the plumbing, ask "where is every sink in the
+   * building" in one pass rather than walking the storeys.
+   */
+  runs: CabinetRun[];
+  fixtures: Fixture[];
 
   lighting: LightingSpec;
   clearance: ClearanceSettings;

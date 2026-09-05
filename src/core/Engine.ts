@@ -26,6 +26,7 @@ import { Furnishings } from '@/scene/Furnishings';
 import { ClearanceOverlay } from '@/scene/ClearanceOverlay';
 import { Staircases } from '@/scene/Staircases';
 import { Electrical } from '@/scene/Electrical';
+import { Fittings } from '@/scene/Fittings';
 import { GhostLevel } from '@/scene/GhostLevel';
 import { Roofs } from '@/scene/Roofs';
 import { PlanUnderlay } from '@/scene/PlanUnderlay';
@@ -57,6 +58,7 @@ export class Engine {
   private clearanceOverlay: ClearanceOverlay;
   private staircases: Staircases;
   private electrical: Electrical;
+  private fittings: Fittings;
   private ghost: GhostLevel;
   private roofs: Roofs;
   private ground: Ground;
@@ -127,6 +129,10 @@ export class Engine {
     // height, and its mounting height is measured from that storey's floor.
     this.electrical = new Electrical();
     this.levelGroup.add(this.electrical.group);
+    // Inside the storey group: cabinetry belongs to one storey and its heights
+    // are measured from that storey's floor.
+    this.fittings = new Fittings();
+    this.levelGroup.add(this.fittings.group);
     this.ghost = new GhostLevel();
     this.levelGroup.add(this.ghost.group);
 
@@ -155,6 +161,7 @@ export class Engine {
       this.building,
       this.furnishings,
       this.electrical,
+      this.fittings,
       this.cameraController.controls,
     );
 
@@ -290,6 +297,9 @@ export class Engine {
     if (levelSwitched || !previous || previous.electrical !== doc.electrical) {
       this.electrical.update(doc, level.id);
     }
+    if (levelSwitched || !previous || previous.runs !== doc.runs || previous.fixtures !== doc.fixtures) {
+      this.fittings.update(doc, level.id);
+    }
 
     /*
      * A device selected on one storey must not stay selected when the user
@@ -303,6 +313,14 @@ export class Engine {
       if (selection.kind === 'device') {
         const device = doc.electrical.devices.find((entry) => entry.id === selection.id);
         if (!device || device.levelId !== level.id) editorStore.clearSelection();
+      }
+      if (selection.kind === 'fixture') {
+        const fixture = doc.fixtures.find((entry) => entry.id === selection.id);
+        if (!fixture || fixture.levelId !== level.id) editorStore.clearSelection();
+      }
+      if (selection.kind === 'unit') {
+        const run = doc.runs.find((entry) => entry.units.some((unit) => unit.id === selection.id));
+        if (!run || run.levelId !== level.id) editorStore.clearSelection();
       }
     }
 
@@ -371,6 +389,11 @@ export class Engine {
     this.electrical.setVisible(state.showElectrical);
     this.electrical.setShowRuns(state.showElectricalRuns);
     this.electrical.setSelection(state.selection.kind === 'device' ? state.selection.id : null);
+    this.fittings.setSelection(
+      state.selection.kind === 'unit' || state.selection.kind === 'fixture'
+        ? state.selection.id
+        : null,
+    );
     if (state.showElectrical) {
       const doc = designStore.getState();
       this.electrical.update(doc, activeLevel(doc).id);
@@ -452,6 +475,7 @@ export class Engine {
     this.clearanceOverlay.dispose();
     this.staircases.dispose();
     this.electrical.dispose();
+    this.fittings.dispose();
     this.ghost.dispose();
     this.planUnderlay.dispose();
     this.roofs.dispose();

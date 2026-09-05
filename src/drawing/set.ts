@@ -45,6 +45,7 @@ import {
 import { boundsOf, fitScale, projectorFor } from './scale';
 import { drawFloorPlan, planExtent } from './floorPlan';
 import { SIDES, drawElevation, elevationExtent, type Side } from './elevation';
+import { drawRunElevation, fittedInto, groupRuns, type RunGroup } from './kitchenElevation';
 import {
   drawDevices,
   drawGhostPlan,
@@ -52,7 +53,15 @@ import {
   drawLoadCalculation,
   drawPanelSchedule,
 } from './electricalSheet';
-import { doorSchedule, fittingSchedule, roomSchedule, windowSchedule, type ScheduleFormats } from './schedules';
+import {
+  cabinetSchedule,
+  doorSchedule,
+  fittingSchedule,
+  fixtureSchedule,
+  roomSchedule,
+  windowSchedule,
+  type ScheduleFormats,
+} from './schedules';
 import { calculateLoad, panelSchedule } from '@/services/circuits';
 import { checkElectrical } from '@/services/necCheck';
 import { findRegions, totalFloorArea } from '@/scene/planGraph';
@@ -161,12 +170,37 @@ export function buildDrawingSet(doc: DesignDocument, options: DrawingSetOptions)
     });
   }
 
+  /* --------------------------- Kitchen elevations ------------------------- */
+
+  /*
+   * One sheet per run of cabinetry. These are the drawings somebody fitting a
+   * kitchen actually works from — the plan says where the cupboards are, and
+   * only an elevation says which of them is a drawer and how high the wall
+   * units hang.
+   */
+  const runGroups = groupRuns(doc);
+  runGroups.forEach((group, index) => {
+    plans.push({
+      number: `A4.${index + 1}`,
+      title: `${group.levelName} cabinet elevation ${index + 1}`,
+      scale: '',
+      draw: (page, block, setScale) =>
+        drawRunElevationSheet(page, doc, group, block, options, setScale),
+    });
+  });
+
   /* ------------------------------ Schedules ------------------------------- */
   const schedules: Array<{ number: string; title: string; build: () => { headers: string[]; rows: string[][]; note?: string } }> = [
     { number: 'A3.1', title: 'Door schedule', build: () => doorSchedule(doc, options.formats) },
     { number: 'A3.2', title: 'Window schedule', build: () => windowSchedule(doc, options.formats) },
     { number: 'A3.3', title: 'Room schedule', build: () => roomSchedule(doc, options.formats) },
-    { number: 'A3.4', title: 'Fittings schedule', build: () => fittingSchedule(doc, options.formats) },
+    { number: 'A3.4', title: 'Cabinet schedule', build: () => cabinetSchedule(doc, options.formats) },
+    {
+      number: 'A3.5',
+      title: 'Sanitaryware and appliance schedule',
+      build: () => fixtureSchedule(doc, options.formats),
+    },
+    { number: 'A3.6', title: 'Fittings schedule', build: () => fittingSchedule(doc, options.formats) },
   ];
 
   for (const schedule of schedules) {
@@ -344,6 +378,7 @@ function drawPlanSheet(
     format: options.formats.length,
     formatArea: options.formats.area,
     showFurniture: options.showFurniture,
+    showFittings: true,
     showDimensions: true,
   });
 
@@ -381,6 +416,44 @@ function drawElevationSheet(
 
   void block;
   void size;
+}
+
+/** One run of cabinetry, flat on and dimensioned unit by unit. */
+function drawRunElevationSheet(
+  page: PdfPage,
+  doc: DesignDocument,
+  group: RunGroup,
+  block: TitleBlock,
+  options: DrawingSetOptions,
+  setScale: (label: string) => void,
+): void {
+  const frame = frameOf(page);
+  const drawable = {
+    x: frame.x + 40,
+    y: frame.y + 60,
+    width: frame.width - 140,
+    height: frame.height - 110,
+  };
+
+  const level = doc.levels.find((entry) => entry.id === group.levelId) ?? null;
+  const height = level?.wallHeight ?? 2.4;
+  const scale = fitScale(group.length, height, drawable.width, drawable.height, options.imperial);
+  setScale(scale.label);
+
+  drawRunElevation(page, group, level, scale, drawable, { format: options.formats.length });
+
+  const fitted = fittedInto(doc, group);
+  if (fitted.length > 0) {
+    page.text(`Fitted into this run: ${fitted.join(', ')}.`, frame.x, frame.y + 14, {
+      size: 7,
+      colour: GREY,
+    });
+  }
+
+  const projector = projectorFor(scale, { minX: 0, maxX: 0, minZ: 0, maxZ: 0 }, drawable);
+  drawScaleBar(page, projector, frame.x + 10, frame.y + 34, options.imperial);
+
+  void block;
 }
 
 /** One storey's electrical plan, with its legend. */

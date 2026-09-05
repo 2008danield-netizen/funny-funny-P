@@ -32,6 +32,10 @@ import { editorStore } from '@/state/selection';
 import { removeOpening, deleteWall, resolveRoomSpec, setRoomSpec, updateOpening } from '@/state/planOps';
 import { duplicateFurniture, removeFurniture, resizeFurniture } from '@/state/furnitureOps';
 import { removeDevice, updateDevice } from '@/state/buildingOps';
+import { removeFixture, removeRun, rotateFixture, setUnitModule } from '@/state/fittingOps';
+import { getModule, modulesOfKind } from '@/fittings/modules';
+import { getFixture, fixturesOfKind } from '@/fittings/fixtures';
+import { fixtureName } from './FittingsPanel';
 import { getCatalogEntry } from '@/furniture/catalog';
 import { itemDimensions } from '@/physics/colliders';
 import { OPENING_LIMITS, PLAN_LIMITS, type DeviceKind, type WallSide } from '@/state/types';
@@ -54,6 +58,8 @@ export function InspectorPanel({ onSplitWall, onRotate }: InspectorPanelProps) {
 
   if (selection.kind === 'furniture') return <FurnitureInspector onRotate={onRotate} />;
   if (selection.kind === 'device') return <DeviceInspector />;
+  if (selection.kind === 'unit') return <UnitInspector />;
+  if (selection.kind === 'fixture') return <FixtureInspector />;
   if (wall) return <WallInspector onSplitWall={onSplitWall} />;
   if (openingSelection) return <OpeningInspector />;
   if (region) return <RoomInspector />;
@@ -728,6 +734,200 @@ function DeviceInspector() {
         }}
       >
         Delete this device
+      </button>
+    </Panel>
+  );
+}
+
+/* --------------------------------- Cabinet -------------------------------- */
+
+/**
+ * A selected cabinet.
+ *
+ * The only swap offered is for a module of the SAME WIDTH. Changing a 600 for
+ * an 800 would move every unit after it along the run and push the last one
+ * through the wall — so rather than offering it and then refusing, the list
+ * simply contains what can actually be chosen.
+ */
+function UnitInspector() {
+  const doc = useDesign();
+  const edit = useDesignEdit();
+  const { selection } = useEditor();
+
+  const run = doc.runs.find((entry) => entry.units.some((unit) => unit.id === selection.id));
+  const unit = run?.units.find((entry) => entry.id === selection.id);
+  const module = unit ? getModule(unit.moduleId) : null;
+
+  if (!run || !unit || !module) {
+    return (
+      <Panel title="Inspector">
+        <p className="field__hint">That cabinet is gone.</p>
+      </Panel>
+    );
+  }
+
+  const swaps = modulesOfKind(run.kind).filter(
+    (entry) => Math.abs(entry.width - unit.width) < 1e-6,
+  );
+  const hosted = doc.fixtures.filter((fixture) => fixture.hostUnitId === unit.id);
+
+  return (
+    <Panel title={module.label}>
+      {module.front === 'filler' ? (
+        <p className="field__hint">
+          A filler panel, {formatLength(unit.width, doc.units)} wide — the slack between the
+          cupboards and the wall. Every run has some; a fitter scribes it to the wall on site.
+        </p>
+      ) : swaps.length > 1 ? (
+        <div className="field">
+          <span className="field__label">Swap for</span>
+          <select
+            className="select"
+            value={unit.moduleId}
+            onChange={(event) =>
+              edit((draft) => setUnitModule(draft, run.id, unit.id, event.target.value))
+            }
+          >
+            {swaps.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : (
+        <p className="field__hint">Nothing else comes in this width.</p>
+      )}
+
+      <p className="field__hint">
+        {formatLength(unit.width, doc.units)} wide, in a {run.kind} run
+        {hosted.length > 0
+          ? ` — with ${hosted.map((fixture) => fixtureName(fixture.fixtureId).toLowerCase()).join(' and ')} in it.`
+          : '.'}
+      </p>
+
+      <p className="field__hint">
+        A cabinet cannot be dragged: where it sits is decided by the run it is in. Redraw the run
+        to move it, or delete the run and draw another.
+      </p>
+
+      <button
+        type="button"
+        className="btn btn--danger btn--wide"
+        onClick={() => {
+          edit((draft) => removeRun(draft, run.id));
+          editorStore.clearSelection();
+        }}
+      >
+        Delete this whole run
+      </button>
+    </Panel>
+  );
+}
+
+/* --------------------------------- Fixture -------------------------------- */
+
+function FixtureInspector() {
+  const doc = useDesign();
+  const edit = useDesignEdit();
+  const { selection } = useEditor();
+
+  const fixture = doc.fixtures.find((entry) => entry.id === selection.id);
+  const entry = fixture ? getFixture(fixture.fixtureId) : null;
+
+  if (!fixture || !entry) {
+    return (
+      <Panel title="Inspector">
+        <p className="field__hint">That fixture is gone.</p>
+      </Panel>
+    );
+  }
+
+  const services = [
+    entry.connections.cold && 'cold',
+    entry.connections.hot && 'hot',
+    entry.connections.waste && `${entry.connections.waste} mm waste`,
+    entry.connections.soil && 'soil',
+    entry.connections.va && `${entry.connections.va.toLocaleString('en-US')} VA`,
+  ].filter(Boolean);
+
+  return (
+    <Panel title={entry.name}>
+      <p className="field__hint">{entry.description}</p>
+
+      <div className="field">
+        <span className="field__label">Swap for</span>
+        <select
+          className="select"
+          value={fixture.fixtureId}
+          onChange={(event) =>
+            edit((draft) => {
+              const target = draft.fixtures.find((candidate) => candidate.id === fixture.id);
+              if (target) target.fixtureId = event.target.value;
+            })
+          }
+        >
+          {fixturesOfKind(entry.kind).map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.name}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <table className="elec__table">
+        <tbody>
+          <tr>
+            <td>Size</td>
+            <td className="elec__amount">
+              {formatLength(entry.width, doc.units)} × {formatLength(entry.depth, doc.units)} ×{' '}
+              {formatLength(entry.height, doc.units)}
+            </td>
+          </tr>
+          {services.length > 0 && (
+            <tr>
+              <td>Needs</td>
+              <td className="elec__amount">{services.join(', ')}</td>
+            </tr>
+          )}
+          {entry.connections.dedicatedCircuit && (
+            <tr>
+              <td>Circuit</td>
+              <td className="elec__amount">Its own</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      <Slider
+        label="Turn"
+        displayValue={`${Math.round((fixture.rotation * 180) / Math.PI)}°`}
+        value={fixture.rotation}
+        min={-Math.PI}
+        max={Math.PI}
+        step={Math.PI / 36}
+        onChange={(rotation) =>
+          edit((draft) => rotateFixture(draft, fixture.id, rotation), {
+            history: 'coalesce',
+            coalesceKey: `fixture.${fixture.id}.turn`,
+          })
+        }
+      />
+
+      <p className="field__hint">
+        Drag it in the 3D view. Anything that belongs against a wall finds the nearest one and
+        turns to face into the room as it goes.
+      </p>
+
+      <button
+        type="button"
+        className="btn btn--danger btn--wide"
+        onClick={() => {
+          edit((draft) => removeFixture(draft, fixture.id));
+          editorStore.clearSelection();
+        }}
+      >
+        Delete this fixture
       </button>
     </Panel>
   );
