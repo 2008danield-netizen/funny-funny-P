@@ -95,6 +95,12 @@ export function Viewport({ onEngineReady, toolbar }: ViewportProps) {
               <span>{stats.fps} fps</span>
               <span>{stats.drawCalls} draws</span>
               <span>{stats.triangles.toLocaleString()} tris</span>
+              {/* What the progressive renderer is doing. "Refining" means it is
+                  still accumulating samples; the number is how many. */}
+              <span title="Progressive render quality">
+                {stats.converged ? `${stats.samples} spp` : `refining ${stats.samples}`}
+              </span>
+              <span title="Quality tier">{stats.tier}</span>
             </div>
           )}
         </>
