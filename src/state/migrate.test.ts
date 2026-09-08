@@ -1,0 +1,913 @@
+/**
+ * Tests for schema migration and document validation.
+ *
+ * Anyone who opened havavamama during session 1 has a v1 document in their
+ * browser. Losing their room to a schema change would be inexcusable, and it is
+ * the kind of failure that never shows up in development — where localStorage
+ * is always empty — so it is covered here instead.
+ */
+
+import { describe, expect, it } from 'vitest';
+
+import { activeLevel } from '@/state/levels';
+import { SCHEMA_VERSION, type DesignDocument, type Level } from '@/state/types';
+
+import { sanitizeDocument } from './defaults';
+import { migrateDocument } from './migrate';
+import { findRegions } from '@/scene/planGraph';
+import { resolveRoomSpec } from './planOps';
+
+/**
+ * The storey a test is working on.
+ *
+ * Every fixture here is a one-level building, so this is always its ground
+ * floor — but going through the accessor rather than reaching for `levels[0]`
+ * means these tests exercise the same path the app does.
+ */
+function level(doc: DesignDocument): Level {
+  return activeLevel(doc);
+}
+
+/** A document exactly as session 1 wrote it. */
+function v1Document() {
+  return {
+    schemaVersion: 1,
+    name: 'My Living Room',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    units: 'imperial',
+    room: {
+      width: 5,
+      depth: 4,
+      height: 2.8,
+      wallThickness: 0.15,
+      walls: {
+        north: { color: '#b9755c', roughness: 0.88 },
+        east: { color: '#ece7df', roughness: 0.88 },
+        south: { color: '#ece7df', roughness: 0.88 },
+        west: { color: '#ece7df', roughness: 0.88 },
+      },
+      floor: { presetId: 'walnut-plank', color: '#ffffff', textureScale: 1.2 },
+      ceiling: { color: '#f7f5f2', visible: true },
+    },
+    lighting: { presetId: 'evening', intensity: 1.2, shadowsEnabled: false },
+  };
+}
+
+describe('v1 to v2 migration', () => {
+  it('keeps the name, units and lighting', () => {
+    const doc = sanitizeDocument(v1Document());
+    // A v1 document is carried all the way to the current schema, not just to
+    // the next one: the migration chain runs every step in order.
+    // Asserted against the constant, not a literal: every session that adds a
+    // migration should keep this passing without editing it.
+    expect(doc.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(level(doc).furniture).toEqual([]);
+    // v4 additions arrive with safe defaults. Strict clearance in particular
+    // must default OFF: an old design was laid out under no clearance rules,
+    // and switching them on as hard constraints would greet the user with a
+    // layout their own app now refuses to let them recreate.
+    expect(doc.clearance.strict).toBe(false);
+    expect(doc.currency).toBe('EUR');
+    expect(doc.name).toBe('My Living Room');
+    expect(doc.units).toBe('imperial');
+    expect(doc.lighting.presetId).toBe('evening');
+    expect(doc.lighting.intensity).toBeCloseTo(1.2, 6);
+    expect(doc.lighting.shadowsEnabled).toBe(false);
+    // v1 stored ceiling visibility per room; v2 makes it document-wide.
+    expect(doc.showCeilings).toBe(true);
+  });
+
+  it('rebuilds the room at the right size', () => {
+    const doc = sanitizeDocument(v1Document());
+    expect(level(doc).plan.vertices).toHaveLength(4);
+    expect(level(doc).plan.walls).toHaveLength(4);
+
+    const regions = findRegions(level(doc).plan);
+    expect(regions).toHaveLength(1);
+    expect(regions[0]!.area).toBeCloseTo(20, 4);
+
+    for (const wall of level(doc).plan.walls) {
+      expect(wall.height).toBeCloseTo(2.8, 6);
+      expect(wall.thickness).toBeCloseTo(0.15, 6);
+    }
+  });
+
+  it('keeps the floor material the user chose', () => {
+    const doc = sanitizeDocument(v1Document());
+    const region = findRegions(level(doc).plan)[0]!;
+    const spec = resolveRoomSpec(level(doc).plan, region.key);
+
+    expect(spec.floor.presetId).toBe('walnut-plank');
+    expect(spec.floor.textureScale).toBeCloseTo(1.2, 6);
+  });
+
+  it('puts the accent wall colour on the side facing into the room', () => {
+    const doc = sanitizeDocument(v1Document());
+    const region = findRegions(level(doc).plan)[0]!;
+
+    // v1 walls were single-sided: only the interior was ever visible. The
+    // terracotta must therefore land on whichever face now looks inwards, not
+    // on the blank outside of the building.
+    const accentWall = level(doc).plan.walls.find(
+      (wall) => wall.faces.a?.color === '#b9755c' || wall.faces.b?.color === '#b9755c',
+    );
+    expect(accentWall).toBeDefined();
+
+    const paintedSide = accentWall!.faces.a?.color === '#b9755c' ? 'a' : 'b';
+    expect(region.facing[accentWall!.id]).toBe(paintedSide);
+
+    // Exactly ONE wall is an accent. The other three shared a colour, so that
+    // colour becomes the room's paint and they carry no override — otherwise a
+    // three-cream-one-terracotta room comes back as four terracotta walls.
+    const overridden = level(doc).plan.walls.filter(
+      (wall) => wall.faces.a !== undefined || wall.faces.b !== undefined,
+    );
+    expect(overridden).toHaveLength(1);
+    expect(resolveRoomSpec(level(doc).plan, region.key).wall.color).toBe('#ece7df');
+  });
+
+  it('treats a document with no version at all as v1', () => {
+    const legacy = { ...v1Document() } as Record<string, unknown>;
+    delete legacy.schemaVersion;
+
+    const doc = sanitizeDocument(legacy);
+    // Asserted against the constant, not a literal: every session that adds a
+    // migration should keep this passing without editing it.
+    expect(doc.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(findRegions(level(doc).plan)).toHaveLength(1);
+  });
+
+  it('leaves a v2 document alone', () => {
+    const once = sanitizeDocument(v1Document());
+    const twice = sanitizeDocument(once);
+
+    expect(level(twice).plan.walls).toHaveLength(4);
+    expect(findRegions(level(twice).plan)[0]!.area).toBeCloseTo(20, 4);
+  });
+});
+
+describe('sanitizeDocument', () => {
+  it('falls back to the starter room for junk input', () => {
+    for (const input of [null, undefined, 42, 'nonsense', {}, { plan: 'no' }]) {
+      const doc = sanitizeDocument(input);
+      expect(level(doc).plan.walls.length).toBeGreaterThan(0);
+      expect(findRegions(level(doc).plan).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('drops walls that point at vertices which do not exist', () => {
+    const doc = sanitizeDocument({
+      schemaVersion: 2,
+      plan: {
+        vertices: [
+          { id: 'v1', x: 0, z: 0 },
+          { id: 'v2', x: 3, z: 0 },
+        ],
+        walls: [
+          { id: 'w1', start: 'v1', end: 'v2', thickness: 0.1, height: 2.5 },
+          // Dangling reference: there is no v9.
+          { id: 'w2', start: 'v2', end: 'v9', thickness: 0.1, height: 2.5 },
+        ],
+        rooms: {},
+      },
+    });
+
+    // The broken wall is gone and the sound one is kept. Note that the plan is
+    // NOT replaced with the starter room here: one wall enclosing nothing is a
+    // perfectly legitimate work-in-progress, and throwing it away would destroy
+    // a half-drawn plan. The starter room is only substituted when validation
+    // leaves no walls at all.
+    expect(level(doc).plan.walls).toHaveLength(1);
+    expect(level(doc).plan.walls[0]!.id).toBe('w1');
+    expect(findRegions(level(doc).plan)).toHaveLength(0);
+  });
+
+  it('clamps out-of-range numbers instead of trusting them', () => {
+    const doc = sanitizeDocument({
+      schemaVersion: 2,
+      plan: {
+        vertices: [
+          { id: 'v1', x: 0, z: 0 },
+          { id: 'v2', x: 4, z: 0 },
+          { id: 'v3', x: 4, z: 3 },
+          { id: 'v4', x: 0, z: 3 },
+        ],
+        walls: [
+          { id: 'w1', start: 'v1', end: 'v2', thickness: 99, height: -5 },
+          { id: 'w2', start: 'v2', end: 'v3', thickness: 0.1, height: 2.5 },
+          { id: 'w3', start: 'v3', end: 'v4', thickness: 0.1, height: 2.5 },
+          { id: 'w4', start: 'v4', end: 'v1', thickness: 0.1, height: 2.5 },
+        ],
+        rooms: {},
+        defaultWallHeight: 2.5,
+        defaultWallThickness: 0.1,
+      },
+      lighting: { presetId: 'nope', intensity: 500 },
+    });
+
+    const wall = level(doc).plan.walls.find((candidate) => candidate.id === 'w1')!;
+    expect(wall.thickness).toBeLessThanOrEqual(0.6);
+    expect(wall.height).toBeGreaterThanOrEqual(2);
+    expect(doc.lighting.presetId).toBe('daylight');
+    expect(doc.lighting.intensity).toBeLessThanOrEqual(2);
+  });
+
+  it('survives a round trip through JSON', () => {
+    const doc = sanitizeDocument(v1Document());
+    const restored = sanitizeDocument(JSON.parse(JSON.stringify(doc)));
+
+    expect(restored.name).toBe(doc.name);
+    expect(level(restored).plan.walls).toHaveLength(level(doc).plan.walls.length);
+    expect(findRegions(level(restored).plan)[0]!.area).toBeCloseTo(
+      findRegions(level(doc).plan)[0]!.area,
+      6,
+    );
+  });
+});
+
+describe('v4 to v5 migration', () => {
+  /** A v4 document: one plan, furniture on it, no notion of storeys. */
+  function v4Document() {
+    const doc = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const upgraded = structuredClone(doc);
+    const ground = (upgraded.levels as Array<Record<string, unknown>>)[0]!;
+    // Rewind it to what v4 actually looked like.
+    return {
+      ...upgraded,
+      schemaVersion: 4,
+      plan: ground.plan,
+      furniture: [{ id: 'f1', catalogId: 'kivik-3', x: 0, z: 0, y: 0, rotation: 0 }],
+      levels: undefined,
+      activeLevelId: undefined,
+    };
+  }
+
+  it('turns one plan into the ground floor of a one-storey building', () => {
+    const doc = sanitizeDocument(v4Document());
+
+    // Asserted against the constant, not a literal: every session that adds a
+    // migration should keep this passing without editing it.
+    expect(doc.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(doc.levels).toHaveLength(1);
+    expect(doc.activeLevelId).toBe(doc.levels[0]!.id);
+    // US convention: the storey at ground level is the First Floor.
+    expect(doc.levels[0]!.name).toBe('First Floor');
+  });
+
+  it('carries the plan and the furniture down onto that storey', () => {
+    const doc = sanitizeDocument(v4Document());
+    const ground = level(doc);
+
+    // The room the user drew is still there, at the size they drew it.
+    expect(findRegions(ground.plan)).toHaveLength(1);
+    expect(findRegions(ground.plan)[0]!.area).toBeCloseTo(20, 4);
+    // And so is what they put in it.
+    expect(ground.furniture).toHaveLength(1);
+    expect(ground.furniture[0]!.catalogId).toBe('kivik-3');
+  });
+
+  it('takes the storey height from the walls the user was drawing', () => {
+    const doc = sanitizeDocument(v4Document());
+    // The v1 room had a 2.8 m ceiling, so that is the storey height — not the
+    // app's default. Resetting it would shorten somebody's room silently.
+    expect(level(doc).wallHeight).toBeCloseTo(2.8, 6);
+  });
+
+  it('leaves no trace of the old shape behind', () => {
+    // Two places to look for the same plan is how one of them goes stale.
+    const doc = sanitizeDocument(v4Document()) as unknown as Record<string, unknown>;
+    expect(doc.plan).toBeUndefined();
+    expect(doc.furniture).toBeUndefined();
+  });
+
+  it('gives the building somewhere to put roofs, services and a site', () => {
+    const doc = sanitizeDocument(v4Document());
+    expect(doc.stairs).toEqual([]);
+    expect(doc.roofs).toEqual([]);
+    expect(doc.services).toEqual([]);
+    expect(doc.site.northAngle).toBe(0);
+  });
+
+  it('is idempotent', () => {
+    const once = sanitizeDocument(v4Document());
+    const twice = sanitizeDocument(structuredClone(once));
+    expect(twice.levels).toHaveLength(1);
+    expect(findRegions(level(twice).plan)[0]!.area).toBeCloseTo(20, 4);
+  });
+});
+
+describe('level validation', () => {
+  it('always leaves at least one storey to draw on', () => {
+    const doc = sanitizeDocument({ schemaVersion: 5, levels: [] });
+    expect(doc.levels.length).toBeGreaterThan(0);
+    expect(findRegions(level(doc).plan).length).toBeGreaterThan(0);
+  });
+
+  it('forces level IDs to be unique', () => {
+    // Two storeys sharing an ID makes "which level is active" ambiguous, and
+    // the editor would write to one while drawing the other.
+    const doc = sanitizeDocument({
+      schemaVersion: 5,
+      levels: [
+        { id: 'same', name: 'One' },
+        { id: 'same', name: 'Two' },
+      ],
+      activeLevelId: 'same',
+    });
+    expect(new Set(doc.levels.map((entry) => entry.id)).size).toBe(doc.levels.length);
+  });
+
+  it('falls back to the lowest storey when the active one is missing', () => {
+    const doc = sanitizeDocument({
+      schemaVersion: 5,
+      levels: [{ id: 'lv1', name: 'First Floor' }],
+      activeLevelId: 'nonexistent',
+    });
+    expect(doc.activeLevelId).toBe('lv1');
+  });
+
+  it('drops a staircase whose storey no longer exists', () => {
+    // It has no rise to climb and no floor to stand on. Reassigning it to some
+    // other level would move somebody's staircase without telling them.
+    const doc = sanitizeDocument({
+      schemaVersion: 5,
+      levels: [{ id: 'lv1', name: 'First Floor' }],
+      activeLevelId: 'lv1',
+      stairs: [
+        { id: 's1', fromLevelId: 'gone', at: { x: 0, z: 0 } },
+        { id: 's2', fromLevelId: 'lv1', at: { x: 0, z: 0 } },
+      ],
+    });
+    expect(doc.stairs.map((stair) => stair.id)).toEqual(['s2']);
+  });
+});
+
+
+describe('v5 to v6 migration', () => {
+  /** A document exactly as session 6 wrote it: a building, but no outside. */
+  function v5Document() {
+    const current = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const rewound = structuredClone(current);
+    return {
+      ...rewound,
+      schemaVersion: 5,
+      site: { northAngle: 1.2, boundary: [], sewerConnection: null },
+      roofs: [],
+      exterior: undefined,
+    };
+  }
+
+  it('keeps the north point the user set', () => {
+    const doc = sanitizeDocument(v5Document());
+    expect(doc.site.northAngle).toBeCloseTo(1.2, 6);
+  });
+
+  it('puts flat ground under the building and leaves the plot alone', () => {
+    const doc = sanitizeDocument(v5Document());
+
+    expect(doc.site.terrain.kind).toBe('flat');
+    expect(doc.site.terrain.spots).toEqual([]);
+    expect(doc.site.ground).toBe('grass');
+    // Setbacks come from a local ordinance nobody has typed in yet. Inventing
+    // numbers here would produce confident violations of a rule that may not
+    // even apply to this plot.
+    expect(doc.site.setbacks).toBeNull();
+  });
+
+  it('does not invent a roof', () => {
+    // A flat-topped building is obviously unfinished; a 6:12 hip the user never
+    // asked for is a decision made on their behalf that they may only discover
+    // on a drawing.
+    expect(sanitizeDocument(v5Document()).roofs).toEqual([]);
+  });
+
+  it('gives the building a default exterior finish', () => {
+    const doc = sanitizeDocument(v5Document());
+    expect(doc.exterior.cladding).toBe('lap-siding');
+    expect(doc.exterior.overrides).toEqual({});
+  });
+
+  it('keeps the storeys, stairs and furniture untouched', () => {
+    const before = sanitizeDocument(v1Document());
+    const after = sanitizeDocument(v5Document());
+
+    expect(after.levels).toHaveLength(before.levels.length);
+    expect(findRegions(level(after).plan)[0]!.area).toBeCloseTo(20, 4);
+  });
+});
+
+describe('roof and site validation', () => {
+  function withRoof(roof: Record<string, unknown>) {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const levels = base.levels as Array<{ id: string }>;
+    return sanitizeDocument({ ...base, roofs: [{ ...roof, overLevelId: levels[0]!.id }] });
+  }
+
+  it('drops a roof over a storey that no longer exists', () => {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const doc = sanitizeDocument({
+      ...base,
+      roofs: [{ id: 'r1', overLevelId: 'gone', kind: 'hip', pitch: 0.5 }],
+    });
+    expect(doc.roofs).toEqual([]);
+  });
+
+  it('clamps an impossible pitch rather than trusting it', () => {
+    const doc = withRoof({ id: 'r1', kind: 'gable', pitch: 999, overhang: 40 });
+    expect(doc.roofs[0]!.pitch).toBeLessThanOrEqual(2);
+    expect(doc.roofs[0]!.overhang).toBeLessThanOrEqual(1.2);
+  });
+
+  it('falls back for an unknown roof kind or covering', () => {
+    const doc = withRoof({ id: 'r1', kind: 'onion-dome', covering: 'thatch' });
+    expect(doc.roofs[0]!.kind).toBe('hip');
+    expect(doc.roofs[0]!.covering).toBe('asphalt-shingle');
+  });
+
+  it('keeps a dormer window inside the dormer it is cut into', () => {
+    const doc = withRoof({
+      id: 'r1',
+      dormers: [
+        {
+          id: 'd1',
+          kind: 'gable',
+          at: { x: 1, z: 1 },
+          width: 1.2,
+
+          faceHeight: 1,
+          pitch: 0.5,
+          // Absurd on purpose: a window bigger than the wall around it.
+          window: { width: 8, height: 8, sillHeight: 5 },
+        },
+      ],
+    });
+
+    const dormer = doc.roofs[0]!.dormers[0]!;
+    expect(dormer.window!.width).toBeLessThan(dormer.width);
+    expect(dormer.window!.height).toBeLessThan(dormer.faceHeight);
+    expect(dormer.window!.sillHeight + dormer.window!.height).toBeLessThanOrEqual(
+      dormer.faceHeight + 1e-9,
+    );
+  });
+
+  it('defaults skylight glazing to laminated', () => {
+    const doc = withRoof({
+      id: 'r1',
+      skylights: [{ id: 's1', at: { x: 0, z: 0 }, glazing: 'annealed' }],
+    });
+    // IRC R308.6.2 does not permit ordinary annealed glass overhead.
+    expect(doc.roofs[0]!.skylights[0]!.glazing).toBe('laminated');
+  });
+
+  it('discards exterior overrides that name no finish at all', () => {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const doc = sanitizeDocument({
+      ...base,
+      exterior: {
+        cladding: 'brick',
+        overrides: { w1: { colour: '#123456' }, w2: {}, w3: { colour: 'periwinkle' } },
+      },
+    });
+
+    expect(doc.exterior.cladding).toBe('brick');
+    expect(Object.keys(doc.exterior.overrides)).toEqual(['w1']);
+  });
+});
+
+/* ------------------------------ v6, v7 and v8 ----------------------------- */
+
+/*
+ * The two most recent steps, which had no coverage until the whole-project
+ * audit went looking for it. Both are additive, which is exactly the kind of
+ * migration that looks too simple to test — and exactly the kind that silently
+ * drops a field when the next one is written on top of it.
+ */
+describe('v6 to v8 migration', () => {
+  /** A document as session 7 left it: a building with a roof, and no more. */
+  function v6Document() {
+    const current = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const rewound = structuredClone(current) as Record<string, unknown>;
+    delete rewound.electrical;
+
+    const levels = (rewound.levels as Array<Record<string, unknown>>).map((entry) => {
+      const copy = { ...entry };
+      delete copy.underlay;
+      return copy;
+    });
+
+    return { ...rewound, schemaVersion: 6, levels };
+  }
+
+  it('gives every storey somewhere to put a traced plan, and puts nothing in it', () => {
+    const doc = sanitizeDocument(v6Document());
+    for (const storey of doc.levels) expect(storey.underlay).toBeNull();
+  });
+
+  it('wires nothing at all', () => {
+    // An existing design suddenly claiming to have forty outlets in it would be
+    // a decision made on the user's behalf that they may only find on a
+    // drawing — and one they would then have to check against the code.
+    const doc = sanitizeDocument(v6Document());
+    expect(doc.electrical.devices).toEqual([]);
+    expect(doc.electrical.circuits).toEqual([]);
+    expect(doc.electrical.panel).toBeNull();
+    expect(doc.electrical.heatingVa).toBe(0);
+    expect(doc.electrical.coolingVa).toBe(0);
+  });
+
+  it('arrives at the current schema version', () => {
+    expect(sanitizeDocument(v6Document()).schemaVersion).toBe(SCHEMA_VERSION);
+  });
+
+  it('keeps the building it was given', () => {
+    const before = sanitizeDocument(v1Document());
+    const after = sanitizeDocument(v6Document());
+    expect(after.levels).toHaveLength(before.levels.length);
+    expect(after.roofs).toEqual(before.roofs);
+    expect(findRegions(level(after).plan)[0]!.area).toBeCloseTo(20, 4);
+  });
+});
+
+describe('electrical validation', () => {
+  function withElectrical(electrical: unknown) {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    return sanitizeDocument({ ...structuredClone(base), electrical });
+  }
+
+  it('replaces nonsense with an empty installation rather than failing to load', () => {
+    for (const rubbish of [null, 42, 'wired', [], { devices: 'lots' }]) {
+      const doc = withElectrical(rubbish);
+      expect(doc.electrical.devices).toEqual([]);
+      expect(doc.electrical.circuits).toEqual([]);
+    }
+  });
+
+  it('drops a device standing on a storey that no longer exists', () => {
+    const doc = withElectrical({
+      devices: [
+        {
+          id: 'ghost',
+          levelId: 'a-storey-that-was-deleted',
+          kind: 'receptacle',
+          at: { x: 0, z: 0 },
+          height: 0.38,
+          rotation: 0,
+          wallId: null,
+          circuitId: null,
+          va: null,
+          label: 'Orphan',
+        },
+      ],
+      circuits: [],
+      panel: null,
+      heatingVa: 0,
+      coolingVa: 0,
+    });
+    expect(doc.electrical.devices).toEqual([]);
+  });
+
+  it('keeps a panel the document can still place, and its rotation', () => {
+    const base = sanitizeDocument(v1Document());
+    const levelId = base.levels[0]!.id;
+
+    const doc = withElectrical({
+      devices: [],
+      circuits: [],
+      panel: { levelId, at: { x: 1, z: 2 }, rotation: 1.5, mainAmps: 150, volts: 240, spaces: 30 },
+      heatingVa: 9000,
+      coolingVa: 0,
+    });
+
+    expect(doc.electrical.panel?.mainAmps).toBe(150);
+    expect(doc.electrical.panel?.rotation).toBeCloseTo(1.5, 6);
+    expect(doc.electrical.heatingVa).toBe(9000);
+  });
+});
+
+/* --------------------------- v8 to v9: the fittings ----------------------- */
+
+describe('v8 to v9 migration', () => {
+  /** A document as session 9 left it: wired, but with no kitchen in it. */
+  function v8Document() {
+    const current = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const rewound = structuredClone(current) as Record<string, unknown>;
+    delete rewound.runs;
+    delete rewound.fixtures;
+    return { ...rewound, schemaVersion: 8 };
+  }
+
+  it('fits nothing at all', () => {
+    // The same reasoning as v7 to v8: a kitchen is a set of decisions about
+    // somebody's house, and inventing one would mean every existing design
+    // suddenly claiming to have cabinetry — which they would then find on a
+    // drawing, and have to price.
+    const doc = sanitizeDocument(v8Document());
+    expect(doc.runs).toEqual([]);
+    expect(doc.fixtures).toEqual([]);
+    expect(doc.schemaVersion).toBe(SCHEMA_VERSION);
+  });
+
+  it('keeps the electrical it was given', () => {
+    const doc = sanitizeDocument(v8Document());
+    expect(doc.electrical).toBeDefined();
+    expect(doc.electrical.devices).toEqual([]);
+  });
+});
+
+describe('fitting validation', () => {
+  function withFittings(runs: unknown, fixtures: unknown) {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    return sanitizeDocument({ ...structuredClone(base), runs, fixtures });
+  }
+
+  it('replaces nonsense with nothing rather than failing to load', () => {
+    for (const rubbish of [null, 42, 'fitted', {}, ['a run']]) {
+      const doc = withFittings(rubbish, rubbish);
+      expect(doc.runs).toEqual([]);
+      expect(doc.fixtures).toEqual([]);
+    }
+  });
+
+  it('drops a run on a storey that no longer exists', () => {
+    const doc = withFittings(
+      [
+        {
+          id: 'ghost',
+          levelId: 'a-storey-that-was-deleted',
+          path: [{ x: 0, z: 0 }, { x: 2, z: 0 }],
+          kind: 'base',
+          units: [],
+          worktop: null,
+          finishId: 'white',
+        },
+      ],
+      [],
+    );
+    expect(doc.runs).toEqual([]);
+  });
+
+  it('drops a run whose path encloses nothing', () => {
+    const base = sanitizeDocument(v1Document());
+    const doc = withFittings(
+      [
+        {
+          id: 'stub',
+          levelId: base.levels[0]!.id,
+          path: [{ x: 0, z: 0 }],
+          kind: 'base',
+          units: [],
+          worktop: null,
+          finishId: 'white',
+        },
+      ],
+      [],
+    );
+    expect(doc.runs).toEqual([]);
+  });
+
+  it('turns an unknown module into a filler of the width it claimed', () => {
+    // Keeps the run the length it was, and makes the problem visible on the
+    // drawing instead of silently shortening somebody's kitchen.
+    const base = sanitizeDocument(v1Document());
+    const doc = withFittings(
+      [
+        {
+          id: 'r1',
+          levelId: base.levels[0]!.id,
+          path: [{ x: 0, z: 0 }, { x: 2, z: 0 }],
+          kind: 'base',
+          units: [{ id: 'u1', moduleId: 'a-module-from-the-future', width: 0.6, offset: 0 }],
+          worktop: null,
+          finishId: 'white',
+        },
+      ],
+      [],
+    );
+
+    expect(doc.runs).toHaveLength(1);
+    expect(doc.runs[0]!.units[0]!.moduleId).toBe('base-filler');
+    expect(doc.runs[0]!.units[0]!.width).toBeCloseTo(0.6, 6);
+  });
+
+  it('gives a base run a worktop and never gives a wall run one', () => {
+    const base = sanitizeDocument(v1Document());
+    const make = (kind: string) => ({
+      id: `r-${kind}`,
+      levelId: base.levels[0]!.id,
+      path: [{ x: 0, z: 0 }, { x: 2, z: 0 }],
+      kind,
+      units: [],
+      worktop: { material: 'quartz', colour: '#e8e6e1', splashback: true },
+      finishId: 'white',
+    });
+
+    const doc = withFittings([make('base'), make('wall')], []);
+    expect(doc.runs[0]!.worktop?.material).toBe('quartz');
+    expect(doc.runs[1]!.worktop).toBeNull();
+  });
+
+  it('drops a fixture naming a product this build does not have', () => {
+    // Substituting one would pass every check and be wrong in a way nobody
+    // would look for — a WC quietly becoming a basin.
+    const base = sanitizeDocument(v1Document());
+    const doc = withFittings(
+      [],
+      [
+        {
+          id: 'fx1',
+          levelId: base.levels[0]!.id,
+          fixtureId: 'a-bath-from-the-future',
+          at: { x: 0, z: 0 },
+          rotation: 0,
+          y: 0,
+          hostUnitId: null,
+        },
+      ],
+    );
+    expect(doc.fixtures).toEqual([]);
+  });
+
+  it('frees a fixture whose host unit is gone rather than losing it', () => {
+    const base = sanitizeDocument(v1Document());
+    const doc = withFittings(
+      [],
+      [
+        {
+          id: 'fx1',
+          levelId: base.levels[0]!.id,
+          fixtureId: 'wc-close-coupled',
+          at: { x: 0.5, z: 0.5 },
+          rotation: 1,
+          y: 0,
+          hostUnitId: 'a-unit-that-was-redrawn',
+        },
+      ],
+    );
+
+    expect(doc.fixtures).toHaveLength(1);
+    expect(doc.fixtures[0]!.hostUnitId).toBeNull();
+    // And it stays exactly where it was put.
+    expect(doc.fixtures[0]!.at.x).toBeCloseTo(0.5, 6);
+  });
+});
+
+/* ------------------------------ v9 to v10 --------------------------------- */
+
+describe('schema v10 — water and drainage', () => {
+  function withPlumbing(plumbing: unknown, extra: Record<string, unknown> = {}) {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    return sanitizeDocument({ ...structuredClone(base), ...extra, plumbing });
+  }
+
+  it('gives a v9 document an empty plumbing plan rather than an invented one', () => {
+    const doc = migrateDocument({ ...v1Document(), schemaVersion: 9 } as Record<string, unknown>);
+
+    expect(doc.schemaVersion).toBe(10);
+    const plumbing = doc.plumbing as Record<string, unknown>;
+    expect(plumbing.drainage).toEqual([]);
+    expect(plumbing.supply).toEqual([]);
+    expect(plumbing.heater).toBeNull();
+    // And the pressure is flagged as an assumption, not passed off as measured.
+    expect(plumbing.mainPressureMeasured).toBe(false);
+  });
+
+  it('replaces nonsense with an empty plan rather than failing to load', () => {
+    for (const rubbish of [null, 42, 'plumbed', [], { drainage: 'yes' }]) {
+      const doc = withPlumbing(rubbish);
+      expect(doc.plumbing.drainage).toEqual([]);
+      expect(doc.plumbing.supply).toEqual([]);
+    }
+  });
+
+  it('throws away a pipe with fewer than two points', () => {
+    // A one-point run renders as nothing and has zero length, so it passes
+    // every fall check trivially — a silently compliant pipe that is not there.
+    const base = sanitizeDocument(v1Document());
+    const doc = withPlumbing({
+      drainage: [
+        {
+          id: 'stub',
+          system: 'soil',
+          points: [{ levelId: base.levels[0]!.id, at: { x: 0, z: 0 }, height: 0 }],
+          serves: [],
+          downstreamId: null,
+          manual: false,
+        },
+      ],
+      supply: [],
+      stacks: [],
+      connections: [],
+      heater: null,
+      mainPressureKpa: 414,
+      mainPressureMeasured: false,
+    });
+    expect(doc.plumbing.drainage).toEqual([]);
+  });
+
+  it('cuts a downstream reference to a run that did not survive', () => {
+    const base = sanitizeDocument(v1Document());
+    const levelId = base.levels[0]!.id;
+    const doc = withPlumbing({
+      drainage: [
+        {
+          id: 'good',
+          system: 'waste',
+          points: [
+            { levelId, at: { x: 0, z: 0 }, height: 0 },
+            { levelId, at: { x: 2, z: 0 }, height: -0.05 },
+          ],
+          serves: [],
+          downstreamId: 'a-run-that-was-deleted',
+          manual: false,
+        },
+      ],
+      supply: [],
+      stacks: [],
+      connections: [],
+      heater: null,
+      mainPressureKpa: 414,
+      mainPressureMeasured: false,
+    });
+
+    expect(doc.plumbing.drainage).toHaveLength(1);
+    expect(doc.plumbing.drainage[0]!.downstreamId).toBeNull();
+  });
+
+  it('drops a connection to a fixture that is gone', () => {
+    const doc = withPlumbing({
+      drainage: [],
+      supply: [],
+      stacks: [],
+      connections: [
+        {
+          fixtureId: 'a-basin-that-was-deleted',
+          trapAt: { x: 0, z: 0 },
+          trapHeight: 0.3,
+          trapSize: 0.032,
+          drainRunId: null,
+          ventRunId: null,
+          coldRunId: null,
+          hotRunId: null,
+        },
+      ],
+      heater: null,
+      mainPressureKpa: 414,
+      mainPressureMeasured: false,
+    });
+    expect(doc.plumbing.connections).toEqual([]);
+  });
+
+  it('gives an instantaneous heater no storage, whatever the file claims', () => {
+    const doc = withPlumbing({
+      drainage: [],
+      supply: [],
+      stacks: [],
+      connections: [],
+      heater: {
+        id: 'wh1',
+        kind: 'instantaneous',
+        levelId: 'lv1',
+        at: { x: 1, z: 1 },
+        litres: 250,
+        recirculation: false,
+      },
+      mainPressureKpa: 414,
+      mainPressureMeasured: false,
+    });
+    expect(doc.plumbing.heater!.kind).toBe('instantaneous');
+    expect(doc.plumbing.heater!.litres).toBe(0);
+  });
+
+  it('keeps the sewer connection across a reload', () => {
+    // It was hardcoded to null before session 11, which was invisible while
+    // nothing wrote to it and would have silently moved every user's sewer
+    // back to the default the moment the drainage router started reading it.
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const doc = sanitizeDocument({
+      ...structuredClone(base),
+      site: {
+        ...(base.site as Record<string, unknown>),
+        sewerConnection: { at: { x: 3, z: 9 }, invertDepth: 1.4 },
+        waterService: { at: { x: -2, z: 9 } },
+      },
+    });
+
+    expect(doc.site.sewerConnection).not.toBeNull();
+    expect(doc.site.sewerConnection!.at.x).toBeCloseTo(3, 6);
+    expect(doc.site.sewerConnection!.invertDepth).toBeCloseTo(1.4, 6);
+    expect(doc.site.waterService!.at.x).toBeCloseTo(-2, 6);
+  });
+
+  it('clamps an absurd sewer depth rather than trusting it', () => {
+    // A sewer 40 m down would make every fall check pass, silently.
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    const doc = sanitizeDocument({
+      ...structuredClone(base),
+      site: {
+        ...(base.site as Record<string, unknown>),
+        sewerConnection: { at: { x: 0, z: 5 }, invertDepth: 40 },
+      },
+    });
+    expect(doc.site.sewerConnection!.invertDepth).toBeLessThanOrEqual(4);
+  });
+});
