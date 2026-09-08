@@ -4,7 +4,7 @@ A web-based 3D interior design studio. Draw a floor plan, put doors and windows
 in it, paint the rooms, furnish it with real products that genuinely fit, and
 walk through it — in the browser, with no install.
 
-**Live app:** https://2008danield-netizen.github.io/VR-home-design-project/
+**Live app:** https://2008danield-netizen.github.io/funny-funny-P/
 
 > **Status: session 8 — it can be your actual house.** Bring in the floor plan
 > you already have — a PDF from an agent or an architect, a scan, or a
@@ -287,18 +287,23 @@ screenshots — and designs saved by session 1 are migrated forward automaticall
 
 ## Running it locally
 
-You need [Node.js](https://nodejs.org) 20 or newer — the LTS installer from that
-page is all it takes. Check what you have with `node --version`.
+You need [Node.js](https://nodejs.org) **22 or newer** — the LTS installer from
+that page is all it takes. Check what you have with `node --version`.
+
+22 rather than 20 because `pdfjs`, which the drawing-set tests use to open the
+generated PDF with a real reader, calls `Promise.withResolvers` — an API that
+does not exist before Node 22. On Node 20 the app builds and runs fine and the
+test suite dies at that one line.
 
 ```bash
-git clone https://github.com/2008danield-netizen/VR-home-design-project.git
-cd VR-home-design-project
+git clone https://github.com/2008danield-netizen/funny-funny-P.git
+cd funny-funny-P
 
 npm install     # once, after cloning (and after any dependency change)
 npm run dev     # start the dev server
 ```
 
-Then open the URL it prints — **http://localhost:5173/VR-home-design-project/**.
+Then open the URL it prints — **http://localhost:5173/funny-funny-P/**.
 Note the path on the end; the app is served from a sub-path so that local
 development matches GitHub Pages exactly.
 
