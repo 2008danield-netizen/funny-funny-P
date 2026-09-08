@@ -32,7 +32,10 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 22, not 20: pdfjs-dist uses Promise.withResolvers, which does not
+          # exist before Node 22, and the drawing-set tests open the generated
+          # PDF with it. On Node 20 the whole suite dies at that line.
+          node-version: 22
           cache: npm
 
       - name: Install dependencies

@@ -1,9 +1,12 @@
 {
   "name": "havavamama",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "version": "0.1.0",
   "type": "module",
-  "description": "havavamama — web-based 3D interior design studio",
+  "description": "havavamama \u2014 web-based 3D interior design studio",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vitest run && vite build",
