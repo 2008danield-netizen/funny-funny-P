@@ -175,6 +175,23 @@ export class FrameLoop {
   private last = 0;
   private render: (delta: number, dirty: boolean) => boolean;
 
+  /**
+   * Whether a tick is executing right now.
+   *
+   * This flag is the whole reason the loop is correct, and leaving it out was a
+   * real bug that shipped: `invalidate()` is routinely called FROM INSIDE the
+   * render callback — OrbitControls dispatches its `change` event from within
+   * `update()`, and the engine listens for it. Without this flag that call
+   * found `handle === null` (cleared at the top of the tick), scheduled a
+   * frame, and then the tail of the same tick scheduled a second one.
+   *
+   * Two frames per frame is not a small inefficiency. It doubles every tick —
+   * 2, 4, 8, 16 — until the browser throttles, which pins the tab, and it
+   * advances every time-based animation many times per real frame. The visible
+   * symptom was the camera flying upward out of the scene within seconds.
+   */
+  private running = false;
+
   constructor(render: (delta: number, dirty: boolean) => boolean) {
     this.render = render;
   }
@@ -182,6 +199,9 @@ export class FrameLoop {
   /** Something changed; draw again. */
   invalidate(): void {
     this.dirty = true;
+    // Inside a tick, the tail of that tick does the scheduling. Marking dirty
+    // is enough, and is what makes it re-arm.
+    if (this.running) return;
     this.wake();
   }
 
@@ -193,16 +213,28 @@ export class FrameLoop {
 
   private tick = (now: number): void => {
     this.handle = null;
+    this.running = true;
 
-    const delta = Math.min(0.1, (now - this.last) / 1000);
+    const delta = Math.min(0.1, Math.max(0, (now - this.last) / 1000));
     this.last = now;
 
     const wasDirty = this.dirty;
     this.dirty = false;
 
-    const wantsMore = this.render(delta, wasDirty);
+    let wantsMore = false;
+    try {
+      wantsMore = this.render(delta, wasDirty);
+    } finally {
+      /*
+       * `finally`, so a throw inside the render callback cannot leave the loop
+       * dead. Before this, one exception meant the frame was never re-armed:
+       * the canvas froze on its last image and the app looked hung with nothing
+       * in the console to explain it.
+       */
+      this.running = false;
+    }
 
-    // Re-arm only if the frame asked for it or something dirtied us mid-render.
+    // Exactly one frame is scheduled here, and only here.
     if (wantsMore || this.dirty) {
       this.handle = requestAnimationFrame(this.tick);
     }
