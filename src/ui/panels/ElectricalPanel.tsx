@@ -286,6 +286,16 @@ export function ElectricalPanel() {
                   <td className="elec__section-ref">220.82</td>
                   <td className="elec__amount">{asVoltAmperes(load.demandVa)}</td>
                 </tr>
+                {load.climate.va > 0 && (
+                  <tr>
+                    <td>
+                      {load.climate.label}
+                      <span className="elec__working">{load.climate.working}</span>
+                    </td>
+                    <td className="elec__section-ref">220.82(C)</td>
+                    <td className="elec__amount">{asVoltAmperes(load.climate.va)}</td>
+                  </tr>
+                )}
                 <tr className="elec__total elec__total--headline">
                   <td>Service</td>
                   <td />
@@ -296,9 +306,24 @@ export function ElectricalPanel() {
               </tbody>
             </table>
 
-            {/* Heating and cooling are the user's to enter: nothing in the
-                document says what kind of heat the house has, and guessing
-                would produce a confident, wrong service size. */}
+            {/* Heating and cooling come from the Manual J calculation once a
+                design location is chosen. Before that they are the user's to
+                enter, because nothing in the document says what kind of heat
+                the house has and guessing would produce a confident, wrong
+                service size. Two live sources for one fact would be worse
+                still, so when the calculation is available these are disabled
+                rather than left to disagree with it. */}
+            {load.climate.source === 'derived' ? (
+              <p className="field__hint">
+                Taken from the load calculation: {load.climate.working}. Change the equipment in
+                the Heating &amp; Cooling panel and this follows.
+              </p>
+            ) : (
+              <p className="field__hint">
+                Choose a design location in the Heating &amp; Cooling panel and these come from the
+                Manual J load instead of being typed in.
+              </p>
+            )}
             <div className="elec__climate">
               <label className="elec__climate-field">
                 <span className="field__label">Heating, VA</span>
@@ -307,6 +332,7 @@ export function ElectricalPanel() {
                   type="number"
                   min={0}
                   step={500}
+                  disabled={load.climate.source === 'derived'}
                   value={doc.electrical.heatingVa}
                   onChange={(event) =>
                     edit((draft) => {
@@ -322,6 +348,7 @@ export function ElectricalPanel() {
                   type="number"
                   min={0}
                   step={500}
+                  disabled={load.climate.source === 'derived'}
                   value={doc.electrical.coolingVa}
                   onChange={(event) =>
                     edit((draft) => {

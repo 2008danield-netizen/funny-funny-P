@@ -29,6 +29,7 @@ import { ClearanceOverlay } from '@/scene/ClearanceOverlay';
 import { Staircases } from '@/scene/Staircases';
 import { Electrical } from '@/scene/Electrical';
 import { Plumbing } from '@/scene/Plumbing';
+import { Hvac } from '@/scene/Hvac';
 import { Fittings } from '@/scene/Fittings';
 import { GhostLevel } from '@/scene/GhostLevel';
 import { Roofs } from '@/scene/Roofs';
@@ -78,6 +79,7 @@ export class Engine {
   private staircases: Staircases;
   private electrical: Electrical;
   private plumbing: Plumbing;
+  private hvac: Hvac;
   private fittings: Fittings;
   private ghost: GhostLevel;
   private roofs: Roofs;
@@ -173,6 +175,8 @@ export class Engine {
     this.levelGroup.add(this.electrical.group);
     this.plumbing = new Plumbing();
     this.levelGroup.add(this.plumbing.group);
+    this.hvac = new Hvac();
+    this.levelGroup.add(this.hvac.group);
     // Inside the storey group: cabinetry belongs to one storey and its heights
     // are measured from that storey's floor.
     this.fittings = new Fittings();
@@ -207,6 +211,7 @@ export class Engine {
       this.electrical,
       this.fittings,
       this.plumbing,
+      this.hvac,
       this.cameraController.controls,
     );
 
@@ -371,6 +376,21 @@ export class Engine {
     ) {
       this.plumbing.update(doc, level.id);
     }
+    /*
+     * The HVAC watches almost the whole document, because almost all of it is
+     * derived: a duct's diameter comes from the airflow, which comes from the
+     * equipment, which comes from the load, which comes from every wall,
+     * window and room name in the building. Adding a window upstairs changes
+     * no duct geometry at all and changes the size of the trunk under it.
+     */
+    if (
+      levelSwitched ||
+      !previous ||
+      previous.hvac !== doc.hvac ||
+      previous.levels !== doc.levels
+    ) {
+      this.hvac.update(doc, level.id);
+    }
     if (levelSwitched || !previous || previous.runs !== doc.runs || previous.fixtures !== doc.fixtures) {
       this.fittings.update(doc, level.id);
     }
@@ -466,6 +486,16 @@ export class Engine {
     this.electrical.setSelection(state.selection.kind === 'device' ? state.selection.id : null);
     this.plumbing.setVisible(state.showPlumbing);
     this.plumbing.setSystems(state.showDrainage, state.showSupply);
+    this.hvac.setVisible(state.showHvac);
+    this.hvac.setSystems(state.showSupplyAir, state.showReturnAir);
+    this.hvac.setSelection(
+      state.selection.kind === 'duct' ||
+        state.selection.kind === 'register' ||
+        state.selection.kind === 'air-handler' ||
+        state.selection.kind === 'emitter'
+        ? state.selection.id
+        : null,
+    );
     this.plumbing.setSelection(
       state.selection.kind === 'pipe' ||
         state.selection.kind === 'stack' ||
@@ -485,6 +515,10 @@ export class Engine {
     if (state.showPlumbing) {
       const doc = designStore.getState();
       this.plumbing.update(doc, activeLevel(doc).id);
+    }
+    if (state.showHvac) {
+      const doc = designStore.getState();
+      this.hvac.update(doc, activeLevel(doc).id);
     }
     // Corner handles and the grid belong to the plan tools; showing them while
     // arranging furniture is clutter the user cannot act on.
@@ -793,6 +827,7 @@ export class Engine {
     this.staircases.dispose();
     this.electrical.dispose();
     this.plumbing.dispose();
+    this.hvac.dispose();
     this.fittings.dispose();
     this.ghost.dispose();
     this.planUnderlay.dispose();

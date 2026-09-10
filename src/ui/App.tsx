@@ -19,6 +19,7 @@ import { SitePanel } from './panels/SitePanel';
 import { ElectricalPanel } from './panels/ElectricalPanel';
 import { FittingsPanel } from './panels/FittingsPanel';
 import { PlumbingPanel } from './panels/PlumbingPanel';
+import { HvacPanel } from './panels/HvacPanel';
 import { DrawingsPanel } from './panels/DrawingsPanel';
 import { CataloguePanel } from './panels/CataloguePanel';
 import { AdvisorPanel } from './panels/AdvisorPanel';
@@ -149,6 +150,7 @@ export function App() {
             <FittingsPanel />
             <ElectricalPanel />
             <PlumbingPanel />
+            <HvacPanel />
             <DrawingsPanel />
             <PlanPanel />
             <LightingPanel />

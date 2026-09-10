@@ -583,7 +583,16 @@ export function velocityInDuct(cfm: number, diameterInches: number): number {
  * cooking, washing and breathing has nowhere to go.
  */
 export const VENTILATION = {
-  section: 'IRC M1505.4 / ASHRAE 62.2',
+  /*
+   * The section alone, with no book in front of it.
+   *
+   * Whoever prints this adds the authority, so carrying "IRC" here as well
+   * gives "IRC IRC M1505.4" — which is exactly the sort of visibly broken
+   * citation that teaches a reader to distrust the ones that are right.
+   */
+  section: 'M1505.4',
+  /** Where the IRC's figures come from, which is worth naming separately. */
+  basis: 'ASHRAE 62.2',
   /** cfm per 100 square feet of floor area. */
   cfmPerHundredSqFt: 3,
   /** Plus this per bedroom, counting occupants as bedrooms plus one. */

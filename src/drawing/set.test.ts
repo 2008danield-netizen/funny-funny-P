@@ -29,6 +29,7 @@ import { SCALES, pointsPerMetre } from './scale';
 import { doorSchedule, markOpenings, roomSchedule, windowSchedule } from './schedules';
 import { addFixture } from '@/state/fittingOps';
 import { routeAll } from '@/state/plumbingOps';
+import { layoutHvac, setDesignLocation, setSystemKind } from '@/state/hvacOps';
 
 /* -------------------------------- Fixtures -------------------------------- */
 
@@ -118,6 +119,56 @@ describe('the drawing set', () => {
     expect(text).toContain('P3.1');
     // And the riser says outright that it is not to scale, because it is not.
     expect(text).toContain('Schematic');
+  });
+
+  it('draws the mechanical sheets once there is a design location', () => {
+    const doc = house();
+    setDesignLocation(doc, 'Chicago, IL');
+    setSystemKind(doc, 'forced-air');
+    layoutHvac(doc);
+
+    const pdf = buildDrawingSet(doc, options());
+    let text = '';
+    for (const byte of pdf.toBytes()) text += String.fromCharCode(byte);
+
+    expect(text).toContain('M1.1');
+    expect(text).toContain('M2.1');
+  });
+
+  it('still schedules the load for a house with no ductwork at all', () => {
+    /*
+     * A hydronic house has a load, equipment and no ducts. The schedule sheet
+     * is the one somebody checking the design needs most, so it is drawn from
+     * the design location rather than from the presence of ductwork.
+     */
+    const doc = house();
+    setDesignLocation(doc, 'Chicago, IL');
+    setSystemKind(doc, 'hydronic');
+    layoutHvac(doc);
+
+    expect(doc.hvac.ducts).toHaveLength(0);
+
+    const pdf = buildDrawingSet(doc, options());
+    let text = '';
+    for (const byte of pdf.toBytes()) text += String.fromCharCode(byte);
+
+    expect(text).toContain('M2.1');
+  });
+
+  it('leaves the mechanical sheets out until a location is chosen', () => {
+    // No default design location, on purpose: a load worked out for the wrong
+    // climate does not look wrong, so there is nothing honest to draw.
+    const bare = house();
+    expect(bare.hvac.locationKey).toBe('');
+
+    const located = house();
+    setDesignLocation(located, 'Chicago, IL');
+    setSystemKind(located, 'forced-air');
+    layoutHvac(located);
+
+    expect(buildDrawingSet(bare, options()).pageCount).toBeLessThan(
+      buildDrawingSet(located, options()).pageCount,
+    );
   });
 
   it('leaves the plumbing sheets out of a design with no pipework', () => {

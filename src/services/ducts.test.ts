@@ -201,7 +201,7 @@ describe('Manual D sizing', () => {
     }
   });
 
-  it('carries the whole house’s air in the trunk', () => {
+  it('carries every branch’s air in the trunk, up to what the blower moves', () => {
     const doc = laidOut();
     const load = calculateLoad(doc);
     const selection = selectSystem(load, doc.hvac.system);
@@ -214,7 +214,29 @@ describe('Manual D sizing', () => {
       .filter((duct) => duct.role === 'branch' && duct.run.system === 'supply')
       .reduce((sum, duct) => sum + duct.cfm, 0);
 
-    expect(trunk!.cfm).toBeCloseTo(branchTotal, 6);
+    expect(trunk!.cfm).toBeCloseTo(Math.min(branchTotal, selection.supplyCfm), 6);
+  });
+
+  it('never sizes the trunk for a flow that happens in no season', () => {
+    /*
+     * Branch airflows can add up to more than the blower moves, because each
+     * branch is sized for its own worst season and a north bedroom's January
+     * share plus a west living room's July share is not a quantity of air that
+     * exists at any one moment. A branch may be sized for a flow that only
+     * happens in one season. A trunk may not be sized for one that happens in
+     * none.
+     *
+     * This holds regardless of whether the cap is currently binding on the
+     * test house — it is the invariant, not the symptom.
+     */
+    const doc = laidOut();
+    const load = calculateLoad(doc);
+    const selection = selectSystem(load, doc.hvac.system);
+    const sized = sizeAllDucts(doc, load, selection);
+
+    for (const duct of sized) {
+      expect(duct.cfm).toBeLessThanOrEqual(selection.supplyCfm + 1e-6);
+    }
   });
 
   it('makes the trunk bigger than any branch', () => {

@@ -37,6 +37,10 @@ import { getModule, modulesOfKind } from '@/fittings/modules';
 import { getFixture, fixturesOfKind } from '@/fittings/fixtures';
 import { fixtureName } from './FittingsPanel';
 import { sizeAllDrainage, sizeAllSupply } from '@/services/plumbingSize';
+import { sizeAllDucts, registerAirflows, roomAirflows } from '@/services/ductSize';
+import { useHvac } from '@/bridge/useAnalysis';
+import { releaseDuct, removeDuct } from '@/state/hvacOps';
+import { wattsToBtu } from '@/code/acca';
 import {
   releaseRun,
   removeRun as removePipeRun,
@@ -71,6 +75,10 @@ export function InspectorPanel({ onSplitWall, onRotate }: InspectorPanelProps) {
   if (selection.kind === 'pipe') return <PipeInspector />;
   if (selection.kind === 'stack') return <StackInspector />;
   if (selection.kind === 'heater') return <HeaterInspector />;
+  if (selection.kind === 'duct') return <DuctInspector />;
+  if (selection.kind === 'register') return <RegisterInspector />;
+  if (selection.kind === 'air-handler') return <AirHandlerInspector />;
+  if (selection.kind === 'emitter') return <EmitterInspector />;
   if (wall) return <WallInspector onSplitWall={onSplitWall} />;
   if (openingSelection) return <OpeningInspector />;
   if (region) return <RoomInspector />;
@@ -1178,6 +1186,266 @@ function FixtureInspector() {
       >
         Delete this fixture
       </button>
+    </Panel>
+  );
+}
+
+
+/* --------------------------------- Ducts -------------------------------- */
+
+/**
+ * One run of ductwork.
+ *
+ * Everything shown here is derived rather than stored, so it is worked out
+ * fresh each time the inspector renders — which is why moving a register
+ * changes the size of the trunk feeding it while you watch, rather than after
+ * a re-route.
+ */
+function DuctInspector() {
+  const doc = useDesign();
+  const edit = useDesignEdit();
+  const { selection } = useEditor();
+  const { load, selection: system } = useHvac();
+
+  const duct = sizeAllDucts(doc, load, system).find((entry) => entry.run.id === selection.id);
+
+  if (!duct) {
+    return (
+      <Panel title="Inspector">
+        <p className="field__hint">That duct is gone.</p>
+      </Panel>
+    );
+  }
+
+  const title =
+    duct.run.system === 'return'
+      ? 'Return duct'
+      : duct.role === 'trunk'
+        ? 'Supply trunk'
+        : duct.role === 'riser'
+          ? 'Riser'
+          : 'Supply branch';
+
+  return (
+    <Panel title={title}>
+      <table className="elec__table">
+        <tbody>
+          <tr>
+            <td>Air carried</td>
+            <td className="elec__amount">{Math.round(duct.cfm)} cfm</td>
+          </tr>
+          <tr>
+            <td>Size</td>
+            <td className="elec__amount">{duct.size.asWritten} round</td>
+          </tr>
+          <tr>
+            <td>Air speed</td>
+            <td className="elec__amount">{Math.round(duct.velocity)} fpm</td>
+          </tr>
+          <tr>
+            <td>Length</td>
+            <td className="elec__amount">{formatLength(duct.length, doc.units)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p className="field__hint">
+        {duct.withinVelocity
+          ? `Under the ${duct.velocityLimit} fpm limit for a ${duct.role}, so it will be quiet.`
+          : `Over the ${duct.velocityLimit} fpm limit for a ${duct.role}. Nothing fails — you will simply hear it, permanently. Take the next size up.`}
+      </p>
+
+      <p className="field__hint">
+        The size is not stored anywhere. It comes from the air passing through, which comes from
+        the equipment, which comes from the load — so adding a window upstairs changes this number
+        without anybody touching the duct.
+      </p>
+
+      {duct.run.manual && (
+        <button
+          type="button"
+          className="btn btn--wide"
+          onClick={() => edit((draft) => releaseDuct(draft, duct.run.id))}
+        >
+          Hand it back to the router
+        </button>
+      )}
+
+      <button
+        type="button"
+        className="btn btn--wide btn--danger"
+        onClick={() => {
+          edit((draft) => removeDuct(draft, duct.run.id));
+          editorStore.patch({ selection: { kind: null, id: null } });
+        }}
+      >
+        Delete this run
+      </button>
+      {duct.role !== 'branch' && (
+        <p className="field__hint">
+          Deleting a trunk takes everything hanging off it with it. A branch left floating would
+          size correctly and connect to nothing, which is worse than either having it or not.
+        </p>
+      )}
+    </Panel>
+  );
+}
+
+/* ------------------------------- Registers ------------------------------ */
+
+function RegisterInspector() {
+  const doc = useDesign();
+  const { selection } = useEditor();
+  const { load, selection: system } = useHvac();
+
+  const register = doc.hvac.registers.find((entry) => entry.id === selection.id);
+  if (!register) {
+    return (
+      <Panel title="Inspector">
+        <p className="field__hint">That register is gone.</p>
+      </Panel>
+    );
+  }
+
+  const airflows = roomAirflows(load, system);
+  const cfm = registerAirflows(doc.hvac.registers, airflows).get(register.id) ?? 0;
+  const room = load.rooms.find((entry) => entry.roomKey === register.roomKey);
+
+  return (
+    <Panel title={register.system === 'supply' ? 'Supply register' : 'Return grille'}>
+      {room && <p className="field__hint">In the {room.roomName.toLowerCase()}.</p>}
+
+      <table className="elec__table">
+        <tbody>
+          <tr>
+            <td>Air</td>
+            <td className="elec__amount">{Math.round(cfm)} cfm</td>
+          </tr>
+          <tr>
+            <td>Height above floor</td>
+            <td className="elec__amount">{formatLength(register.height, doc.units)}</td>
+          </tr>
+          {room && (
+            <tr>
+              <td>Room heating load</td>
+              <td className="elec__amount">
+                {Math.round(wattsToBtu(room.heatingTotal)).toLocaleString()} BTU/h
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      <p className="field__hint">
+        {register.system === 'supply'
+          ? 'Supply registers go low and under a window where there is one. The coldest surface in a room is the glass; air touching it cools, gets heavy and pours onto the floor, and that draught across the ankles is what people actually feel. A register under the window throws warm air up the glass and cancels it.'
+          : 'Returns go high, where the warm air collects, and central. Air that goes into a storey has to come back out of it — a room with a supply, no return and a closed door pressurises and pushes conditioned air out through the walls.'}
+      </p>
+    </Panel>
+  );
+}
+
+/* ------------------------------ The plant ------------------------------- */
+
+function AirHandlerInspector() {
+  const { selection: system } = useHvac();
+
+  return (
+    <Panel title="Air handler">
+      <table className="elec__table">
+        <tbody>
+          {system.heating && (
+            <tr>
+              <td>Heating</td>
+              <td className="elec__amount">{system.heating.model.name}</td>
+            </tr>
+          )}
+          {system.cooling && (
+            <tr>
+              <td>Cooling</td>
+              <td className="elec__amount">{system.cooling.model.name}</td>
+            </tr>
+          )}
+          <tr>
+            <td>Air moved</td>
+            <td className="elec__amount">{Math.round(system.supplyCfm)} cfm</td>
+          </tr>
+          <tr>
+            <td>Electrical load</td>
+            <td className="elec__amount">
+              {(system.heatingWatts + system.coolingWatts).toLocaleString()} W
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      {system.balancePoint && !system.balancePoint.coversDesignDay && (
+        <p className="field__hint">
+          Below {Math.round(system.balancePoint.outdoorF)}°F this cannot keep up on its own and the
+          backup heat starts — about {system.balancePoint.supplementalKw.toFixed(1)} kW of it at the
+          design temperature.
+        </p>
+      )}
+
+      <p className="field__hint">
+        Change the equipment in the Heating &amp; Cooling panel. Combustion air, the flue and the
+        gas supply are not designed here at all.
+      </p>
+    </Panel>
+  );
+}
+
+/* ------------------------------- Emitters ------------------------------- */
+
+function EmitterInspector() {
+  const doc = useDesign();
+  const { selection } = useEditor();
+  const { load } = useHvac();
+
+  const emitter = doc.hvac.emitters.find((entry) => entry.id === selection.id);
+  if (!emitter) {
+    return (
+      <Panel title="Inspector">
+        <p className="field__hint">That emitter is gone.</p>
+      </Panel>
+    );
+  }
+
+  const room = load.rooms.find((entry) => entry.roomKey === emitter.roomKey);
+  const short = room ? emitter.outputWatts < room.heatingTotal * 0.98 : false;
+
+  return (
+    <Panel title={emitter.kind === 'radiator' ? 'Radiator' : 'Underfloor loop'}>
+      {room && <p className="field__hint">In the {room.roomName.toLowerCase()}.</p>}
+
+      <table className="elec__table">
+        <tbody>
+          {room && (
+            <tr>
+              <td>Room needs</td>
+              <td className="elec__amount">{Math.round(room.heatingTotal)} W</td>
+            </tr>
+          )}
+          <tr>
+            <td>This gives</td>
+            <td className="elec__amount">{Math.round(emitter.outputWatts)} W</td>
+          </tr>
+          {emitter.kind === 'radiator' && (
+            <tr>
+              <td>Length</td>
+              <td className="elec__amount">{formatLength(emitter.length, doc.units)}</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      <p className="field__hint">
+        {short
+          ? 'This is short of what the room needs. Either raise the flow temperature, fit a second radiator, or insulate the room better — a longer one will not fit on the wall it is on.'
+          : emitter.kind === 'underfloor'
+            ? 'An underfloor loop is capped by the surface temperature people will stand on, about 29°C, which works out around 100 W per square metre of floor. No amount of extra pipe changes that.'
+            : 'Sized at the flow temperature chosen in the Heating & Cooling panel. A radiator at 55/45 gives roughly half what its catalogue says, so that choice matters more than the model does.'}
+      </p>
     </Panel>
   );
 }

@@ -63,6 +63,16 @@ import {
   drawRiserDiagram,
   drawSupplySchedule,
 } from './plumbingSheet';
+import {
+  drawDucts,
+  drawDuctSchedule,
+  drawEquipmentSchedule,
+  drawHvacFittings,
+  drawHvacLegend,
+  drawLoadSchedule,
+} from './hvacSheet';
+import { deriveHvac } from '@/state/hvacOps';
+import { registerAirflows, roomAirflows, sizeAllDucts } from '@/services/ductSize';
 import { plumbingTotals, sizeAllDrainage, sizeAllSupply } from '@/services/plumbingSize';
 import { checkPlumbing } from '@/services/plumbingCheck';
 import { IPC_DISCLAIMER } from '@/code/ipc';
@@ -214,6 +224,44 @@ export function buildDrawingSet(doc: DesignDocument, options: DrawingSetOptions)
       title: 'Pipe and fixture unit schedules',
       scale: 'Not to scale',
       draw: (page, block, _setScale, queue) => drawPipeScheduleSheet(pdf, page, doc, block, size, queue),
+    });
+  }
+
+  /* -------------------------------- Mechanical ---------------------------- */
+
+  /*
+   * A plan per storey and one schedule sheet.
+   *
+   * The schedule matters more than it looks. A duct size on a plan is an
+   * assertion; the same size next to the room load it serves is a calculation
+   * somebody else can check. Without it a mechanical drawing cannot be argued
+   * with, only believed.
+   *
+   * Drawn whenever there is a design location, even with no ductwork at all —
+   * a hydronic house and a load-only study both still have a load worth
+   * printing, and it is the sheet the next person needs most.
+   */
+  const hvac = doc.hvac.locationKey === '' ? null : deriveHvac(doc);
+
+  if (hvac && hvac.load.rooms.length > 0) {
+    if (doc.hvac.ducts.length > 0 || doc.hvac.emitters.length > 0) {
+      storeys.forEach((level, index) => {
+        plans.push({
+          number: `M1.${index + 1}`,
+          title: `${level.name} mechanical plan`,
+          scale: '',
+          draw: (page, block, setScale) =>
+            drawHvacSheet(page, doc, level, hvac, block, options, size, setScale),
+        });
+      });
+    }
+
+    plans.push({
+      number: 'M2.1',
+      title: 'Load, duct and equipment schedules',
+      scale: 'Not to scale',
+      draw: (page, block, _setScale, queue) =>
+        drawHvacScheduleSheet(pdf, page, doc, hvac, block, size, queue),
     });
   }
 
@@ -878,6 +926,156 @@ function drawScheduleSheet(
 }
 
 /* -------------------------------- Helpers --------------------------------- */
+
+/* -------------------------------- Mechanical ------------------------------ */
+
+function drawHvacSheet(
+  page: PdfPage,
+  doc: DesignDocument,
+  level: Level,
+  hvac: ReturnType<typeof deriveHvac>,
+  block: TitleBlock,
+  options: DrawingSetOptions,
+  size: PageSize,
+  setScale: (label: string) => void,
+): void {
+  const frame = frameOf(page);
+  const legendWidth = 190;
+  const drawable = {
+    x: frame.x + 20,
+    y: frame.y + 40,
+    width: frame.width - legendWidth - 50,
+    height: frame.height - 70,
+  };
+
+  const extent = boundsOf(planExtent(level));
+  const scale = fitScale(extent.width, extent.depth, drawable.width, drawable.height, options.imperial);
+  const projector = projectorFor(scale, extent, drawable);
+  setScale(scale.label);
+
+  drawPlumbingGhostPlan(page, level, projector);
+
+  /*
+   * Sizes come from the sizing module rather than from anything stored, so the
+   * label on the drawing is the same number the checker judged and the panel
+   * shows. Three copies of that arithmetic is exactly how a drawing ends up
+   * passing its own checks while showing the wrong duct.
+   */
+  const sized = sizeAllDucts(doc, hvac.load, hvac.selection);
+  const airflows = roomAirflows(hvac.load, hvac.selection);
+  const perRegister = registerAirflows(doc.hvac.registers, airflows);
+
+  drawDucts(page, sized, level.id, projector);
+  drawHvacFittings(page, doc, level.id, projector, perRegister);
+
+  page.save();
+  for (const region of findRegions(level.plan)) {
+    const at = projector.at(region.interiorPoint);
+    page.text(resolveRoomName(level, region.key).toUpperCase(), at.x, at.y - 22, {
+      size: 6.5,
+      align: 'center',
+      colour: GREY,
+    });
+  }
+  page.restore();
+
+  const used = new Set(
+    doc.hvac.ducts
+      .filter((run) => run.points.some((point) => point.levelId === level.id))
+      .map((run) => run.system),
+  );
+
+  const legendX = frame.x + frame.width - legendWidth;
+  let cursor = drawHvacLegend(page, used, legendX, frame.y + frame.height - 14);
+
+  cursor -= 10;
+  drawParagraph(
+    page,
+    'Duct sizes are to ACCA Manual D at 0.1 in w.c. per 100 ft, from the Manual J load on the ' +
+      'schedule sheet. The figure beside each register is its design airflow in cfm. Ducts are ' +
+      'shown in the floor void and have NOT been checked against the joists, beams or anything ' +
+      'else that is actually in it. Duct leakage is a test on the finished installation and is ' +
+      'not predicted here. Work to be carried out by a licensed installer and inspected.',
+    legendX,
+    cursor,
+    legendWidth - 10,
+    { size: 6.2, colour: GREY },
+  );
+
+  drawScaleBar(page, projector, frame.x + 10, frame.y + 16, options.imperial);
+  drawNorthPoint(page, drawable.x + drawable.width - 20, frame.y + frame.height - 26, doc.site.northAngle);
+
+  void block;
+  void size;
+}
+
+/** The room-by-room load, the ducts and the equipment, on one sheet. */
+function drawHvacScheduleSheet(
+  pdf: PdfWriter,
+  page: PdfPage,
+  doc: DesignDocument,
+  hvac: ReturnType<typeof deriveHvac>,
+  block: TitleBlock,
+  size: PageSize,
+  queue: (page: PdfPage, block: TitleBlock) => void,
+): void {
+  const frame = frameOf(page);
+  const overflow = () => {
+    const extra = pdf.addPage(size);
+    queue(extra, { ...block, title: `${block.title} (continued)`, index: pdf.pageCount });
+    return extra;
+  };
+
+  const sized = sizeAllDucts(doc, hvac.load, hvac.selection);
+  const airflows = roomAirflows(hvac.load, hvac.selection);
+
+  let current = page;
+  let cursor = frame.y + frame.height - 14;
+
+  current.text('ROOM LOADS — ACCA MANUAL J', frame.x, cursor, { size: 8, font: 'helvetica-bold' });
+  cursor -= 14;
+  let result = drawLoadSchedule(current, hvac.load, airflows, frame.x, cursor, frame, overflow);
+  current = result.page;
+  cursor = result.y - 24;
+
+  current.text('EQUIPMENT — ACCA MANUAL S', frame.x, cursor, { size: 8, font: 'helvetica-bold' });
+  cursor -= 14;
+  result = drawEquipmentSchedule(
+    current,
+    hvac.load,
+    hvac.selection,
+    frame.x,
+    cursor,
+    frame,
+    overflow,
+  );
+  current = result.page;
+  cursor = result.y - 24;
+
+  if (sized.length > 0) {
+    current.text('DUCTWORK — ACCA MANUAL D', frame.x, cursor, { size: 8, font: 'helvetica-bold' });
+    cursor -= 14;
+    result = drawDuctSchedule(current, sized, frame.x, cursor, frame, overflow);
+    current = result.page;
+    cursor = result.y - 20;
+  }
+
+  drawParagraph(
+    current,
+    'Heating and cooling loads are different calculations and do not compare directly: heating ' +
+      'is the coldest hour of the year at night with no sun and nobody home, cooling is a summer ' +
+      'afternoon with the sun through the glass and the moisture to remove as well as the heat. ' +
+      'An asterisk beside an air speed means the duct is over the Manual D noise limit — it will ' +
+      'carry the air and you will hear it. The load is only as good as the envelope figures it ' +
+      'was given; those are on the cover sheet.',
+    frame.x,
+    cursor,
+    frame.width * 0.62,
+    { size: 6.2, colour: GREY },
+  );
+
+  void size;
+}
 
 function capitalise(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);

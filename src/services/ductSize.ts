@@ -29,6 +29,10 @@
  * branch for its share of a single season is how you get a house where the
  * bedrooms are cold in January and fine in July.
  *
+ * The trunk, though, is capped at what the blower moves — see `accumulateCfm`.
+ * A branch may be sized for a flow that only happens in one season; a trunk
+ * may not be sized for a flow that happens in no season at all.
+ *
  * -----------------------------------------------------------------------------
  * WHY THE VELOCITY CHECK IS ABOUT NOISE.
  *
@@ -198,6 +202,7 @@ function elevationOf(doc: DesignDocument, levelId: string): number {
 export function accumulateCfm(
   ducts: readonly DuctRun[],
   registerCfm: ReadonlyMap<string, number>,
+  systemCfm = Infinity,
 ): Map<string, number> {
   const totals = new Map<string, number>();
   for (const run of ducts) {
@@ -226,6 +231,28 @@ export function accumulateCfm(
     }
   }
 
+  /*
+   * Cap every run at what the blower actually moves.
+   *
+   * A guard rather than a fix for anything observed. Each BRANCH is sized for
+   * its own worst season, so the branch airflows can add up to more than the
+   * system moves — a north bedroom's January share plus a west living room's
+   * July share is not a quantity of air that exists at any one moment. The
+   * TRUNK carries what the fan delivers, and the fan delivers one number, so
+   * summing the branches into it would size it for a flow that is physically
+   * impossible.
+   *
+   * In practice the sum has come out equal to the system airflow on every
+   * house tried, because the same season dominates in every room of a simple
+   * plan and that season's shares sum to exactly one. It is a plan with real
+   * variety of orientation — a north bedroom and a west living room in the
+   * same house — that separates them, and this is here so that plan gets the
+   * right trunk rather than a size up.
+   */
+  if (Number.isFinite(systemCfm)) {
+    for (const [id, cfm] of totals) totals.set(id, Math.min(cfm, systemCfm));
+  }
+
   return totals;
 }
 
@@ -237,7 +264,7 @@ export function sizeAllDucts(
 ): SizedDuct[] {
   const airflows = roomAirflows(load, selection);
   const registerCfm = registerAirflows(doc.hvac.registers, airflows);
-  const totals = accumulateCfm(doc.hvac.ducts, registerCfm);
+  const totals = accumulateCfm(doc.hvac.ducts, registerCfm, selection.supplyCfm);
 
   return doc.hvac.ducts.map((run) => {
     const role = ductRole(run);

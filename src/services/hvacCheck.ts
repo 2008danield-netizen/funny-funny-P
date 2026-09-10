@@ -73,6 +73,19 @@ export interface HvacFinding {
   severity: HvacSeverity;
   /** The section, or empty when the finding is this app's guidance. */
   section: string;
+  /**
+   * Which book the section is in.
+   *
+   * Carried explicitly rather than guessed from the shape of the section
+   * string, which is what an earlier version did — and it printed
+   * "IECC IRC M1505.4" on the ventilation finding, an energy-code prefix on a
+   * mechanical-code citation. A citation that is wrong in a visible way is
+   * worse than no citation at all, because it teaches the reader to distrust
+   * the ones that are right.
+   *
+   * 'none' goes with an empty section and prints as "Guidance".
+   */
+  authority: 'IECC' | 'IRC' | 'ACCA' | 'none';
   title: string;
   detail: string;
   remedy: string;
@@ -116,6 +129,7 @@ export function checkHvac(
       id: 'hvac-no-location',
       severity: 'caution',
       section: '',
+      authority: 'none',
       title: 'No design location chosen',
       detail:
         'Nothing can be sized without design conditions. There is deliberately no default, because a load calculated for the wrong climate looks exactly like an answer.',
@@ -154,6 +168,7 @@ function checkEnvelope(
       id: 'envelope-unconfirmed',
       severity: 'caution',
       section: '',
+      authority: 'none',
       title: 'The envelope is still the app’s defaults',
       detail:
         'Every insulation value, window type and leakage figure the load was calculated from is an assumption this app made, not something anybody measured. The load is only as good as they are, and a load built on six guesses is a different kind of number from one built on six measurements.',
@@ -168,6 +183,7 @@ function checkEnvelope(
       id: 'envelope-no-zone',
       severity: 'advice',
       section: IECC_TABLE.section,
+      authority: 'IECC',
       title: `No prescriptive row for climate zone ${zone}`,
       detail: `${IECC_TABLE.edition} Table ${IECC_TABLE.section} does not list this zone, so the envelope has not been checked against it.`,
       remedy: 'Check the envelope against your local amendment by hand.',
@@ -228,6 +244,7 @@ function checkEnvelope(
         id: `envelope-${item.id}`,
         severity: 'violation',
         section: IECC_TABLE.section,
+      authority: 'IECC',
         title: `${item.name} below the minimum for zone ${zone}`,
         detail: `R-${item.nominal} against the R-${item.needed} that ${IECC_TABLE.edition} Table ${IECC_TABLE.section} requires in zone ${zone}. The load was calculated on the assembly's effective R-${item.effective.toFixed(1)}, which is lower again once the framing is counted.`,
         remedy: `Specify at least R-${item.needed}${item.id === 'slab' ? ` down ${required.slabDepthFeet} ft of the slab edge` : ''}, or take the performance path with an energy model.`,
@@ -238,6 +255,7 @@ function checkEnvelope(
         id: `envelope-${item.id}`,
         severity: 'pass',
         section: IECC_TABLE.section,
+      authority: 'IECC',
         title: `${item.name} meet zone ${zone}`,
         detail: `R-${item.nominal} against R-${item.needed} required. Effective R-${item.effective.toFixed(1)} once the framing is counted, which is the figure the load used.`,
         remedy: '',
@@ -254,6 +272,7 @@ function checkEnvelope(
         id: 'envelope-window-u',
         severity: 'violation',
         section: IECC_TABLE.section,
+      authority: 'IECC',
         title: `Windows conduct more than zone ${zone} allows`,
         detail: `U-${glazing.uFactor.toFixed(2)} against the U-${required.window.toFixed(2)} maximum. That is the whole window including the frame, which is markedly worse than the centre-of-glass figure on the sticker.`,
         remedy: `Specify glazing at U-${required.window.toFixed(2)} or lower — ${betterGlazing(required.window)}.`,
@@ -264,6 +283,7 @@ function checkEnvelope(
         id: 'envelope-window-u',
         severity: 'pass',
         section: IECC_TABLE.section,
+      authority: 'IECC',
         title: `Windows meet zone ${zone}`,
         detail: `U-${glazing.uFactor.toFixed(2)} against a U-${required.window.toFixed(2)} maximum.`,
         remedy: '',
@@ -281,6 +301,7 @@ function checkEnvelope(
         id: 'envelope-window-shgc',
         severity: 'violation',
         section: IECC_TABLE.section,
+      authority: 'IECC',
         title: `Windows let in more sun than zone ${zone} allows`,
         detail: `A solar heat gain coefficient of ${glazing.solarHeatGain.toFixed(2)} against a maximum of ${required.solarHeatGain.toFixed(2)}. In a hot climate the sun through the glass is usually the largest single cooling load in the house.`,
         remedy: 'Specify a low-solar-gain low-E coating, or shade the glass externally.',
@@ -294,6 +315,7 @@ function checkEnvelope(
       id: 'envelope-door-u',
       severity: 'violation',
       section: IECC_TABLE.section,
+      authority: 'IECC',
       title: `Doors conduct more than zone ${zone} allows`,
       detail: `U-${door.uFactor.toFixed(2)} against a U-${required.door.toFixed(2)} maximum.`,
       remedy: 'Specify an insulated door.',
@@ -313,6 +335,7 @@ function checkEnvelope(
       id: 'envelope-leakage',
       severity: 'caution',
       section: AIR_LEAKAGE.section,
+      authority: 'IECC',
       title: 'Assumed leakage would fail a blower-door test',
       detail: `"${infiltration.label}" is ${infiltration.winterAch} natural air changes an hour, which is roughly ${impliedAch50.toFixed(1)} ACH50 — against the ${limit} ACH50 that ${AIR_LEAKAGE.asWritten}. The conversion between the two is approximate, so this is a warning rather than a finding: only the test settles it.`,
       remedy:
@@ -324,6 +347,7 @@ function checkEnvelope(
       id: 'envelope-leakage',
       severity: 'pass',
       section: AIR_LEAKAGE.section,
+      authority: 'IECC',
       title: 'Assumed leakage would pass the test',
       detail: `About ${impliedAch50.toFixed(1)} ACH50 against a ${limit} ACH50 limit, from Manual J's ${INFILTRATION_SECTION} classes.`,
       remedy: '',
@@ -343,6 +367,7 @@ function checkEnvelope(
         id: 'load-implausible-cooling',
         severity: 'caution',
         section: '',
+      authority: 'none',
         title: 'The cooling load looks implausibly large',
         detail: `${Math.round(sqFtPerTon)} ft² per ton. A real house lands somewhere between about 600 and 1,500, so something in the envelope or the glazing is almost certainly wrong.`,
         remedy: 'Check the window areas and the envelope assemblies before believing this number.',
@@ -354,6 +379,7 @@ function checkEnvelope(
         id: 'load-implausible-heating',
         severity: 'caution',
         section: '',
+      authority: 'none',
         title: 'The heating load looks implausibly large',
         detail: `${heatingPerSqFt.toFixed(0)} BTU/h per ft². Even a poorly insulated house in a cold climate is usually under 40.`,
         remedy: 'Check the envelope assemblies and the infiltration class.',
@@ -390,6 +416,7 @@ function checkEquipment(
       id: 'equipment-none',
       severity: 'caution',
       section: '',
+      authority: 'none',
       title: 'No equipment selected',
       detail: 'There is a load but nothing chosen to meet it.',
       remedy: 'Pick a system type in the HVAC panel.',
@@ -407,6 +434,7 @@ function checkEquipment(
         id: 'equipment-cooling-oversized',
         severity: 'violation',
         section: SIZING_LIMITS.cooling.section,
+      authority: 'ACCA',
         title: 'The cooling is oversized',
         detail: `${cooling.model.name} is ${percent}% of the design cooling load, against Manual S's ${SIZING_LIMITS.cooling.asWritten}. An oversized coil satisfies the thermostat before it has been cold and wet long enough to remove any moisture, so the house ends up cool and clammy — and the usual response, turning the thermostat down, makes it worse.`,
         remedy:
@@ -418,6 +446,7 @@ function checkEquipment(
         id: 'equipment-cooling-undersized',
         severity: 'violation',
         section: SIZING_LIMITS.cooling.section,
+      authority: 'ACCA',
         title: 'The cooling is undersized',
         detail: `${cooling.model.name} is ${percent}% of the design cooling load, against a ${Math.round(SIZING_LIMITS.cooling.minFraction * 100)}% floor. It will run continuously on the hottest afternoons and still lose ground.`,
         remedy: 'Take the next size up, or reduce the load — the glass is usually the place to start.',
@@ -428,6 +457,7 @@ function checkEquipment(
         id: 'equipment-cooling',
         severity: 'pass',
         section: SIZING_LIMITS.cooling.section,
+      authority: 'ACCA',
         title: 'The cooling is correctly sized',
         detail: `${cooling.model.name} at ${percent}% of the design load, inside Manual S's ${SIZING_LIMITS.cooling.asWritten}.`,
         remedy: '',
@@ -445,6 +475,7 @@ function checkEquipment(
         id: 'equipment-heating-oversized',
         severity: 'caution',
         section: SIZING_LIMITS.heating.section,
+      authority: 'ACCA',
         title: 'The heating is oversized',
         detail: `${heating.model.name} is ${percent}% of the design heating load, against ${SIZING_LIMITS.heating.asWritten}. It will short-cycle, which costs efficiency and leaves the far rooms behind — but it is not the comfort problem an oversized coil is, which is why this is a caution.`,
         remedy: 'Take the next size down, or a modulating unit.',
@@ -455,6 +486,7 @@ function checkEquipment(
         id: 'equipment-heating-undersized',
         severity: 'violation',
         section: SIZING_LIMITS.heating.section,
+      authority: 'ACCA',
         title: 'The heating cannot meet the load',
         detail: `${heating.model.name} delivers ${percent}% of what the building needs at the winter design temperature.`,
         remedy: 'Take a larger unit, or reduce the load.',
@@ -465,6 +497,7 @@ function checkEquipment(
         id: 'equipment-heating',
         severity: 'pass',
         section: SIZING_LIMITS.heating.section,
+      authority: 'ACCA',
         title: 'The heating is correctly sized',
         detail: `${heating.model.name} at ${percent}% of the design load, inside the ${Math.round(SIZING_LIMITS.heating.maxFraction * 100)}% ceiling.`,
         remedy: '',
@@ -482,6 +515,7 @@ function checkEquipment(
         id: 'equipment-balance-point',
         severity: 'pass',
         section: SIZING_LIMITS.heatPumpHeating.section,
+      authority: 'ACCA',
         title: 'The heat pump needs no backup',
         detail: `It carries the house unaided down to ${Math.round(load.conditions.winterDryBulb)}°F, the winter design temperature here.`,
         remedy: '',
@@ -492,6 +526,7 @@ function checkEquipment(
         id: 'equipment-balance-point',
         severity: 'advice',
         section: SIZING_LIMITS.heatPumpHeating.section,
+      authority: 'ACCA',
         title: `Backup heat needed below ${Math.round(balance.outdoorF)}°F`,
         detail: `That is the balance point — where the pump's falling capacity crosses the building's rising load. At the ${Math.round(load.conditions.winterDryBulb)}°F design temperature it is short by ${Math.round(balance.supplementalBtu).toLocaleString()} BTU/h, which is about ${balance.supplementalKw.toFixed(1)} kW of resistance heat.`,
         remedy: `Fit ${Math.ceil(balance.supplementalKw / 5) * 5} kW of backup, and set the thermostat's lockout so it only runs below the balance point rather than every time the pump defrosts.`,
@@ -503,6 +538,7 @@ function checkEquipment(
           id: 'equipment-backup-large',
           severity: 'caution',
           section: '',
+      authority: 'none',
           title: 'That is a large amount of backup heat',
           detail: `${balance.supplementalKw.toFixed(1)} kW is around ${Math.ceil((balance.supplementalKw * 1000) / 240 / 40) * 40} A of 240 V service on its own, and it will run on the coldest days of the year when electricity is dearest.`,
           remedy:
@@ -521,6 +557,7 @@ function checkEquipment(
       id: 'equipment-latent',
       severity: 'caution',
       section: SIZING_LIMITS.cooling.section,
+      authority: 'ACCA',
       title: 'Not enough moisture removal',
       detail: `The design latent load is ${Math.round(latent.latentRequiredBtu).toLocaleString()} BTU/h and this unit removes ${Math.round(latent.latentProvidedBtu).toLocaleString()}. The house will hold temperature and still feel damp.`,
       remedy: 'A variable-capacity unit, a lower sensible heat ratio, or a whole-house dehumidifier.',
@@ -532,6 +569,7 @@ function checkEquipment(
       id: 'equipment-sensible',
       severity: 'violation',
       section: SIZING_LIMITS.cooling.section,
+      authority: 'ACCA',
       title: 'Not enough sensible capacity',
       detail: `The sensible load is ${Math.round(latent.sensibleRequiredBtu).toLocaleString()} BTU/h and this unit provides ${Math.round(latent.sensibleProvidedBtu).toLocaleString()}, even though its total capacity looks adequate.`,
       remedy: 'Choose a unit with a higher sensible heat ratio, or the next size up.',
@@ -557,6 +595,7 @@ function checkDucts(
         id: 'ducts-none',
         severity: 'caution',
         section: '',
+      authority: 'none',
         title: 'No ductwork routed',
         detail: 'Equipment has been selected but the air has nowhere to go.',
         remedy: 'Route the ducts from the HVAC panel.',
@@ -575,6 +614,7 @@ function checkDucts(
       id: 'ducts-velocity',
       severity: 'caution',
       section: VELOCITY_LIMITS.trunk.section,
+      authority: 'ACCA',
       title: `${noisy.length} duct${noisy.length === 1 ? '' : 's'} would be audible`,
       detail: `The worst carries ${Math.round(worst.cfm)} cfm through a ${worst.size.asWritten} duct at ${Math.round(worst.velocity)} feet per minute, against a ${worst.velocityLimit} fpm limit for a ${worst.role}. Nothing fails — you simply hear it, permanently.`,
       remedy: 'Take the next duct size up, or split the run.',
@@ -585,6 +625,7 @@ function checkDucts(
       id: 'ducts-velocity',
       severity: 'pass',
       section: VELOCITY_LIMITS.trunk.section,
+      authority: 'ACCA',
       title: 'Air speeds are inside the noise limits',
       detail: `Every run is under ${VELOCITY_LIMITS.trunk.asWritten} in the trunks and ${VELOCITY_LIMITS.branch.asWritten} in the branches.`,
       remedy: '',
@@ -605,6 +646,7 @@ function checkDucts(
       id: 'ducts-unserved',
       severity: 'violation',
       section: '',
+      authority: 'none',
       title: `${unserved.length} room${unserved.length === 1 ? ' has' : 's have'} a load and no supply`,
       detail: `${unserved.map((flow) => flow.roomName).join(', ')}. Each needs air and has none routed to it.`,
       remedy: 'Re-route the ducts, or add a register by hand.',
@@ -626,6 +668,7 @@ function checkDucts(
       id: 'ducts-return-missing',
       severity: 'violation',
       section: '',
+      authority: 'none',
       title: 'A storey has supply air and no return',
       detail:
         'Air that goes into a storey has to come back out of it. Without a return the storey pressurises and pushes conditioned air out through the structure, which is expensive and invisible.',
@@ -637,6 +680,7 @@ function checkDucts(
       id: 'ducts-return',
       severity: 'advice',
       section: '',
+      authority: 'none',
       title: 'One central return per storey',
       detail:
         'That only works if the air can get back to it from behind a closed door. A bedroom with a supply, no return and a closed door pressurises just as surely as a whole storey does.',
@@ -651,6 +695,7 @@ function checkDucts(
     id: 'ducts-leakage',
     severity: 'advice',
     section: DUCT_LEAKAGE.section,
+      authority: 'IECC',
     title: 'Ductwork has to be tested',
     detail: `The IECC caps leakage at ${DUCT_LEAKAGE.asWritten}. That is a measurement on the finished installation; nothing here predicts it.`,
     remedy: 'Seal every joint with mastic — not tape — and have the system pressure tested.',
@@ -670,6 +715,7 @@ function checkDucts(
     id: 'ducts-unconditioned',
     severity: 'advice',
     section: '',
+      authority: 'none',
     title: 'Ducts are assumed to run inside the insulation',
     detail:
       'The load makes no allowance for duct loss or gain in an unconditioned space. If any of this ends up in a loft or a vented crawl space, add 15–25% to the cooling load and insulate the ducts heavily.',
@@ -696,8 +742,9 @@ function checkVentilation(
     id: 'ventilation-required',
     severity: infiltration.id === 'tight' ? 'caution' : 'advice',
     section: VENTILATION.section,
+      authority: 'IRC',
     title: `This house needs ${Math.round(selection.ventilationCfm)} cfm of outdoor air`,
-    detail: `${VENTILATION.asWritten}, for ${Math.round(load.floorArea / 0.092903).toLocaleString()} ft² and ${load.bedrooms} bedroom${load.bedrooms === 1 ? '' : 's'}. ${
+    detail: `${VENTILATION.asWritten}, for ${Math.round(load.floorArea / 0.092903).toLocaleString()} ft² and ${load.bedrooms} bedroom${load.bedrooms === 1 ? '' : 's'} — the IRC's rate, taken from ${VENTILATION.basis}. ${
       infiltration.id === 'tight'
         ? 'A house this tight does not ventilate itself, so this is a requirement rather than a recommendation — the moisture from cooking, washing and breathing has nowhere else to go.'
         : 'A leakier house gets some of this by accident, but not reliably and not when the wind drops.'

@@ -271,7 +271,7 @@ export function airLeakageLimit(zone: string): number {
 }
 
 /**
- * R403.3.3 — duct leakage.
+ * R403.3.5 — duct leakage.
  *
  * Ducts outside the conditioned envelope leak conditioned air into a loft,
  * which is money straight out of the building. The code caps it at 4 cfm per

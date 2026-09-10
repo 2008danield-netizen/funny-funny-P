@@ -185,6 +185,32 @@ export class Hvac {
 
     /* ---- The registers, as the plates they are ---- */
 
+    /*
+     * Which way each register faces.
+     *
+     * Taken from the duct that feeds it: the branch arrives at the register,
+     * so the last segment of that branch is the direction the air is coming
+     * from, and the grille sits square across it. Without this every register
+     * is drawn axis-aligned and half of them are edge-on to the wall they are
+     * supposed to be in.
+     */
+    const facing = new Map<string, number>();
+    for (const duct of sized) {
+      if (duct.run.serves.length === 0) continue;
+      const points = duct.run.points;
+      const last = points[points.length - 1];
+      const approach = points[points.length - 2] ?? points[0];
+      if (!last || !approach) continue;
+
+      const dx = last.at.x - approach.at.x;
+      const dz = last.at.z - approach.at.z;
+      if (Math.hypot(dx, dz) < 1e-4) continue;
+
+      for (const registerId of duct.run.serves) {
+        facing.set(registerId, Math.atan2(dx, dz));
+      }
+    }
+
     for (const register of doc.hvac.registers) {
       if (register.levelId !== levelId) continue;
       if (register.system === 'supply' ? !this.showSupply : !this.showReturn) continue;
@@ -199,6 +225,7 @@ export class Hvac {
         this.materialFor(REGISTER_COLOUR),
       );
       mesh.position.set(register.at.x, register.height + height / 2, register.at.z);
+      mesh.rotation.y = facing.get(register.id) ?? 0;
       mesh.userData.pickKind = 'register';
       mesh.userData.pickId = register.id;
       this.add(mesh, true);

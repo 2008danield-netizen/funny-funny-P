@@ -248,6 +248,58 @@ describe('the duct check', () => {
   });
 });
 
+describe('the citations', () => {
+  it('never prints an authority without a section, or the reverse', () => {
+    /*
+     * The bug this exists for: the panel used to infer which book a section
+     * was in from the shape of the string, and printed "IECC IRC M1505.4" on
+     * the ventilation finding. A citation that is visibly wrong is worse than
+     * no citation, because it teaches the reader to distrust the ones that are
+     * right — so the finding carries its own authority and this pins the two
+     * together.
+     */
+    const findings = report(house()).findings;
+    expect(findings.length).toBeGreaterThan(0);
+
+    for (const finding of findings) {
+      if (finding.authority === 'none') {
+        expect(finding.section).toBe('');
+      } else {
+        expect(finding.section).not.toBe('');
+      }
+    }
+  });
+
+  it('cites the ventilation rule to the IRC, not the energy code', () => {
+    const doc = house();
+    doc.hvac.envelope.infiltrationId = 'tight';
+
+    const ventilation = find(report(doc).findings, 'ventilation-required')!;
+    expect(ventilation.authority).toBe('IRC');
+  });
+
+  it('never repeats the book inside the section', () => {
+    // "IRC IRC M1505.4" is what happens when the section carries the authority
+    // as well as the field that exists for it.
+    for (const finding of report(house()).findings) {
+      if (finding.authority === 'none') continue;
+      expect(finding.section.startsWith(finding.authority)).toBe(false);
+    }
+  });
+
+  it('cites the sizing windows to ACCA, which is a method rather than a law', () => {
+    const findings = report(house()).findings;
+    for (const finding of findings) {
+      if (finding.section.startsWith('Manual')) expect(finding.authority).toBe('ACCA');
+    }
+  });
+
+  it('cites the envelope minimums to the IECC, which is law where adopted', () => {
+    const wall = find(report(house('Minneapolis, MN')).findings, 'envelope-wall')!;
+    expect(wall.authority).toBe('IECC');
+  });
+});
+
 describe('the ventilation check', () => {
   it('asks for outdoor air, and insists on it in a tight house', () => {
     const doc = house();

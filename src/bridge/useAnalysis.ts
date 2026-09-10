@@ -37,6 +37,8 @@ import {
 import { checkElectrical, type NecReport } from '@/services/necCheck';
 import { checkFittings, type FittingReport } from '@/services/fittingCheck';
 import { checkPlumbing, type PlumbingReport } from '@/services/plumbingCheck';
+import { checkHvac, type HvacReport } from '@/services/hvacCheck';
+import { deriveHvac, type HvacDerived } from '@/state/hvacOps';
 import type { AdvisorReport } from '@/advisor/types';
 import { activeLevel } from '@/state/levels';
 import type { DesignDocument, Level } from '@/state/types';
@@ -182,6 +184,48 @@ export function plumbingFor(doc: DesignDocument): PlumbingReport {
 export function usePlumbing(): PlumbingReport {
   const doc = useDesign();
   return useMemo(() => plumbingFor(doc), [doc]);
+}
+
+/*
+ * The HVAC derivation is the most expensive analysis in the app: the load
+ * walks every wall, window and door of every room in the building, and three
+ * separate parts of the UI want it — the panel, the inspector and the
+ * drawings. Computing it once per document version rather than once per
+ * consumer is worth more here than anywhere else.
+ */
+let hvacKey: DesignDocument | null = null;
+let hvacCache: HvacDerived | null = null;
+
+/** The load and the equipment selection, computed at most once per version. */
+export function hvacFor(doc: DesignDocument): HvacDerived {
+  if (hvacKey === doc && hvacCache) return hvacCache;
+  hvacCache = deriveHvac(doc);
+  hvacKey = doc;
+  return hvacCache;
+}
+
+/** Subscribes to the load and the equipment selection. */
+export function useHvac(): HvacDerived {
+  const doc = useDesign();
+  return useMemo(() => hvacFor(doc), [doc]);
+}
+
+let hvacCheckKey: DesignDocument | null = null;
+let hvacCheckCache: HvacReport | null = null;
+
+/** The HVAC and envelope checks, computed at most once per version. */
+export function hvacCheckFor(doc: DesignDocument): HvacReport {
+  if (hvacCheckKey === doc && hvacCheckCache) return hvacCheckCache;
+  const { load, selection } = hvacFor(doc);
+  hvacCheckCache = checkHvac(doc, load, selection);
+  hvacCheckKey = doc;
+  return hvacCheckCache;
+}
+
+/** Subscribes to the HVAC and envelope checks. */
+export function useHvacCheck(): HvacReport {
+  const doc = useDesign();
+  return useMemo(() => hvacCheckFor(doc), [doc]);
 }
 
 /** Subscribes to the roof reports for the whole building. */

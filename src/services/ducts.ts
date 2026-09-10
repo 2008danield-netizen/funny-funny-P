@@ -82,8 +82,15 @@ export const emptyLayout = (): DuctLayout => ({
 /** Most air one register will pass without whistling. Beyond this, split. */
 const CFM_PER_REGISTER = 130;
 
-/** How far a register sits out from the wall face, into the room. */
-const REGISTER_OFFSET = 0.25;
+/**
+ * How far a register sits out from the wall face, into the room.
+ *
+ * Just enough to be inside the room for the point-in-polygon test that keeps
+ * it out of the wall, and no more. At 250 mm — where this started — a register
+ * reads in the model as a brick floating in mid-air rather than as a grille in
+ * the wall, which is both wrong and distracting.
+ */
+const REGISTER_OFFSET = 0.07;
 
 /** How finely walls and rooms are sampled looking for a position. */
 const SAMPLE_STEP = 0.3;
