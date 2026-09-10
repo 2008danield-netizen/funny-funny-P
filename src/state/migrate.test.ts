@@ -762,7 +762,10 @@ describe('schema v10 — water and drainage', () => {
   it('gives a v9 document an empty plumbing plan rather than an invented one', () => {
     const doc = migrateDocument({ ...v1Document(), schemaVersion: 9 } as Record<string, unknown>);
 
-    expect(doc.schemaVersion).toBe(10);
+    // Against the CURRENT version rather than a literal 10: a v9 document runs
+    // the whole remaining chain, so hardcoding the next step breaks this test
+    // every time a later migration is added — which it duly did at v11.
+    expect(doc.schemaVersion).toBe(SCHEMA_VERSION);
     const plumbing = doc.plumbing as Record<string, unknown>;
     expect(plumbing.drainage).toEqual([]);
     expect(plumbing.supply).toEqual([]);
@@ -909,5 +912,128 @@ describe('schema v10 — water and drainage', () => {
       },
     });
     expect(doc.site.sewerConnection!.invertDepth).toBeLessThanOrEqual(4);
+  });
+});
+
+/* ------------------------------ v10 to v11 -------------------------------- */
+
+describe('schema v11 — heating and cooling', () => {
+  function withHvac(hvac: unknown) {
+    const base = sanitizeDocument(v1Document()) as unknown as Record<string, unknown>;
+    return sanitizeDocument({ ...structuredClone(base), hvac });
+  }
+
+  it('leaves the design location empty rather than guessing a climate', () => {
+    const doc = migrateDocument({ ...v1Document(), schemaVersion: 10 } as Record<string, unknown>);
+
+    expect(doc.schemaVersion).toBe(SCHEMA_VERSION);
+    const hvac = doc.hvac as Record<string, unknown>;
+
+    /*
+     * The important assertion in this file. Every other migration supplies a
+     * sensible default; there is no sensible default climate. A load computed
+     * for the wrong city is confidently wrong and looks exactly as
+     * authoritative as a correct one.
+     */
+    expect(hvac.locationKey).toBe('');
+    expect(hvac.ducts).toEqual([]);
+  });
+
+  it('marks the envelope as unconfirmed, because it is all assumption', () => {
+    const doc = migrateDocument({ ...v1Document(), schemaVersion: 10 } as Record<string, unknown>);
+    const envelope = (doc.hvac as Record<string, unknown>).envelope as Record<string, unknown>;
+
+    expect(envelope.confirmed).toBe(false);
+    // But the assumptions themselves are real assemblies, not blanks.
+    expect(envelope.wallAssemblyId).toBe('wall-2x6-r21');
+  });
+
+  it('replaces nonsense with an empty plan rather than failing to load', () => {
+    for (const rubbish of [null, 42, 'heated', [], { ducts: 'yes' }]) {
+      const doc = withHvac(rubbish);
+      expect(doc.hvac.ducts).toEqual([]);
+      expect(doc.hvac.locationKey).toBe('');
+    }
+  });
+
+  it('substitutes a known assembly for an unknown one rather than dropping it', () => {
+    /*
+     * Dropping it would make the load calculation skip that surface entirely
+     * and report a house that loses almost no heat through its walls — a
+     * silently wrong answer, which is the worst kind. A substituted default is
+     * at least visible in the panel.
+     */
+    const doc = withHvac({
+      locationKey: 'Denver, CO',
+      envelope: {
+        wallAssemblyId: 'wall-made-of-cheese',
+        roofAssemblyId: 'roof-r49',
+        floorAssemblyId: 'floor-slab',
+        glazingId: 'double-lowe',
+        doorId: 'door-insulated-steel',
+        infiltrationId: 'average',
+        confirmed: true,
+      },
+      system: 'forced-air',
+      ducts: [],
+      registers: [],
+      emitters: [],
+    });
+
+    expect(doc.hvac.envelope.wallAssemblyId).toBe('wall-2x6-r21');
+    expect(doc.hvac.locationKey).toBe('Denver, CO');
+  });
+
+  it('rejects a city it does not have design conditions for', () => {
+    const doc = withHvac({ locationKey: 'Atlantis, XX', ducts: [], registers: [], emitters: [] });
+    // Empty rather than kept: a location with no design conditions behind it
+    // would let the load run with undefined temperatures.
+    expect(doc.hvac.locationKey).toBe('');
+  });
+
+  it('throws away a duct with fewer than two points', () => {
+    const base = sanitizeDocument(v1Document());
+    const doc = withHvac({
+      locationKey: 'Denver, CO',
+      ducts: [
+        {
+          id: 'stub',
+          system: 'supply',
+          points: [{ levelId: base.levels[0]!.id, at: { x: 0, z: 0 }, height: 0 }],
+          serves: [],
+          upstreamId: null,
+          manual: false,
+        },
+      ],
+      registers: [],
+      emitters: [],
+    });
+    expect(doc.hvac.ducts).toEqual([]);
+  });
+
+  it('cuts an upstream reference to a duct that did not survive', () => {
+    const base = sanitizeDocument(v1Document());
+    const levelId = base.levels[0]!.id;
+    const doc = withHvac({
+      locationKey: 'Denver, CO',
+      ducts: [
+        {
+          id: 'good',
+          system: 'supply',
+          points: [
+            { levelId, at: { x: 0, z: 0 }, height: 0 },
+            { levelId, at: { x: 2, z: 0 }, height: 0 },
+          ],
+          serves: [],
+          upstreamId: 'a-duct-that-was-deleted',
+          manual: false,
+        },
+      ],
+      registers: [],
+      emitters: [],
+    });
+
+    expect(doc.hvac.ducts).toHaveLength(1);
+    expect(doc.hvac.ducts[0]!.upstreamId).toBeNull();
   });
 });
