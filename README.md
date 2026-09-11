@@ -268,17 +268,113 @@ Vents are sized off the drains they serve, the stack vent is the stack carried
 on full size through the real roof surface, and any trap further from the stack
 than Table 906.1 allows gets a vent of its own.
 
+**Heating and cooling, worked out rather than guessed.**
+Pick the nearest city from the built-in table of design conditions — there is
+deliberately no default, because a load calculated for the wrong climate does
+not look wrong, it looks like an answer. Say what the building is made of, and
+you get a room-by-room ACCA Manual J load with every term kept separately, so a
+figure that looks wrong can be traced to the surface that produced it.
+
+Heating and cooling are genuinely different calculations and the code says so:
+heating is the coldest hour of the year at night with no sun and nobody home;
+cooling is a summer afternoon with the sun pouring through the glass, the
+appliances running, and the humidity to remove as well as the heat.
+
+Equipment is then selected to Manual S against narrow windows on purpose.
+Cooling may be 90 to 115 percent of the load and no further — an oversized coil
+satisfies the thermostat before it has been cold and wet long enough to remove
+any moisture, so the house ends up cool and clammy, and the owner's instinct is
+to turn the thermostat down, which makes it worse. Where nothing in the
+catalogue lands inside that window, the app says so rather than rounding up
+quietly. Heating gets 140 percent, because an oversized furnace is merely
+inefficient.
+
+For a heat pump it finds the balance point — the outdoor temperature where the
+pump's falling capacity crosses the building's rising load — by solving it
+rather than guessing, and sizes the backup heat from what is missing at the
+coldest hour. A heat pump specified without that number is a house that runs on
+emergency resistance heat all winter.
+
+Ducts are then routed in 3D and sized to Manual D, and drawn at their real
+diameter, which is the point: a 16 inch trunk is 400 mm across and does not fit
+in a 250 mm floor void, and that is worth discovering at design time. Supply
+registers go under the windows, because the cold downdraught off the glass is
+what people actually feel. Every storey with supply air gets a return, because
+air that goes into a storey has to come back out of it.
+
+Choose a wet system instead and it places radiators and underfloor loops off the
+same load — with the flow temperature as an explicit input, because a radiator
+at a condensing boiler's 55/45 gives roughly *half* its catalogue output, and
+sized off the catalogue the house is cold, the owner turns the boiler up, and
+the boiler stops condensing.
+
+The envelope is checked against the 2021 IECC for the climate zone the chosen
+city is in, and the two R-values are kept apart on purpose: the code check uses
+the nominal R, because that is what the prescriptive table is written against
+and what an inspector reads off the label, and the load uses the effective R,
+because R-21 batts in a 2x6 wall are about R-16.5 once the studs are counted.
+Using one number for both would either fail compliant walls or undersize the
+heating.
+
+And the load feeds the electrical service calculation, so NEC 220.82(C) gets a
+real figure instead of one somebody typed in — with a heat pump's backup heat
+added to its compressor rather than compared against it, because below the
+balance point they run together.
+
+**Cut the building open.**
+A section is the drawing that answers what a plan and an elevation cannot: how
+tall anything is inside, how thick the floor build-up really is, whether the
+stair clears the storey it passes through, and whether the duct and the joist
+want the same 200 mm.
+
+Two cuts come ready-made — one the long way through the house, one across it —
+and they follow the building as it changes shape. Draw one by hand and it is
+never moved for you again, the same rule the pipe and duct routers follow. A cut
+is stored as a line plus which side you stand on, because those are two
+different facts: the same cut gives two completely different drawings depending
+which half is thrown away, and that is what the arrowheads on the plan are for.
+
+The section draws the real construction. Not a poché outline — the studs, the
+batts, the sheathing, the cladding and the plasterboard, each hatched as its own
+material, at its own true thickness, with a leader line naming it and its
+R-value. And because the layers are drawn at their real thickness rather than
+scaled to fit, the section is the first drawing in this app that can notice a
+2x6 assembly specified on a wall somebody drew 100 mm thick. It says so in a
+note instead of drawing a plausible lie at the convenient size.
+
+Pipes and ducts crossing the cut are drawn as the circles they are, at their
+real diameter, which is the one place in the whole set where a 400 mm trunk and
+a 240 mm joist are visibly fighting over the same void.
+
+The same cut also works live in the 3D view: slide it through the building and
+look inside. Only the building is cut — not the ground, not the sky.
+
 **A printable drawing set, drawn to scale.**
 Not a screenshot: a real set, written by a PDF writer built from scratch for
 this. A cover, a dimensioned plan of every storey, an elevation of each side, an
 electrical plan per storey with its legend, the panel schedule and the load
-calculation, a plumbing plan per storey, a drainage riser diagram, an elevation
-of every run of cabinetry dimensioned unit by unit — the drawing a joiner
-actually works from — and schedules of the doors, windows, rooms, cabinets,
-sanitaryware, fittings, pipes and fixture units. Walls are
-poché, doors show their swing on the side they open, dimensions run in two
-strings, and each sheet carries a title block, a north point and a printed scale
-bar — so you can measure the bar and know whether the print is true.
+calculation, a plumbing plan per storey, a drainage riser diagram, a mechanical
+plan per storey with every duct labelled by size and airflow, a room-by-room
+load schedule that makes the whole mechanical design arguable rather than
+merely asserted, a section sheet for every cut with its construction callouts
+and level lines, an elevation of every run of cabinetry dimensioned unit by unit
+— the drawing a joiner actually works from — and schedules of the doors,
+windows, rooms, cabinets, sanitaryware, fittings, pipes and fixture units. Walls are
+poché, doors show their swing on the side they open, every door and window
+carries the same mark on the plan that it carries in the schedule, section
+lines are drawn with the arrowheads that say which way they look, dimensions run
+in two strings, and each sheet carries a title block, a north point and a
+printed scale bar — so you can measure the bar and know whether the print is
+true.
+
+The elevations do hidden-line removal, and it is exact rather than approximate.
+The general problem is genuinely hard and a half-done version draws lines where
+there are none — but every surface in an elevation of this model is a vertical
+rectangle seen square on, and none of them interpenetrate. For that case sorting
+by distance and painting the furthest first is not an approximation, it is the
+answer. A facade that steps in and out now reads as a near face and a far face
+with the step between them, and a window on a rear wall is covered by a nearer
+wing instead of floating on top of the building it is inside.
 
 **Never lose work.** Continuous autosave, full undo/redo, JSON export/import, PNG
 screenshots — and designs saved by session 1 are migrated forward automatically.
@@ -393,7 +489,11 @@ src/
 │   └── colliders.ts    Turning walls and furniture into colliders
 │
 ├── code/             The building code, with its section numbers
-│   └── irc.ts          IRC limits: every one cites where it comes from
+│   ├── irc.ts          IRC limits: every one cites where it comes from
+│   ├── nec.ts          The NEC, by article
+│   ├── ipc.ts          The IPC: fixture units, pipe sizes, traps, vents
+│   ├── acca.ts         ACCA Manual J, S and D — design conditions and factors
+│   └── iecc.ts         The energy code: climate zones and envelope minimums
 │
 ├── plan/             Getting somebody's real floor plan into the app
 │   ├── underlay.ts     Image pixels to metres: placement, calibration, alignment
@@ -410,6 +510,8 @@ src/
 │   ├── roof.ts         Hip, gable, shed and flat, in three dimensions
 │   ├── dormer.ts       Dormers and skylights, and the holes they cut
 │   ├── roofCode.ts     Slope, ventilation, access and the plot line, cited
+│   ├── section.ts      What a vertical cut plane actually passes through
+│   ├── buildUp.ts      What each assembly is made of, layer by layer
 │   ├── site.ts         Ground, plot, setbacks, earthworks, the compass
 │   └── exterior.ts     What the outside is made of, and how much of it
 │
@@ -469,6 +571,13 @@ src/
 │   ├── plumbingSize.ts Fixture units in, pipe diameters out — the only copy
 │   ├── plumbingCheck.ts Falls, traps, vents, pressure and velocity, to the IPC
 │   ├── necCheck.ts     The NEC checks, each citing its article
+│   ├── manualJ.ts      Room-by-room heat loss and heat gain, every term kept
+│   ├── manualS.ts      Choosing the equipment, and the heat pump balance point
+│   ├── ductSize.ts     Airflow in, duct diameters out — the only copy
+│   ├── ducts.ts        The air handler, the registers, the trunk and branches
+│   ├── hydronic.ts     Radiators and underfloor, off the same load
+│   ├── hvacCheck.ts    The envelope to the IECC, the system to ACCA
+│   ├── climateLoad.ts  One answer to "how big is the heating", for the NEC
 │   ├── kitchen.ts      Laying a kitchen out: runs, sink, hob, fridge
 │   ├── bathroom.ts     Packing a bathroom: hardest fixture first, checked first
 │   └── fittingCheck.ts R307, R303, and the working triangle as ergonomics
@@ -481,6 +590,9 @@ src/
 │   ├── elevation.ts    Each side, from the storey envelopes and the roof
 │   ├── kitchenElevation.ts  One run flat on, dimensioned unit by unit
 │   ├── electricalSheet.ts  Plan symbols, legend, panel schedule
+│   ├── plumbingSheet.ts    Pipe runs, the riser diagram, fixture-unit schedules
+│   ├── hvacSheet.ts    Ducts, registers, and the room-by-room load schedule
+│   ├── sectionSheet.ts Cut heavy and filled, beyond light and empty
 │   ├── schedules.ts    Doors, windows, rooms, fittings
 │   └── set.ts          The whole set, assembled and numbered
 │
@@ -627,7 +739,17 @@ src/
 npm test
 ```
 
-644 tests covering the parts where a bug is invisible on screen: the IPC's
+809 tests covering the parts where a bug is invisible on screen: what a section
+plane passes through and where it does not, construction build-ups against the
+assemblies they claim to be, section cuts that follow the building and
+hand-drawn ones that never move, the Manual J
+load against the physics it claims to implement and against the range a real one
+lands in, the Manual S sizing windows and the heat-pump balance point checked
+against its own definition rather than against the code that computes it, duct
+airflow accumulated from the registers up, radiator output at a condensing
+boiler's flow temperature, the envelope against the IECC zone by zone and the
+citation each finding carries, the one answer the electrical service takes for
+its climate load, the IPC's
 sizing tables and the two fixture-unit currencies kept apart, the drainage
 router's falls and the checker that judges them, Hunter's curve and
 Hazen–Williams, filling a run
@@ -644,7 +766,7 @@ and earthworks, the exterior takeoff, stair geometry and every IRC check, storey
 collision (penetration depth, sliding, wall-snap orientation, wedged pieces),
 furniture placement end to end, clearance zones and circulation analysis,
 structural plan edits, document validation, the schema migrations from v1 all the
-way to v10, every advisor rule (does it fire when it should, and stay quiet when it should not), and the
+way to v12, every advisor rule (does it fire when it should, and stay quiet when it should not), and the
 generator. They are pure logic — no browser, no GPU — so they run in about two
 seconds and gate every deploy.
 
@@ -775,6 +897,39 @@ document returning at v10 with its stack, its eleven drainage runs, its eleven
 supply runs and its cylinder intact, and a drawing set exported with its
 plumbing plans, riser and schedules. No console errors.
 
+Session 12's sweep did the same for heating and cooling, and it earned its keep
+twice. Choosing Chicago and pressing the button gave a 600 cfm system on a 14 in
+trunk with registers under the windows, thirteen findings and no console errors
+— and it also showed the citation on the ventilation finding printed as
+"IECC IRC M1505.4". The panel had been *inferring* which book a section was in
+from the shape of the string, and had put an energy-code prefix on a
+mechanical-code citation. Findings now carry their own authority and two tests
+pin it, because a visibly wrong citation is worse than none at all: it teaches
+the reader to distrust the ones that are right.
+
+Session 13's sweep caught the live section cut twice over. The first version
+put a flat quad on the cut plane to hide the hollow edges, and in the viewport
+it was a large grey rectangle covering most of the frame — hiding exactly the
+interior the cut was made to reveal. A cheap cap turns out to be worse than no
+cap: a hollow edge reads as a cut immediately, a sheet of grey reads as a wall
+that is not there.
+
+With the cap gone, the sweep showed half the world missing and a black void
+where it had been. The clipping plane had been handed to the renderer, which
+applies it to everything in the scene — including the ground and the sky, which
+are not part of any building and have no business being sliced. The plane is
+now walked onto the materials of the building groups only.
+
+Both were invisible in the code and obvious in the picture, which is becoming
+the pattern.
+
+The same sweep also showed the supply registers standing 250 mm off the walls
+like bricks floating in mid-air, and drawn axis-aligned so half of them were
+edge-on to the wall they were supposed to be in. Both were invisible in the code
+and obvious in the picture. Registers now sit 70 mm proud — just enough to be
+inside the room for the test that keeps them out of the wall — and take their
+orientation from the last segment of the duct that feeds them.
+
 The detector's fixtures are all plans the test file DRAWS, so the right answer
 is known exactly and a failure says which part of the pipeline moved: four walls
 of a room, a wall drawn as two faces that must come back as one wall with a
@@ -811,16 +966,49 @@ their valleys across each other.
   counter receptacles the electrical used to guess at.~~ ✅
 - ~~**Session 11** — water and drainage: the stack, the falls, the vents, the
   pressure calculation and the riser diagram, to the IPC.~~ ✅
-- **Session 12 — heating and ventilation.** Room-by-room load to ACCA Manual J,
-  equipment selection to Manual S, ducts to Manual D. The Manual J load then
-  feeds the heating and cooling figures the electrical service calculation
-  currently has to ask the user for — and the duct routing has the same shape as
-  the drainage routing session 11 just built, so a good deal of it is already
-  written.
-- **Session 13 — sections, and the drawing set finished.** A building section
-  cut anywhere through the model, hidden-line removal on the elevations so a
-  facade that steps in and out reads correctly, and window and door marks
-  printed on the plans beside the openings they name.
+- ~~**Session 12** — heating and cooling: the Manual J load, Manual S equipment
+  selection with the heat pump balance point, Manual D ducts routed in 3D,
+  radiators and underfloor for a wet system, the envelope against the IECC, and
+  the load feeding the electrical service calculation.~~ ✅
+- ~~**Session 13** — sections: a cut anywhere through the model with its real
+  construction layers, the same cut live in 3D, hidden-line removal on the
+  elevations, and door and window marks tying the plans to the schedules.~~ ✅
+- **Session 14 — into a headset.** WebXR, six degrees of freedom, teleport and
+  smooth locomotion with comfort options, and a hard 90 fps budget. Built to
+  the Quest's budget first so it runs everywhere, with the extra headroom of a
+  PC unlocking quality rather than being required for it. Note that this forks
+  the renderer: the progressive accumulation that makes the desktop view
+  photoreal depends on the camera holding still, and in a headset it never
+  does. VR wants baked lighting instead.
+- **Session 15 — make it work.** Doors that swing on their hinges, switches
+  that turn on the lights they are actually wired to, drawers and cabinet doors
+  that open, taps that turn. Every one of those already exists in the model as
+  a real object with real dimensions; none of them can be touched yet.
+- **Session 16 — sound.** Footsteps that change on tile and on oak, reverb from
+  the room's own volume, muffling through walls. The most underrated presence
+  lever there is, and the model already knows every floor material and every
+  room volume.
+- **Session 17 — baked lighting**, so it looks good and holds frame rate at the
+  same time.
+- **Session 18 — x-ray in the headset.** Stand in the room and look through the
+  wall at the drain fall, the duct in the ceiling void, the circuit that outlet
+  is on. Twelve sessions of compliance work exist to make this possible and
+  nothing else on the market can do it.
+- **Left over, and worth naming.** Ducts are routed in the floor void and are
+  therefore hidden by the floor from any normal viewpoint — true to the building
+  and not much use to look at, so the layer wants the floor to go translucent
+  while it is on. The load makes no allowance for duct loss or gain in an
+  unconditioned space, which in a hot climate with ducts in a loft is 15 to 25
+  percent of the cooling load; the app says so in a finding rather than
+  modelling it. Zoning is not modelled at all, so a house too large for one
+  machine gets one machine and a warning. And the live section cut leaves the
+  cut edges hollow, because capping them properly needs a stencil pass per
+  plane — the printed section is where the real construction is drawn.
+- **A usability gap worth fixing early.** Drawing a wall across a room does not
+  split it into two rooms: the new wall lands on a fresh vertex rather than
+  cutting the wall it meets, so the partition dangles and no second region
+  forms. Splitting the boundary wall first works, and that is what the split
+  tool is for, but nobody would guess it.
 - **Not done, and worth naming** — pipe and fittings are not on the shopping
   list. Everything priced in this app carries a `PriceBasis` saying where the
   figure came from, and there is no honest source for pipe here yet; inventing
@@ -835,10 +1023,19 @@ their valleys across each other.
 
 ### About the code checking
 
-The app is built to **US codes**: the IRC for the shell, and — as those sessions
-land — the NEC for electrical, the IPC for plumbing and ACCA's manuals for
-heating. Choosing your jurisdiction comes later; for now the figures are the
-2021 IRC, the 2023 NEC and the 2021 IPC, and the app says so.
+The app is built to **US codes**: the IRC for the shell, the NEC for electrical,
+the IPC for plumbing, the IECC for the envelope, and ACCA's manuals for heating
+and cooling. Choosing your jurisdiction comes later; for now the figures are the
+2021 IRC, the 2023 NEC, the 2021 IPC and the 2021 IECC, and the app says so.
+
+Those are not all the same kind of authority, and the app does not pretend they
+are. The IECC is law where it is adopted. ACCA's Manual J, S and D are not law
+in themselves — they are the *methods* the IRC points at in M1401.3 — so a
+system that departs from them is not illegal the way an under-insulated wall is,
+it is unjustifiable. Every finding carries which book it is in rather than
+letting the interface guess from the shape of the section number, because a
+citation that is visibly wrong is worse than no citation: it teaches the reader
+to distrust the ones that are right.
 
 Some of what the app reports is deliberately NOT code, and is labelled as such
 where it appears: the kitchen working triangle, the worktop landings beside a
@@ -866,6 +1063,15 @@ and inspected, and so must the plumbing. Every sheet of the drawing set says all
 of this on it, because sheets get separated and one of them ends up on a notice
 board on its own.
 
+Heating and cooling add a few more. The conversion from a Manual J infiltration
+class to a blower-door reading is approximate — the factor genuinely varies
+between about fifteen and twenty-five with height and exposure — so anything
+resting on it is a caution and never a violation; only the test settles it, and
+the code requires one anyway. Duct leakage is likewise a measurement on the
+finished installation and nothing here predicts it. And the load is only ever as
+good as the six envelope figures it was given, which start as the app's own
+guesses: until somebody ticks them as real, every figure downstream says so.
+
 Cleanouts are a specific gap worth naming: the app does not model them, so it
 cannot tell you whether they are there. What it does instead is say where IPC
 708.1 requires them — at the foot of the stack, where the drain leaves the
@@ -873,8 +1079,9 @@ building, at every sharp change of direction — which turns into a list to hand
 over rather than a false clean bill of health.
 
 **Checking is not approval.** Nothing here is certified by anybody. A real build
-needs a permit, an inspection, and for anything structural, electrical or gas, a
-licensed professional. What the app does is catch the ordinary mistakes while
+needs a permit, an inspection, and for anything structural, electrical, gas or
+fuel-burning, a licensed professional. Combustion air, flues and gas pipework
+are not designed here at all. What the app does is catch the ordinary mistakes while
 they are still free to fix, and show its arithmetic — with the section number —
 to the person who will sign the work off. That is the difference between work an
 engineer has to redo and work an engineer can check in ten minutes.

@@ -25,6 +25,7 @@ import { Building, type PickResult } from '@/scene/Building';
 import type { Furnishings } from '@/scene/Furnishings';
 import type { Electrical } from '@/scene/Electrical';
 import type { Plumbing } from '@/scene/Plumbing';
+import type { Hvac } from '@/scene/Hvac';
 import type { Fittings } from '@/scene/Fittings';
 import { nearestSnapCandidates, snapPoint } from './snapping';
 import { distance, indexVertices, resolveWall } from '@/scene/planGraph';
@@ -86,6 +87,7 @@ export class EditController {
   private furnishings: Furnishings;
   private electrical: Electrical;
   private plumbing: Plumbing;
+  private hvac: Hvac;
   private fittings: Fittings;
   private orbit: { enabled: boolean };
 
@@ -109,6 +111,7 @@ export class EditController {
     electrical: Electrical,
     fittings: Fittings,
     plumbing: Plumbing,
+    hvac: Hvac,
     orbit: { enabled: boolean },
   ) {
     this.canvas = canvas;
@@ -118,6 +121,7 @@ export class EditController {
     this.electrical = electrical;
     this.fittings = fittings;
     this.plumbing = plumbing;
+    this.hvac = hvac;
     this.orbit = orbit;
 
     const onPointerDown = (event: PointerEvent) => this.handlePointerDown(event);
@@ -200,6 +204,17 @@ export class EditController {
      */
     const pipes = this.raycaster.intersectObjects(this.plumbing.pickTargets(), false);
     for (const intersection of pipes) {
+      const result = Building.interpret(intersection);
+      if (result) return result;
+    }
+
+    /*
+     * Ductwork, for exactly the same reason and immediately after it: a supply
+     * trunk is in the same floor void as the waste pipe, with the same floor
+     * between it and the pointer.
+     */
+    const ducts = this.raycaster.intersectObjects(this.hvac.pickTargets(), false);
+    for (const intersection of ducts) {
       const result = Building.interpret(intersection);
       if (result) return result;
     }

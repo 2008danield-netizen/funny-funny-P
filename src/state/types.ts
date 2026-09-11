@@ -46,8 +46,12 @@
  *      fixtures that carry what they connect to.
  * v10 — water and drainage: the supply trees, the soil stack, the waste
  *      branches, the vents, and where all of it meets the street.
+ * v11 — heating and cooling: the envelope the load is computed from, the
+ *      design location it is computed for, the equipment and the ductwork.
+ * v12 — section cuts: where the building is sliced through, which way the cut
+ *      looks, and what each slice is called.
  */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 12;
 
 /** Which measurement system the UI displays. Storage is always metric. */
 export type UnitSystem = 'metric' | 'imperial';
@@ -866,6 +870,236 @@ export const PLUMBING_LIMITS = {
   supplyHeight: 0.35,
 } as const;
 
+
+/* ═══════════════════════════ Heating and cooling ═════════════════════════ */
+
+/**
+ * What the building is made of, thermally.
+ *
+ * -----------------------------------------------------------------------------
+ * WHY THIS IS ONE OBJECT AND NOT A PROPERTY OF EACH WALL.
+ *
+ * A real house is built one way. The walls are all the same construction, the
+ * roof is one specification, the windows were bought together. Modelling the
+ * envelope per surface would let somebody build a house with R-13 on the north
+ * wall and R-30 on the south, which is not a thing anybody does and would make
+ * the load calculation look far more precise than it is.
+ *
+ * The load is only ever as good as these figures, and they all start as
+ * assumptions. Everything downstream says so.
+ */
+export interface EnvelopeSpec {
+  /** An assembly id from `code/iecc.ts`. */
+  wallAssemblyId: string;
+  roofAssemblyId: string;
+  floorAssemblyId: string;
+  /** A glazing id, likewise. */
+  glazingId: string;
+  doorId: string;
+  /** How leaky, as an id from the ACCA infiltration table. */
+  infiltrationId: string;
+  /**
+   * Whether the user has actually confirmed any of this.
+   *
+   * False means every figure above is still the app's default. The checks say
+   * so loudly, because a load computed from five assumptions is a different
+   * kind of number from one computed from five measurements, and only one of
+   * them should be used to buy equipment.
+   */
+  confirmed: boolean;
+}
+
+/** Which system the house is heated and cooled by. */
+export type HvacSystemKind =
+  /** Furnace and air conditioner sharing ducts. The American default. */
+  | 'forced-air'
+  /** Heat pump, ducted. Heats and cools with one machine. */
+  | 'heat-pump'
+  /** Ductless mini-splits, one head per zone. */
+  | 'mini-split'
+  /** Boiler with radiators or underfloor. No ducts at all. */
+  | 'hydronic'
+  /** Work out the load and stop there. */
+  | 'load-only';
+
+/**
+ * The whole heating and cooling installation.
+ *
+ * Like the electrical and the plumbing, its own typed model rather than a
+ * generic service network — the questions worth asking are about loads,
+ * capacities and airflow, and none of them is answerable from a list of line
+ * segments.
+ */
+export interface HvacPlan {
+  /**
+   * The design location, as "City, ST" from the ACCA table.
+   *
+   * Empty means nothing has been chosen and no load can be computed. There is
+   * deliberately no default: a load calculated for the wrong climate is worse
+   * than no load at all, because it looks like an answer.
+   */
+  locationKey: string;
+  envelope: EnvelopeSpec;
+  system: HvacSystemKind;
+
+  /** The chosen equipment, by id from the ACCA catalogue. */
+  heatingEquipmentId: string | null;
+  coolingEquipmentId: string | null;
+
+  /** Ductwork, when the system has any. */
+  ducts: DuctRun[];
+  registers: Register[];
+  /** Where the air handler or furnace stands. */
+  airHandler: { levelId: string; at: Point2 } | null;
+
+  /** Radiators or underfloor loops, for a hydronic system. */
+  emitters: Emitter[];
+
+  /**
+   * Whether the user has overridden the automatic equipment selection.
+   *
+   * Selection is otherwise derived from the load every time it is asked for,
+   * so that adding a window re-sizes the furnace. Once somebody picks a
+   * specific model that stops.
+   */
+  equipmentManual: boolean;
+}
+
+/** What a length of duct carries. */
+export type DuctSystem = 'supply' | 'return';
+
+/**
+ * A length of ductwork.
+ *
+ * The same polyline shape as a pipe run, for the same reason: real ducts go
+ * along a joist, turn, and drop. `size` is absent by design — a duct's
+ * diameter is derived from the airflow through it, and a stored size goes
+ * stale the moment a room is added downstream.
+ */
+export interface DuctRun {
+  id: string;
+  system: DuctSystem;
+  points: PipePoint[];
+  /** Which registers this run feeds, by id. */
+  serves: string[];
+  /** The run it branches from, or null at the air handler. */
+  upstreamId: string | null;
+  manual: boolean;
+}
+
+/** Where air enters or leaves a room. */
+export interface Register {
+  id: string;
+  levelId: string;
+  at: Point2;
+  /** Height above the floor. Supply registers go low, returns high. */
+  height: number;
+  system: DuctSystem;
+  /** The room it serves, by region key. */
+  roomKey: string;
+}
+
+/** A radiator or an underfloor loop. */
+export interface Emitter {
+  id: string;
+  levelId: string;
+  at: Point2;
+  kind: 'radiator' | 'underfloor';
+  roomKey: string;
+  /** Output at design conditions, in watts. Derived, stored for the schedule. */
+  outputWatts: number;
+  /** Length along the wall, for a radiator. Zero for underfloor. */
+  length: number;
+}
+
+/** Bounds and defaults for the HVAC editor. */
+export const HVAC_LIMITS = {
+  /** Where supply ducts run: this far below the finished floor they serve. */
+  ductVoidDepth: 0.25,
+  /** How far below the ceiling a return duct runs. */
+  returnHeight: 0.25,
+  /** Supply registers go near the floor, under windows where possible. */
+  supplyRegisterHeight: 0.15,
+  /** Returns go high, where the warm air is. */
+  returnRegisterHeight: 1.8,
+  /** A radiator's height, for the 3D. */
+  radiatorHeight: 0.6,
+  radiatorDepth: 0.1,
+} as const;
+
+/* ═══════════════════════════════ Sections ════════════════════════════════ */
+
+/**
+ * A plane cut vertically through the building.
+ *
+ * -----------------------------------------------------------------------------
+ * WHY A LINE AND A SIDE, RATHER THAN A PLANE.
+ *
+ * A section is defined by where you cut and which way you then look, and those
+ * are two different facts. The same cut through the middle of a house gives two
+ * completely different drawings depending on which half you throw away — and
+ * getting that backwards is the classic way a section ends up showing the
+ * kitchen when it was drawn to show the stair.
+ *
+ * So the line is stored as two points in plan and the direction is stored
+ * separately, as which side of that line the viewer stands on. Everything
+ * downstream — the drawing, the live cut in the model, the marker printed on
+ * the floor plans — reads the same two facts, which is what stops the three of
+ * them disagreeing.
+ *
+ * -----------------------------------------------------------------------------
+ * THE LINE IS NOT CLIPPED TO THE BUILDING.
+ *
+ * It is stored exactly as drawn, running past the walls at both ends, because
+ * that is how a section line is drawn on a real plan: out past the building so
+ * the arrowheads and the mark are legible. Clipping it to the footprint would
+ * make it vanish into the walls at either end, and it would have to be
+ * un-clipped again the moment somebody moved a wall.
+ */
+export interface SectionCut {
+  id: string;
+  /**
+   * The mark, like "A" or "B".
+   *
+   * What ties the arrow on the plan to the sheet the section is drawn on. Short
+   * on purpose: it is printed inside a circle about 6 mm across.
+   */
+  mark: string;
+  /** What it is called on the sheet — "Section through the stair". */
+  name: string;
+  /** Where the cut runs, in plan. */
+  from: Point2;
+  to: Point2;
+  /**
+   * Which side of the line the viewer stands on, and therefore looks from.
+   *
+   * 'left' and 'right' are relative to walking from `from` towards `to`. Named
+   * that way rather than by compass point because the line can run at any
+   * angle, and "the left-hand side going up the line" survives the line being
+   * rotated while "looking north" does not.
+   */
+  looks: 'left' | 'right';
+  /**
+   * Whether this cut was made by the app rather than drawn by hand.
+   *
+   * The two presets regenerate themselves when the building changes shape, so
+   * a cross section stays through the middle of the house after a wall moves.
+   * A cut somebody drew is never moved for them — same rule the pipe and duct
+   * routers follow, and for the same reason.
+   */
+  automatic: boolean;
+}
+
+/** Bounds and defaults for the section tool. */
+export const SECTION_LIMITS = {
+  /** How far past the building a preset cut line runs, in metres. */
+  overshoot: 1.5,
+  /** Shortest cut line worth keeping. */
+  minLength: 0.5,
+  /** How thick a cut surface is drawn, relative to an ordinary wall line. */
+  cutWeight: 1.4,
+} as const;
+
 /* ------------------------- Reserved for later sessions -------------------- */
 
 /* ─────────────────────────────── The site ────────────────────────────── */
@@ -1239,6 +1473,10 @@ export interface DesignDocument {
   electrical: ElectricalPlan;
   /** Supply, drainage, vents, the stack and the water heater. */
   plumbing: PlumbingPlan;
+  /** The envelope, the design location, the equipment and the ductwork. */
+  hvac: HvacPlan;
+  /** Where the building is cut through, for the sections. */
+  sections: SectionCut[];
 
   /**
    * Kitchen and bathroom cabinetry, and the fixtures.

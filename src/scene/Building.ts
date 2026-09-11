@@ -61,7 +61,11 @@ export type PickKind =
   | 'fixture'
   | 'pipe'
   | 'stack'
-  | 'heater';
+  | 'heater'
+  | 'duct'
+  | 'register'
+  | 'air-handler'
+  | 'emitter';
 
 export interface PickResult {
   kind: PickKind;

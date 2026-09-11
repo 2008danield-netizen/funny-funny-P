@@ -30,7 +30,17 @@ export type SelectionKind =
   /** A soil stack. */
   | 'stack'
   /** The water heater. */
-  | 'heater';
+  | 'heater'
+  /** One run of ductwork, supply or return. */
+  | 'duct'
+  /** A supply register or a return grille. */
+  | 'register'
+  /** The furnace, air handler or heat pump. */
+  | 'air-handler'
+  /** A radiator or an underfloor loop. */
+  | 'emitter'
+  /** A section cut line, selected on the plan. */
+  | 'section';
 
 export interface Selection {
   kind: SelectionKind | null;
@@ -119,6 +129,28 @@ export interface EditorState {
   showSupply: boolean;
 
   /**
+   * Whether the ductwork is drawn in the model, and which half of it.
+   *
+   * View state, exactly like the plumbing. Supply and return are separated
+   * because they run at different heights and cross each other constantly —
+   * a house with both drawn is hard to read, and each is looked at for its
+   * own reason: supply for whether the trunk fits in the floor, return for
+   * whether the air can get back at all.
+   */
+  showHvac: boolean;
+  showSupplyAir: boolean;
+  showReturnAir: boolean;
+
+  /**
+   * Which section cut is being previewed live in the model, by id.
+   *
+   * View state, like every other layer toggle. Which cut somebody is looking
+   * through while they work is not part of their design — the cuts themselves
+   * are on the document, and this is only which one is switched on.
+   */
+  activeSectionId: string | null;
+
+  /**
    * Walls the detector has proposed on the traced plan, and which are ticked.
    *
    * View state, deliberately: a proposal is not part of the design until it is
@@ -161,6 +193,14 @@ function initialState(): EditorState {
     showPlumbing: false,
     showDrainage: true,
     showSupply: true,
+    // Same again. The HVAC panel switches this on when it lays anything out,
+    // so nobody has to find it to see what they just got.
+    showHvac: false,
+    showSupplyAir: true,
+    showReturnAir: true,
+    // Nothing cut until somebody asks. A first-time visitor should see their
+    // building, not half of it.
+    activeSectionId: null,
   };
 }
 

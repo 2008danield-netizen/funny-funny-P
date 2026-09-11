@@ -31,6 +31,7 @@ import {
   conductorFor,
 } from '@/code/nec';
 import { findRegions } from '@/scene/planGraph';
+import { climateLoadVa, type ClimateLoad } from './climateLoad';
 import { resolveRoomSpec } from '@/state/planOps';
 import { needsAfci, needsGfci, roomPurpose, type RoomPurpose } from './rooms';
 import { isLighting, isReceptacle } from './layout';
@@ -316,6 +317,16 @@ export interface LoadResult {
   serviceAmps: number;
   /** What the app could not know, in words. */
   gaps: string[];
+  /*
+   * The heating or cooling load added under 220.82(C).
+   *
+   * Kept apart from `lines` deliberately: everything in `lines` is summed into
+   * `connectedVa` and then discounted by the demand factor, and this is added
+   * at FULL value afterwards. Putting it in the same list would make the rows
+   * stop adding up to the subtotal above them, which is precisely the sort of
+   * table nobody trusts.
+   */
+  climate: ClimateLoad;
 }
 
 /** Floor area of a storey, in square metres. */
@@ -402,18 +413,27 @@ export function calculateLoad(doc: DesignDocument): LoadResult {
   const afterDemand =
     connectedVa <= firstVa ? connectedVa : firstVa + (connectedVa - firstVa) * remainderFactor;
 
-  const climate = Math.max(doc.electrical.heatingVa, doc.electrical.coolingVa);
-  if (climate === 0) {
+  /*
+   * The climate load, which is usually the biggest single item here.
+   *
+   * Taken from the Manual J calculation when there is one, because that is a
+   * far better number than anybody types in — and because two figures for the
+   * same fact that can disagree is how a service ends up sized for equipment
+   * nobody is installing. The typed-in figures remain the fallback and an
+   * explicit override; `climateLoadVa` decides which, and says which it used.
+   */
+  const climate = climateLoadVa(doc);
+  if (climate.va === 0) {
     gaps.push(
-      'No heating or cooling load has been entered, so this figure is low. NEC 220.82(C) adds the larger of the two at full value, and it is usually the biggest single item in the calculation.',
+      'No heating or cooling load is known, so this figure is low. NEC 220.82(C) adds the larger of the two at full value, and it is usually the biggest single item in the calculation. Choose a design location in the Heating & Cooling panel and it will come from the load calculation.',
     );
   }
 
-  const demandVa = afterDemand + climate;
+  const demandVa = afterDemand + climate.va;
   const amps = demandVa / NEC_LOAD.volts.service;
   const serviceAmps = Math.max(NEC_LOAD.minService.amps, breakerFor(amps));
 
-  return { lines, connectedVa, demandVa, amps, serviceAmps, gaps };
+  return { lines, connectedVa, demandVa, amps, serviceAmps, gaps, climate };
 }
 
 /* ------------------------------ Panel schedule ---------------------------- */
