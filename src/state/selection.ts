@@ -38,7 +38,9 @@ export type SelectionKind =
   /** The furnace, air handler or heat pump. */
   | 'air-handler'
   /** A radiator or an underfloor loop. */
-  | 'emitter';
+  | 'emitter'
+  /** A section cut line, selected on the plan. */
+  | 'section';
 
 export interface Selection {
   kind: SelectionKind | null;
@@ -140,6 +142,15 @@ export interface EditorState {
   showReturnAir: boolean;
 
   /**
+   * Which section cut is being previewed live in the model, by id.
+   *
+   * View state, like every other layer toggle. Which cut somebody is looking
+   * through while they work is not part of their design — the cuts themselves
+   * are on the document, and this is only which one is switched on.
+   */
+  activeSectionId: string | null;
+
+  /**
    * Walls the detector has proposed on the traced plan, and which are ticked.
    *
    * View state, deliberately: a proposal is not part of the design until it is
@@ -187,6 +198,9 @@ function initialState(): EditorState {
     showHvac: false,
     showSupplyAir: true,
     showReturnAir: true,
+    // Nothing cut until somebody asks. A first-time visitor should see their
+    // building, not half of it.
+    activeSectionId: null,
   };
 }
 

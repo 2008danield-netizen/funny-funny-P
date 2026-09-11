@@ -2124,6 +2124,18 @@ select {
   border-top: 1px solid var(--border);
 }
 
+/*
+ * The selected section cut.
+ *
+ * A left rule rather than a background tint: the block already sits under a
+ * top border, and two competing edges read as a box that has gone wrong.
+ */
+.elec__section--selected {
+  border-left: 2px solid var(--accent, #4a90b8);
+  padding-left: 8px;
+  margin-left: -10px;
+}
+
 .elec__section-title {
   display: flex;
   align-items: baseline;

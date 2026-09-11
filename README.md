@@ -321,6 +321,34 @@ real figure instead of one somebody typed in — with a heat pump's backup heat
 added to its compressor rather than compared against it, because below the
 balance point they run together.
 
+**Cut the building open.**
+A section is the drawing that answers what a plan and an elevation cannot: how
+tall anything is inside, how thick the floor build-up really is, whether the
+stair clears the storey it passes through, and whether the duct and the joist
+want the same 200 mm.
+
+Two cuts come ready-made — one the long way through the house, one across it —
+and they follow the building as it changes shape. Draw one by hand and it is
+never moved for you again, the same rule the pipe and duct routers follow. A cut
+is stored as a line plus which side you stand on, because those are two
+different facts: the same cut gives two completely different drawings depending
+which half is thrown away, and that is what the arrowheads on the plan are for.
+
+The section draws the real construction. Not a poché outline — the studs, the
+batts, the sheathing, the cladding and the plasterboard, each hatched as its own
+material, at its own true thickness, with a leader line naming it and its
+R-value. And because the layers are drawn at their real thickness rather than
+scaled to fit, the section is the first drawing in this app that can notice a
+2x6 assembly specified on a wall somebody drew 100 mm thick. It says so in a
+note instead of drawing a plausible lie at the convenient size.
+
+Pipes and ducts crossing the cut are drawn as the circles they are, at their
+real diameter, which is the one place in the whole set where a 400 mm trunk and
+a 240 mm joist are visibly fighting over the same void.
+
+The same cut also works live in the 3D view: slide it through the building and
+look inside. Only the building is cut — not the ground, not the sky.
+
 **A printable drawing set, drawn to scale.**
 Not a screenshot: a real set, written by a PDF writer built from scratch for
 this. A cover, a dimensioned plan of every storey, an elevation of each side, an
@@ -328,12 +356,25 @@ electrical plan per storey with its legend, the panel schedule and the load
 calculation, a plumbing plan per storey, a drainage riser diagram, a mechanical
 plan per storey with every duct labelled by size and airflow, a room-by-room
 load schedule that makes the whole mechanical design arguable rather than
-merely asserted, an elevation of every run of cabinetry dimensioned unit by unit
+merely asserted, a section sheet for every cut with its construction callouts
+and level lines, an elevation of every run of cabinetry dimensioned unit by unit
 — the drawing a joiner actually works from — and schedules of the doors,
 windows, rooms, cabinets, sanitaryware, fittings, pipes and fixture units. Walls are
-poché, doors show their swing on the side they open, dimensions run in two
-strings, and each sheet carries a title block, a north point and a printed scale
-bar — so you can measure the bar and know whether the print is true.
+poché, doors show their swing on the side they open, every door and window
+carries the same mark on the plan that it carries in the schedule, section
+lines are drawn with the arrowheads that say which way they look, dimensions run
+in two strings, and each sheet carries a title block, a north point and a
+printed scale bar — so you can measure the bar and know whether the print is
+true.
+
+The elevations do hidden-line removal, and it is exact rather than approximate.
+The general problem is genuinely hard and a half-done version draws lines where
+there are none — but every surface in an elevation of this model is a vertical
+rectangle seen square on, and none of them interpenetrate. For that case sorting
+by distance and painting the furthest first is not an approximation, it is the
+answer. A facade that steps in and out now reads as a near face and a far face
+with the step between them, and a window on a rear wall is covered by a nearer
+wing instead of floating on top of the building it is inside.
 
 **Never lose work.** Continuous autosave, full undo/redo, JSON export/import, PNG
 screenshots — and designs saved by session 1 are migrated forward automatically.
@@ -469,6 +510,8 @@ src/
 │   ├── roof.ts         Hip, gable, shed and flat, in three dimensions
 │   ├── dormer.ts       Dormers and skylights, and the holes they cut
 │   ├── roofCode.ts     Slope, ventilation, access and the plot line, cited
+│   ├── section.ts      What a vertical cut plane actually passes through
+│   ├── buildUp.ts      What each assembly is made of, layer by layer
 │   ├── site.ts         Ground, plot, setbacks, earthworks, the compass
 │   └── exterior.ts     What the outside is made of, and how much of it
 │
@@ -549,6 +592,7 @@ src/
 │   ├── electricalSheet.ts  Plan symbols, legend, panel schedule
 │   ├── plumbingSheet.ts    Pipe runs, the riser diagram, fixture-unit schedules
 │   ├── hvacSheet.ts    Ducts, registers, and the room-by-room load schedule
+│   ├── sectionSheet.ts Cut heavy and filled, beyond light and empty
 │   ├── schedules.ts    Doors, windows, rooms, fittings
 │   └── set.ts          The whole set, assembled and numbered
 │
@@ -695,7 +739,10 @@ src/
 npm test
 ```
 
-755 tests covering the parts where a bug is invisible on screen: the Manual J
+809 tests covering the parts where a bug is invisible on screen: what a section
+plane passes through and where it does not, construction build-ups against the
+assemblies they claim to be, section cuts that follow the building and
+hand-drawn ones that never move, the Manual J
 load against the physics it claims to implement and against the range a real one
 lands in, the Manual S sizing windows and the heat-pump balance point checked
 against its own definition rather than against the code that computes it, duct
@@ -719,7 +766,7 @@ and earthworks, the exterior takeoff, stair geometry and every IRC check, storey
 collision (penetration depth, sliding, wall-snap orientation, wedged pieces),
 furniture placement end to end, clearance zones and circulation analysis,
 structural plan edits, document validation, the schema migrations from v1 all the
-way to v11, every advisor rule (does it fire when it should, and stay quiet when it should not), and the
+way to v12, every advisor rule (does it fire when it should, and stay quiet when it should not), and the
 generator. They are pure logic — no browser, no GPU — so they run in about two
 seconds and gate every deploy.
 
@@ -860,6 +907,22 @@ mechanical-code citation. Findings now carry their own authority and two tests
 pin it, because a visibly wrong citation is worse than none at all: it teaches
 the reader to distrust the ones that are right.
 
+Session 13's sweep caught the live section cut twice over. The first version
+put a flat quad on the cut plane to hide the hollow edges, and in the viewport
+it was a large grey rectangle covering most of the frame — hiding exactly the
+interior the cut was made to reveal. A cheap cap turns out to be worse than no
+cap: a hollow edge reads as a cut immediately, a sheet of grey reads as a wall
+that is not there.
+
+With the cap gone, the sweep showed half the world missing and a black void
+where it had been. The clipping plane had been handed to the renderer, which
+applies it to everything in the scene — including the ground and the sky, which
+are not part of any building and have no business being sliced. The plane is
+now walked onto the materials of the building groups only.
+
+Both were invisible in the code and obvious in the picture, which is becoming
+the pattern.
+
 The same sweep also showed the supply registers standing 250 mm off the walls
 like bricks floating in mid-air, and drawn axis-aligned so half of them were
 edge-on to the wall they were supposed to be in. Both were invisible in the code
@@ -907,18 +970,45 @@ their valleys across each other.
   selection with the heat pump balance point, Manual D ducts routed in 3D,
   radiators and underfloor for a wet system, the envelope against the IECC, and
   the load feeding the electrical service calculation.~~ ✅
-- **Session 13 — sections, and the drawing set finished.** A building section
-  cut anywhere through the model, hidden-line removal on the elevations so a
-  facade that steps in and out reads correctly, and window and door marks
-  printed on the plans beside the openings they name.
-- **Left over from session 12, and worth naming.** Ducts are routed in the floor
-  void and are therefore hidden by the floor from any normal viewpoint — true to
-  the building and not much use to look at, so the layer wants the floor to go
-  translucent while it is on. The load makes no allowance for duct loss or gain
-  in an unconditioned space either, which in a hot climate with ducts in a loft
-  is 15 to 25 percent of the cooling load; the app says so in a finding rather
-  than modelling it. Zoning is not modelled at all, so a house too large for one
-  machine gets one machine and a warning.
+- ~~**Session 13** — sections: a cut anywhere through the model with its real
+  construction layers, the same cut live in 3D, hidden-line removal on the
+  elevations, and door and window marks tying the plans to the schedules.~~ ✅
+- **Session 14 — into a headset.** WebXR, six degrees of freedom, teleport and
+  smooth locomotion with comfort options, and a hard 90 fps budget. Built to
+  the Quest's budget first so it runs everywhere, with the extra headroom of a
+  PC unlocking quality rather than being required for it. Note that this forks
+  the renderer: the progressive accumulation that makes the desktop view
+  photoreal depends on the camera holding still, and in a headset it never
+  does. VR wants baked lighting instead.
+- **Session 15 — make it work.** Doors that swing on their hinges, switches
+  that turn on the lights they are actually wired to, drawers and cabinet doors
+  that open, taps that turn. Every one of those already exists in the model as
+  a real object with real dimensions; none of them can be touched yet.
+- **Session 16 — sound.** Footsteps that change on tile and on oak, reverb from
+  the room's own volume, muffling through walls. The most underrated presence
+  lever there is, and the model already knows every floor material and every
+  room volume.
+- **Session 17 — baked lighting**, so it looks good and holds frame rate at the
+  same time.
+- **Session 18 — x-ray in the headset.** Stand in the room and look through the
+  wall at the drain fall, the duct in the ceiling void, the circuit that outlet
+  is on. Twelve sessions of compliance work exist to make this possible and
+  nothing else on the market can do it.
+- **Left over, and worth naming.** Ducts are routed in the floor void and are
+  therefore hidden by the floor from any normal viewpoint — true to the building
+  and not much use to look at, so the layer wants the floor to go translucent
+  while it is on. The load makes no allowance for duct loss or gain in an
+  unconditioned space, which in a hot climate with ducts in a loft is 15 to 25
+  percent of the cooling load; the app says so in a finding rather than
+  modelling it. Zoning is not modelled at all, so a house too large for one
+  machine gets one machine and a warning. And the live section cut leaves the
+  cut edges hollow, because capping them properly needs a stencil pass per
+  plane — the printed section is where the real construction is drawn.
+- **A usability gap worth fixing early.** Drawing a wall across a room does not
+  split it into two rooms: the new wall lands on a fresh vertex rather than
+  cutting the wall it meets, so the partition dangles and no second region
+  forms. Splitting the boundary wall first works, and that is what the split
+  tool is for, but nobody would guess it.
 - **Not done, and worth naming** — pipe and fittings are not on the shopping
   list. Everything priced in this app carries a `PriceBasis` saying where the
   figure came from, and there is no honest source for pipe here yet; inventing

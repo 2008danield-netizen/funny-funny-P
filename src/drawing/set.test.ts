@@ -30,6 +30,7 @@ import { doorSchedule, markOpenings, roomSchedule, windowSchedule } from './sche
 import { addFixture } from '@/state/fittingOps';
 import { routeAll } from '@/state/plumbingOps';
 import { layoutHvac, setDesignLocation, setSystemKind } from '@/state/hvacOps';
+import { addSection, refreshPresets } from '@/state/sectionOps';
 
 /* -------------------------------- Fixtures -------------------------------- */
 
@@ -119,6 +120,71 @@ describe('the drawing set', () => {
     expect(text).toContain('P3.1');
     // And the riser says outright that it is not to scale, because it is not.
     expect(text).toContain('Schematic');
+  });
+
+  it('draws a section sheet for each cut', () => {
+    const doc = house();
+    refreshPresets(doc);
+    expect(doc.sections.length).toBe(2);
+
+    const pdf = buildDrawingSet(doc, options());
+    let text = '';
+    for (const byte of pdf.toBytes()) text += String.fromCharCode(byte);
+
+    expect(text).toContain('S1.1');
+    expect(text).toContain('S1.2');
+  });
+
+  it('draws no section sheets until somebody cuts the building', () => {
+    // `doc.sections` starts empty, so a set exported from a design nobody has
+    // cut is exactly as it was before sections existed.
+    const bare = house();
+    expect(bare.sections).toHaveLength(0);
+
+    const cut = house();
+    refreshPresets(cut);
+
+    expect(buildDrawingSet(bare, options()).pageCount).toBeLessThan(
+      buildDrawingSet(cut, options()).pageCount,
+    );
+  });
+
+  it('prints the cut line and its mark on the plans it was taken from', () => {
+    const doc = house();
+    addSection(doc, { x: -2, z: 3 }, { x: 14, z: 3 });
+
+    const pdf = buildDrawingSet(doc, options());
+    let text = '';
+    for (const byte of pdf.toBytes()) text += String.fromCharCode(byte);
+
+    // The mark ties the arrow on the plan to the sheet. Without both, the
+    // reader cannot get from one to the other.
+    // The title block sets its titles in capitals.
+    expect(text).toContain('SECTION A');
+    // And not twice over: the mark is only appended when the name lacks it.
+    expect(text).not.toContain('SECTION A \u0097 SECTION A');
+  });
+
+  it('marks every door and window on the plan with the schedule’s own mark', () => {
+    /*
+     * D3 on the plan has to be D3 in the schedule. The plan takes its marks
+     * from the same `markOpenings` the schedules use precisely so the two
+     * cannot drift; numbering them separately in two files is how a set comes
+     * to contradict itself.
+     */
+    const doc = house();
+    const doors = markOpenings(doc, 'door');
+    const windows = markOpenings(doc, 'window');
+    expect(doors.length).toBeGreaterThan(0);
+    expect(windows.length).toBeGreaterThan(0);
+
+    const pdf = buildDrawingSet(doc, options());
+    let text = '';
+    for (const byte of pdf.toBytes()) text += String.fromCharCode(byte);
+
+    for (const mark of [...doors, ...windows].map((entry) => entry.mark)) {
+      expect(text, mark).toContain(mark);
+    }
   });
 
   it('draws the mechanical sheets once there is a design location', () => {
@@ -213,7 +279,20 @@ describe('the drawing set', () => {
   });
 
   it('opens in a real PDF reader with the sheets it claims', async () => {
-    const pdf = buildDrawingSet(house(), options());
+    /*
+     * Everything the set can draw goes through a real reader here, sections
+     * included. A section sheet is the most hand-written drawing in the app —
+     * hatching emitted stroke by stroke, because the PDF writer has no pattern
+     * fills — and a malformed path operator produces a file that looks fine
+     * until somebody opens it.
+     */
+    const doc = house();
+    refreshPresets(doc);
+    setDesignLocation(doc, 'Chicago, IL');
+    setSystemKind(doc, 'forced-air');
+    layoutHvac(doc);
+
+    const pdf = buildDrawingSet(doc, options());
     const bytes = pdf.toBytes();
 
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
@@ -230,7 +309,17 @@ describe('the drawing set', () => {
     const text = content.items.map((item) => ('str' in item ? item.str : '')).join(' ');
     expect(text).toContain('Test House');
     expect(text).toContain('A0.1');
-  }, 20_000);
+
+    // And the section sheets really are readable pages, not just page count.
+    const titles: string[] = [];
+    for (let n = 1; n <= document.numPages; n += 1) {
+      const page = await document.getPage(n);
+      const items = await page.getTextContent();
+      titles.push(items.items.map((item) => ('str' in item ? item.str : '')).join(' '));
+    }
+    expect(titles.some((title) => title.includes('S1.1'))).toBe(true);
+    expect(titles.some((title) => title.includes('M2.1'))).toBe(true);
+  }, 30_000);
 });
 
 /* --------------------------------- Scale ---------------------------------- */

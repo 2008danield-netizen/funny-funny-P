@@ -71,6 +71,22 @@ export interface PlanOptions {
   showFurniture: boolean;
   /** Draw the dimension strings. */
   showDimensions: boolean;
+  /**
+   * Marks to print beside the openings they name, keyed by opening id.
+   *
+   * Passed in rather than computed here, because the marks have to be the SAME
+   * ones the door and window schedules use — D1 on the plan and D1 in the
+   * schedule are the same door or the set is useless. Numbering them twice in
+   * two files is how they come to disagree.
+   */
+  openingMarks?: ReadonlyMap<string, string>;
+  /** Section cut lines to draw across the plan, with their marks. */
+  sectionCuts?: ReadonlyArray<{
+    mark: string;
+    from: Point2;
+    to: Point2;
+    looks: 'left' | 'right';
+  }>;
 }
 
 /**
@@ -115,7 +131,126 @@ export function drawFloorPlan(
   drawStairs(page, doc, level, projector);
   drawWalls(page, level, projector);
   drawRoomLabels(page, level, regions, projector, options);
+  if (options.openingMarks) drawOpeningMarks(page, level, projector, options.openingMarks);
+  if (options.sectionCuts) drawSectionCuts(page, projector, options.sectionCuts);
   if (options.showDimensions) drawDimensions(page, level, projector, frame, options);
+}
+
+/* ------------------------------ Opening marks ----------------------------- */
+
+/**
+ * The mark beside each door and window.
+ *
+ * What ties the plan to the schedules. Without it a reader holding a sheet
+ * listing "D3: 900 × 2040, solid core, serves Bedroom 1" has no way to find out
+ * which of the seven doors on the plan that is, and the schedule might as well
+ * not be there.
+ *
+ * Set just off the wall on the side the opening's normal points, so the mark
+ * sits in the room rather than on top of the wall poché it would be unreadable
+ * against.
+ */
+function drawOpeningMarks(
+  page: PdfPage,
+  level: Level,
+  projector: Projector,
+  marks: ReadonlyMap<string, string>,
+): void {
+  for (const segment of resolveWalls(level.plan)) {
+    for (const opening of segment.wall.openings) {
+      const mark = marks.get(opening.id);
+      if (!mark) continue;
+
+      const centre = {
+        x: segment.start.x + segment.direction.x * opening.offset,
+        z: segment.start.z + segment.direction.z * opening.offset,
+      };
+      const offset = segment.wall.thickness / 2 + 0.32;
+      const at = projector.at({
+        x: centre.x + segment.normal.x * offset,
+        z: centre.z + segment.normal.z * offset,
+      });
+
+      // A disc behind the text, so the mark stays readable over a floor finish
+      // or a piece of furniture.
+      page.save().fillColour([1, 1, 1]).strokeColour(GREY).lineWidth(WEIGHTS.thin).dash(null);
+      page.circle(at.x, at.y, 6).fillAndStroke();
+      page.restore();
+
+      page.text(mark, at.x, at.y - 2, { size: 5.4, align: 'center' });
+    }
+  }
+}
+
+/* ------------------------------ Section marks ----------------------------- */
+
+/**
+ * The section cut lines, with an arrow at each end saying which way it looks.
+ *
+ * The arrow is the whole point. A line alone says where the building was cut
+ * and not which half was kept, and those are two different drawings — so the
+ * arrowheads point the way the viewer faces, which is the convention every
+ * drawing office uses and the one thing that makes the mark unambiguous.
+ */
+function drawSectionCuts(
+  page: PdfPage,
+  projector: Projector,
+  cuts: ReadonlyArray<{ mark: string; from: Point2; to: Point2; looks: 'left' | 'right' }>,
+): void {
+  for (const cut of cuts) {
+    const from = projector.at(cut.from);
+    const to = projector.at(cut.to);
+
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy);
+    if (length < 1) continue;
+
+    const along = { x: dx / length, y: dy / length };
+    // On the page y runs up while z runs down the plan, so the left-hand side
+    // of the walk is (along.y, -along.x) here — the mirror of the world-space
+    // version in `building/section.ts`, and the reason it is written out
+    // rather than imported.
+    const left = { x: along.y, y: -along.x };
+    const look = cut.looks === 'left' ? left : { x: -left.x, y: -left.y };
+
+    page.save().lineWidth(WEIGHTS.object).strokeColour([0, 0, 0]).dash([9, 3, 2, 3]);
+    page.line(from.x, from.y, to.x, to.y).stroke();
+    page.restore();
+
+    for (const end of [from, to]) {
+      const inward = end === from ? along : { x: -along.x, y: -along.y };
+
+      // The tail: a short leg running back along the line, then the arrow.
+      const elbow = { x: end.x + inward.x * 16, y: end.y + inward.y * 16 };
+      const tip = { x: elbow.x + look.x * 14, y: elbow.y + look.y * 14 };
+
+      page.save().lineWidth(WEIGHTS.cut).strokeColour([0, 0, 0]).dash(null);
+      page.line(end.x, end.y, elbow.x, elbow.y).stroke();
+      page.line(elbow.x, elbow.y, tip.x, tip.y).stroke();
+
+      const back = { x: -look.x, y: -look.y };
+      const side = { x: -look.y, y: look.x };
+      page.fillColour([0, 0, 0]);
+      page
+        .path(
+          [
+            tip,
+            { x: tip.x + back.x * 6 + side.x * 2.4, y: tip.y + back.y * 6 + side.y * 2.4 },
+            { x: tip.x + back.x * 6 - side.x * 2.4, y: tip.y + back.y * 6 - side.y * 2.4 },
+          ],
+          true,
+        )
+        .fill();
+      page.restore();
+
+      // The mark, in a circle at the outer end.
+      page.save().fillColour([1, 1, 1]).strokeColour([0, 0, 0]).lineWidth(WEIGHTS.object).dash(null);
+      page.circle(end.x, end.y, 7.5).fillAndStroke();
+      page.restore();
+      page.text(cut.mark, end.x, end.y - 2.6, { size: 6.5, align: 'center', font: 'helvetica-bold' });
+    }
+  }
 }
 
 /* --------------------------------- Walls ---------------------------------- */

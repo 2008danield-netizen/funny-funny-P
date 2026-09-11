@@ -19,19 +19,22 @@
  *     ridge, true eaves, and true gable ends, from the same straight-skeleton
  *     geometry the 3D view is built from.
  *
- * WHAT IS NOT DRAWN is hidden-line removal within a storey. A facade that steps
- * in and out shows as one plane, not as a near face and a far face with a
- * shadow line between them. Doing that properly needs a depth sort of every
- * surface, and a half-done version would draw lines in places there are none —
- * which on a drawing somebody builds from is worse than a plainer elevation.
- * The set says so on the sheet rather than leaving it to be discovered.
+ * HIDDEN-LINE REMOVAL is done, and is exact rather than approximate — see
+ * `drawStoreys` for why the general problem's difficulty does not apply to this
+ * particular geometry. A facade that steps in and out now reads as a near face
+ * and a far face with the step between them, and a window on a rear wall is
+ * covered by a nearer wing instead of floating on top of the building it is
+ * inside.
+ *
+ * WHAT IS STILL NOT DRAWN is anything that is not a wall, a roof or an opening:
+ * no cladding texture, no flashing, no rainwater goods, no shadows.
  */
 
 import { PdfPage, type Colour } from './pdf';
 import { GREY, LIGHT, WEIGHTS, drawDimension, drawWitness } from './sheet';
 import type { DrawingScale, Frame } from './scale';
 import { pointsPerMetre } from './scale';
-import { outerBoundaries, resolveWalls } from '@/scene/planGraph';
+import { outerBoundaries, resolveWalls, type WallSegment } from '@/scene/planGraph';
 import { roofGeometry, roofHeightAt } from '@/building/roof';
 import { elevationOf } from '@/state/levels';
 import { groundHeightAt } from '@/building/site';
@@ -204,66 +207,175 @@ export function drawElevation(
   if (options.showDimensions) drawHeights(page, doc, at, extent, frame, options);
 }
 
-/** Each storey as a filled outline, with its openings cut into it. */
+/** One wall face as it appears in elevation: a rectangle at a depth. */
+interface Facade {
+  wallId: string;
+  from: number;
+  to: number;
+  base: number;
+  top: number;
+  /** Distance along the viewing direction. Larger is further away. */
+  depth: number;
+  segment: WallSegment;
+  facingViewer: boolean;
+  levelBase: number;
+}
+
+/**
+ * Every outer wall of every storey, as a rectangle in elevation, with depth.
+ *
+ * The union of intervals this replaced was correct about the SILHOUETTE and
+ * knew nothing about depth, so a facade that stepped in and out came out as one
+ * flat plane. Keeping each wall separate with the distance to it is what lets
+ * the near ones cover the far ones.
+ */
+function facades(doc: DesignDocument, side: Side): Facade[] {
+  const { forward, right } = frameFor(side);
+  const found: Facade[] = [];
+
+  for (const level of doc.levels) {
+    const base = elevationOf(doc, level.id);
+    const boundaryWalls = new Set(
+      outerBoundaries(level.plan).flatMap((outline) => outline.wallIds),
+    );
+
+    for (const segment of resolveWalls(level.plan)) {
+      if (!boundaryWalls.has(segment.wall.id)) continue;
+
+      const half = segment.wall.thickness / 2;
+      const us: number[] = [];
+      const depths: number[] = [];
+
+      for (const end of [segment.start, segment.end]) {
+        for (const across of [1, -1]) {
+          const corner = {
+            x: end.x + segment.normal.x * half * across,
+            z: end.z + segment.normal.z * half * across,
+          };
+          us.push(dot(corner, right));
+          depths.push(dot(corner, forward));
+        }
+      }
+
+      found.push({
+        wallId: segment.wall.id,
+        from: Math.min(...us),
+        to: Math.max(...us),
+        base,
+        top: base + (segment.wall.height || level.wallHeight),
+        // The nearest corner: that is the surface you are looking at.
+        depth: Math.min(...depths),
+        segment,
+        // A wall square to the view shows its face; one edge-on shows nothing
+        // but its thickness, and has no openings worth drawing.
+        facingViewer: Math.abs(dot(segment.normal, forward)) >= 0.7,
+        levelBase: base,
+      });
+    }
+  }
+
+  return found;
+}
+
+/**
+ * Each storey, with the near walls drawn over the far ones.
+ *
+ * -----------------------------------------------------------------------------
+ * HIDDEN-LINE REMOVAL, BY PAINTING FAR TO NEAR.
+ *
+ * The general problem is genuinely hard, and a half-done version draws lines
+ * where there are none — which on a drawing somebody builds from is worse than
+ * a plainer elevation. That is why the set said so on the sheet rather than
+ * attempting it.
+ *
+ * But the general problem is not the problem here. Every surface in an
+ * elevation of this model is a VERTICAL RECTANGLE seen square on, and no two of
+ * them interpenetrate. For that special case the painter's algorithm is not an
+ * approximation, it is exact: sort by distance, draw the furthest first, and
+ * let each opaque rectangle cover what is behind it. The step lines then fall
+ * out of the rectangles' own edges, which is precisely where a step is.
+ *
+ * The openings of each wall are drawn immediately after that wall, so a window
+ * on a rear wall is covered by a nearer wing exactly as it should be — rather
+ * than floating on top of a building it is inside.
+ */
 function drawStoreys(
   page: PdfPage,
   doc: DesignDocument,
   side: Side,
   at: (u: number, y: number) => { x: number; y: number },
 ): void {
-  const { forward, right } = frameFor(side);
+  const { right } = frameFor(side);
 
-  for (const level of doc.levels) {
-    const base = elevationOf(doc, level.id);
-    const top = base + level.wallHeight;
+  const sorted = facades(doc, side).sort((a, b) => b.depth - a.depth);
+  if (sorted.length === 0) return;
 
-    page.save().lineWidth(WEIGHTS.outline).strokeColour([0, 0, 0]).fillColour(WALL_FILL).dash(null);
-    for (const interval of storeyIntervals(doc, level.id, side)) {
+  const nearest = Math.min(...sorted.map((facade) => facade.depth));
+  const furthest = Math.max(...sorted.map((facade) => facade.depth));
+  const spread = Math.max(0.001, furthest - nearest);
+
+  for (const facade of sorted) {
+    /*
+     * A touch of aerial perspective: surfaces further back are drawn very
+     * slightly lighter. Subtle on purpose — it is a depth cue, not shading,
+     * and an elevation that looks rendered stops reading as a measured
+     * drawing. The step also shows in the outline, so this only has to help.
+     */
+    const recession = (facade.depth - nearest) / spread;
+    const tint = Math.min(0.98, WALL_FILL[0] + recession * 0.05);
+
+    page
+      .save()
+      .lineWidth(WEIGHTS.outline)
+      .strokeColour([0, 0, 0])
+      .fillColour([tint, tint, tint - 0.005])
+      .dash(null);
+    page
+      .path(
+        [
+          at(facade.from, facade.base),
+          at(facade.to, facade.base),
+          at(facade.to, facade.top),
+          at(facade.from, facade.top),
+        ],
+        true,
+      )
+      .fillAndStroke();
+    page.restore();
+
+    if (!facade.facingViewer) continue;
+
+    /* ---- This wall's openings, before anything nearer is drawn ---- */
+
+    page.save().lineWidth(WEIGHTS.object).strokeColour([0, 0, 0]).dash(null);
+    for (const opening of facade.segment.wall.openings) {
+      const centre = {
+        x: facade.segment.start.x + facade.segment.direction.x * opening.offset,
+        z: facade.segment.start.z + facade.segment.direction.z * opening.offset,
+      };
+      const u = dot(centre, right);
+      const halfU = (Math.abs(dot(facade.segment.direction, right)) * opening.width) / 2;
+      const sill = facade.levelBase + opening.sillHeight;
+      const head = sill + opening.height;
+
+      // Fill colour set before the path starts — see the note in
+      // `electricalSheet.ts`: a state operator inside a path object is
+      // illegal and costs a reader everything after it.
+      page.fillColour([0.99, 0.99, 0.99]);
       page
         .path(
-          [at(interval.from, base), at(interval.to, base), at(interval.to, top), at(interval.from, top)],
+          [at(u - halfU, sill), at(u + halfU, sill), at(u + halfU, head), at(u - halfU, head)],
           true,
         )
         .fillAndStroke();
-    }
-    page.restore();
 
-    /* ---- Openings in the walls that face this way ---- */
-    const boundaryWalls = new Set(outerBoundaries(level.plan).flatMap((outline) => outline.wallIds));
-
-    page.save().lineWidth(WEIGHTS.object).strokeColour([0, 0, 0]).dash(null);
-    for (const segment of resolveWalls(level.plan)) {
-      if (!boundaryWalls.has(segment.wall.id)) continue;
-      // A wall square to the view shows its face; one edge-on shows nothing.
-      if (Math.abs(dot(segment.normal, forward)) < 0.7) continue;
-
-      for (const opening of segment.wall.openings) {
-        const centre = {
-          x: segment.start.x + segment.direction.x * opening.offset,
-          z: segment.start.z + segment.direction.z * opening.offset,
-        };
-        const u = dot(centre, right);
-        // Which way along the axis the opening's width runs.
-        const halfU = (Math.abs(dot(segment.direction, right)) * opening.width) / 2;
-        const sill = base + opening.sillHeight;
-        const head = sill + opening.height;
-
-        // Fill colour set before the path starts — see the note in
-        // `electricalSheet.ts`: a state operator inside a path object is
-        // illegal and costs a reader everything after it.
-        page.fillColour([0.99, 0.99, 0.99]);
-        page
-          .path([at(u - halfU, sill), at(u + halfU, sill), at(u + halfU, head), at(u - halfU, head)], true)
-          .fillAndStroke();
-
-        if (opening.kind === 'window') {
-          // The glazing bar, which is what makes a window read as a window and
-          // not as a hole.
-          page.save().lineWidth(WEIGHTS.thin).strokeColour(GREY);
-          page.path([at(u, sill), at(u, head)]).stroke();
-          page.path([at(u - halfU, (sill + head) / 2), at(u + halfU, (sill + head) / 2)]).stroke();
-          page.restore();
-        }
+      if (opening.kind === 'window') {
+        // The glazing bar, which is what makes a window read as a window and
+        // not as a hole.
+        page.save().lineWidth(WEIGHTS.thin).strokeColour(GREY);
+        page.path([at(u, sill), at(u, head)]).stroke();
+        page.path([at(u - halfU, (sill + head) / 2), at(u + halfU, (sill + head) / 2)]).stroke();
+        page.restore();
       }
     }
     page.restore();

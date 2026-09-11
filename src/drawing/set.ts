@@ -42,7 +42,14 @@ import {
   type Column,
   type TitleBlock,
 } from './sheet';
-import { boundsOf, fitScale, projectorFor } from './scale';
+import {
+  boundsOf,
+  fitScale,
+  pointsPerMetre,
+  projectorFor,
+  type DrawingScale,
+  type Projector,
+} from './scale';
 import { drawFloorPlan, planExtent } from './floorPlan';
 import { SIDES, drawElevation, elevationExtent, type Side } from './elevation';
 import { drawRunElevation, fittedInto, groupRuns, type RunGroup } from './kitchenElevation';
@@ -72,6 +79,8 @@ import {
   drawLoadSchedule,
 } from './hvacSheet';
 import { deriveHvac } from '@/state/hvacOps';
+import { buildSection } from '@/building/section';
+import { drawSection, drawSectionNotes } from './sectionSheet';
 import { registerAirflows, roomAirflows, sizeAllDucts } from '@/services/ductSize';
 import { plumbingTotals, sizeAllDrainage, sizeAllSupply } from '@/services/plumbingSize';
 import { checkPlumbing } from '@/services/plumbingCheck';
@@ -80,6 +89,7 @@ import {
   cabinetSchedule,
   doorSchedule,
   fittingSchedule,
+  markOpenings,
   fixtureSchedule,
   roomSchedule,
   windowSchedule,
@@ -90,7 +100,7 @@ import { checkElectrical } from '@/services/necCheck';
 import { findRegions, totalFloorArea } from '@/scene/planGraph';
 import { buildingHeight } from '@/state/levels';
 import { compassPoint } from '@/building/site';
-import type { DesignDocument, DeviceKind, Level } from '@/state/types';
+import type { DesignDocument, DeviceKind, Level, SectionCut } from '@/state/types';
 
 export interface DrawingSetOptions {
   /** The sheet the set is printed on. */
@@ -227,6 +237,37 @@ export function buildDrawingSet(doc: DesignDocument, options: DrawingSetOptions)
     });
   }
 
+  /*
+   * Derived once and shared by the section sheets and the mechanical ones.
+   * The load walks every wall of every room, and a set with two sections and
+   * two storeys would otherwise do it five times over.
+   */
+  const hvacForSections = doc.hvac.locationKey === '' ? null : deriveHvac(doc);
+
+  /* --------------------------------- Sections ----------------------------- */
+
+  /*
+   * One sheet per cut.
+   *
+   * Drawn from `doc.sections`, which is empty until somebody asks for a
+   * section — so a set exported from a design nobody has cut is exactly as it
+   * was before, and a set exported after two clicks has the drawing that
+   * answers the height questions the plans and elevations cannot.
+   */
+  for (const cut of doc.sections) {
+    plans.push({
+      number: `S1.${doc.sections.indexOf(cut) + 1}`,
+      // A cut drawn by hand is named "Section A" already, so appending the
+      // mark gives "Section A — section A". Only add it when it is not there.
+      title: new RegExp(`\\b${cut.mark}\\b`).test(cut.name)
+        ? cut.name
+        : `${cut.name} — section ${cut.mark}`,
+      scale: '',
+      draw: (page, block, setScale) =>
+        drawSectionSheet(page, doc, cut, hvacForSections, block, options, size, setScale),
+    });
+  }
+
   /* -------------------------------- Mechanical ---------------------------- */
 
   /*
@@ -241,7 +282,7 @@ export function buildDrawingSet(doc: DesignDocument, options: DrawingSetOptions)
    * a hydronic house and a load-only study both still have a load worth
    * printing, and it is the sheet the next person needs most.
    */
-  const hvac = doc.hvac.locationKey === '' ? null : deriveHvac(doc);
+  const hvac = hvacForSections;
 
   if (hvac && hvac.load.rooms.length > 0) {
     if (doc.hvac.ducts.length > 0 || doc.hvac.emitters.length > 0) {
@@ -477,12 +518,26 @@ function drawPlanSheet(
   const projector = projectorFor(scale, extent, drawable);
   setScale(scale.label);
 
+  /*
+   * The marks come from the same `markOpenings` the schedules use, so D3 on
+   * the plan is D3 in the schedule. Numbering them separately in two files is
+   * exactly how a set comes to contradict itself.
+   */
+  const marks = new Map<string, string>();
+  for (const kind of ['door', 'window'] as const) {
+    for (const marked of markOpenings(doc, kind)) {
+      if (marked.levelId === level.id) marks.set(marked.opening.id, marked.mark);
+    }
+  }
+
   drawFloorPlan(page, doc, level, projector, drawable, {
     format: options.formats.length,
     formatArea: options.formats.area,
     showFurniture: options.showFurniture,
     showFittings: true,
     showDimensions: true,
+    openingMarks: marks,
+    sectionCuts: doc.sections,
   });
 
   drawScaleBar(page, projector, frame.x + 10, frame.y + 16, options.imperial);
@@ -926,6 +981,79 @@ function drawScheduleSheet(
 }
 
 /* -------------------------------- Helpers --------------------------------- */
+
+/* --------------------------------- Sections ------------------------------- */
+
+/**
+ * One section sheet: the drawing, its notes, and the scale it came out at.
+ *
+ * The scale is chosen from the cut's own extent rather than the building's, so
+ * a short section through a stair is drawn as large as it will go rather than
+ * at whatever suits the longest section in the set. They are separate drawings
+ * and each carries its own printed scale bar.
+ */
+function drawSectionSheet(
+  page: PdfPage,
+  doc: DesignDocument,
+  cut: SectionCut,
+  hvac: ReturnType<typeof deriveHvac> | null,
+  block: TitleBlock,
+  options: DrawingSetOptions,
+  size: PageSize,
+  setScale: (label: string) => void,
+): void {
+  const frame = frameOf(page);
+  const notesWidth = 200;
+  const drawable = {
+    x: frame.x + 20,
+    y: frame.y + 40,
+    width: frame.width - notesWidth - 50,
+    height: frame.height - 80,
+  };
+
+  const model = buildSection(doc, cut);
+  const width = Math.max(0.5, model.extent.maxU - model.extent.minU);
+  const height = Math.max(0.5, model.extent.maxY - model.extent.minY);
+
+  const scale = fitScale(width, height, drawable.width, drawable.height, options.imperial);
+  setScale(scale.label);
+
+  const result = drawSection(page, doc, model, hvac, scale, drawable, {
+    imperial: options.imperial,
+    showPlumbing: true,
+    showDucts: true,
+    showElectrical: false,
+    showCallouts: true,
+  });
+
+  const notesX = frame.x + frame.width - notesWidth;
+  drawSectionNotes(page, result.notes, notesX, frame.y + frame.height - 14, notesWidth - 10);
+
+  /*
+   * The scale bar wants a Projector, and a section has no plan projector —
+   * its coordinates are (u, height), not (x, z). Only `perMetre` and `length`
+   * are read, so this supplies exactly those and makes `at` throw rather than
+   * silently returning the origin: if the bar ever starts projecting points,
+   * that should be a loud failure in a test rather than a scale bar drawn in
+   * the corner of the page.
+   */
+  drawScaleBar(page, sectionScaleProjector(scale), frame.x + 10, frame.y + 16, options.imperial);
+
+  void block;
+  void size;
+}
+
+function sectionScaleProjector(scale: DrawingScale): Projector {
+  const perMetre = pointsPerMetre(scale);
+  return {
+    scale,
+    perMetre,
+    length: (metres: number) => metres * perMetre,
+    at: () => {
+      throw new Error('A section has no plan projector; only its scale is defined.');
+    },
+  };
+}
 
 /* -------------------------------- Mechanical ------------------------------ */
 

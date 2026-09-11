@@ -30,6 +30,7 @@ import { Staircases } from '@/scene/Staircases';
 import { Electrical } from '@/scene/Electrical';
 import { Plumbing } from '@/scene/Plumbing';
 import { Hvac } from '@/scene/Hvac';
+import { SectionClip } from '@/scene/SectionClip';
 import { Fittings } from '@/scene/Fittings';
 import { GhostLevel } from '@/scene/GhostLevel';
 import { Roofs } from '@/scene/Roofs';
@@ -80,6 +81,7 @@ export class Engine {
   private electrical: Electrical;
   private plumbing: Plumbing;
   private hvac: Hvac;
+  private sectionClip: SectionClip;
   private fittings: Fittings;
   private ghost: GhostLevel;
   private roofs: Roofs;
@@ -177,6 +179,11 @@ export class Engine {
     this.levelGroup.add(this.plumbing.group);
     this.hvac = new Hvac();
     this.levelGroup.add(this.hvac.group);
+
+    this.sectionClip = new SectionClip();
+    // Local clipping has to be switched on once, or every plane is ignored in
+    // silence — which looks exactly like a plane in the wrong place.
+    this.renderer.webgl.localClippingEnabled = true;
     // Inside the storey group: cabinetry belongs to one storey and its heights
     // are measured from that storey's floor.
     this.fittings = new Fittings();
@@ -396,6 +403,18 @@ export class Engine {
     }
 
     /*
+     * Re-walk the clip onto whatever was just rebuilt.
+     *
+     * Materials created after the cut was switched on have no planes on them,
+     * so a wall added while a section is live would stand there uncut. Guarded
+     * on the cut being active, because with none there is nothing to walk.
+     */
+    if (this.sectionClip.active) {
+      this.sectionClip.apply(this.levelGroup);
+      this.sectionClip.apply(this.roofs.group);
+    }
+
+    /*
      * A device selected on one storey must not stay selected when the user
      * changes to another: the inspector would still be offering to move and
      * delete something that is no longer on screen, and deleting a thing you
@@ -472,6 +491,33 @@ export class Engine {
   }
 
   /** Mirrors editor state (tool, selection, hover) into the scene. */
+  /**
+   * Switches the live section cut on, off, or onto a different cut.
+   *
+   * The clipping planes are handed to the RENDERER rather than to each
+   * material, so one call covers every mesh in the scene — walls, roofs,
+   * furniture, pipes and ducts alike — and nothing has to remember to opt in.
+   * A material that opted in individually is a material that gets forgotten
+   * the next time somebody adds a layer.
+   */
+  private applySectionCut(activeSectionId: string | null): void {
+    const doc = designStore.getState();
+    const cut = activeSectionId
+      ? (doc.sections.find((section) => section.id === activeSectionId) ?? null)
+      : null;
+
+    this.sectionClip.set(cut);
+
+    /*
+     * The building and its roofs, and nothing else. The ground, the sky and
+     * the site are not part of what a section cuts, and slicing them leaves
+     * half the world missing with a void where it was.
+     */
+    this.sectionClip.apply(this.levelGroup);
+    this.sectionClip.apply(this.roofs.group);
+    this.invalidate();
+  }
+
   private applyEditorState(): void {
     this.invalidate();
     const state = editorStore.getState();
@@ -486,6 +532,7 @@ export class Engine {
     this.electrical.setSelection(state.selection.kind === 'device' ? state.selection.id : null);
     this.plumbing.setVisible(state.showPlumbing);
     this.plumbing.setSystems(state.showDrainage, state.showSupply);
+    this.applySectionCut(state.activeSectionId);
     this.hvac.setVisible(state.showHvac);
     this.hvac.setSystems(state.showSupplyAir, state.showReturnAir);
     this.hvac.setSelection(
