@@ -21,6 +21,8 @@ import {
   PLUMBING_LIMITS,
   ROOF_LIMITS,
   SCHEMA_VERSION,
+  SECTION_LIMITS,
+  type SectionCut,
   SITE_LIMITS,
   SKYLIGHT_LIMITS,
   STAIR_LIMITS,
@@ -297,6 +299,7 @@ export function createDefaultDocument(): DesignDocument {
     electrical: defaultElectrical(),
     plumbing: defaultPlumbing(),
     hvac: defaultHvac(),
+    sections: [],
     runs: [],
     fixtures: [],
     lighting: {
@@ -1671,6 +1674,47 @@ function safePlumbing(
  * heat — a silently wrong answer, which is the worst kind. A substituted
  * default is at least visible in the panel.
  */
+/**
+ * Section cuts, validated.
+ *
+ * A cut with a degenerate line — both ends at the same point — would produce a
+ * zero-width section that draws as nothing and divides by zero working out
+ * which side of it things are on, so those are dropped rather than repaired.
+ * There is no sensible guess at what line somebody meant.
+ */
+function safeSections(value: unknown): SectionCut[] {
+  if (!Array.isArray(value)) return [];
+
+  const seen = new Set<string>();
+  const result: SectionCut[] = [];
+
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const raw = entry as Record<string, unknown>;
+
+    const id = safeString(raw.id, '');
+    if (!id || seen.has(id)) continue;
+
+    const from = safePoint(raw.from);
+    const to = safePoint(raw.to);
+    if (!from || !to) continue;
+    if (Math.hypot(to.x - from.x, to.z - from.z) < SECTION_LIMITS.minLength) continue;
+
+    seen.add(id);
+    result.push({
+      id,
+      mark: safeString(raw.mark, String.fromCharCode(65 + (result.length % 26))),
+      name: safeString(raw.name, 'Section'),
+      from,
+      to,
+      looks: raw.looks === 'right' ? 'right' : 'left',
+      automatic: raw.automatic === true,
+    });
+  }
+
+  return result;
+}
+
 function safeHvac(
   value: unknown,
   levels: readonly Level[],
@@ -1884,6 +1928,7 @@ export function sanitizeDocument(input: unknown): DesignDocument {
     // survive validation has to be dropped rather than left dangling.
     plumbing: safePlumbing(raw.plumbing, levels.list, fixtures),
     hvac: safeHvac(raw.hvac, levels.list),
+    sections: safeSections(raw.sections),
     clearance: safeClearance(raw.clearance),
     currency: safeCurrency(raw.currency),
     lighting: {

@@ -242,12 +242,14 @@ export function accumulateCfm(
    * summing the branches into it would size it for a flow that is physically
    * impossible.
    *
-   * In practice the sum has come out equal to the system airflow on every
-   * house tried, because the same season dominates in every room of a simple
-   * plan and that season's shares sum to exactly one. It is a plan with real
-   * variety of orientation — a north bedroom and a west living room in the
-   * same house — that separates them, and this is here so that plan gets the
-   * right trunk rather than a size up.
+   * On a single-room plan the sum comes out exactly equal to the system
+   * airflow, because one season dominates everywhere and that season's shares
+   * sum to one. It takes a plan with real variety of orientation to separate
+   * them: a two-room house with windows on every side runs about 2% over, and
+   * the gap grows with the number of rooms and the spread of their exposures.
+   * Two percent rarely crosses a duct-size boundary — but the boundaries are
+   * where it matters, and a trunk sized for air that never exists is wrong
+   * whether or not this particular house notices.
    */
   if (Number.isFinite(systemCfm)) {
     for (const [id, cfm] of totals) totals.set(id, Math.min(cfm, systemCfm));

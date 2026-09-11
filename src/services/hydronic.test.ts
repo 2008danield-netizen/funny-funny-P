@@ -23,7 +23,12 @@ function house(options: { city?: string; roof?: string; glazing?: string } = {})
   level.plan.walls = [];
   level.plan.rooms = {};
 
-  addRectangle(level.plan, { x: 0, z: 0 }, 12, 8);
+  // Centred at (6, 4) so the house spans x 0-12 and z 0-8 and the partitions
+  // below land inside it. `addRectangle` takes the CENTRE, not a corner — at
+  // the origin the partitions fall outside as dangling walls enclosing
+  // nothing, which still yields a plan, still yields one room, and silently
+  // stops this fixture being the multi-room house it claims to be.
+  addRectangle(level.plan, { x: 6, z: 4 }, 12, 8);
   drawWall(level.plan, { x: 6, z: 0 }, { x: 6, z: 8 });
   normalizePlan(level.plan);
 

@@ -1037,3 +1037,95 @@ describe('schema v11 — heating and cooling', () => {
     expect(doc.hvac.ducts[0]!.upstreamId).toBeNull();
   });
 });
+
+/* ------------------------------ v11 to v12 -------------------------------- */
+
+describe('schema v12 — section cuts', () => {
+  it('gives an older document an empty list rather than preset cuts', () => {
+    /*
+     * A preset section is derived from the shape of the building. Generating
+     * one at migration time freezes it against the building as it was then, so
+     * a house whose walls moved afterwards would carry a cut line that no
+     * longer runs through the middle of anything — and nothing would say it had
+     * gone stale.
+     */
+    const doc = sanitizeDocument(v1Document());
+    expect(doc.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(doc.sections).toEqual([]);
+  });
+
+  it('keeps a cut that was already there', () => {
+    const base = sanitizeDocument(v1Document());
+    const doc = sanitizeDocument({
+      ...base,
+      schemaVersion: 12,
+      sections: [
+        {
+          id: 'sec1',
+          mark: 'A',
+          name: 'Section through the stair',
+          from: { x: -1, z: 3 },
+          to: { x: 9, z: 3 },
+          looks: 'right',
+          automatic: false,
+        },
+      ],
+    });
+
+    expect(doc.sections).toHaveLength(1);
+    expect(doc.sections[0]!.mark).toBe('A');
+    expect(doc.sections[0]!.looks).toBe('right');
+    expect(doc.sections[0]!.automatic).toBe(false);
+  });
+
+  it('drops a cut whose line has no length', () => {
+    // Both ends at the same point is a zero-width section: it draws as nothing
+    // and divides by zero working out which side of it things are on. There is
+    // no sensible guess at what line was meant, so it goes.
+    const base = sanitizeDocument(v1Document());
+    const doc = sanitizeDocument({
+      ...base,
+      sections: [
+        { id: 'a', mark: 'A', name: 'Nowhere', from: { x: 2, z: 2 }, to: { x: 2, z: 2 }, looks: 'left', automatic: false },
+        { id: 'b', mark: 'B', name: 'Real', from: { x: 0, z: 0 }, to: { x: 6, z: 0 }, looks: 'left', automatic: false },
+      ],
+    });
+
+    expect(doc.sections).toHaveLength(1);
+    expect(doc.sections[0]!.id).toBe('b');
+  });
+
+  it('drops a duplicate id rather than keeping two cuts that are one cut', () => {
+    const base = sanitizeDocument(v1Document());
+    const doc = sanitizeDocument({
+      ...base,
+      sections: [
+        { id: 'same', mark: 'A', name: 'First', from: { x: 0, z: 0 }, to: { x: 6, z: 0 }, looks: 'left', automatic: false },
+        { id: 'same', mark: 'B', name: 'Second', from: { x: 0, z: 4 }, to: { x: 6, z: 4 }, looks: 'left', automatic: false },
+      ],
+    });
+
+    expect(doc.sections).toHaveLength(1);
+    expect(doc.sections[0]!.name).toBe('First');
+  });
+
+  it('defaults a missing direction rather than dropping the cut', () => {
+    // Unlike the line, a missing direction has an obvious answer: pick one.
+    // The drawing is still a real section, just possibly the other half.
+    const base = sanitizeDocument(v1Document());
+    const doc = sanitizeDocument({
+      ...base,
+      sections: [{ id: 'a', from: { x: 0, z: 0 }, to: { x: 6, z: 0 } }],
+    });
+
+    expect(doc.sections).toHaveLength(1);
+    expect(doc.sections[0]!.looks).toBe('left');
+    expect(doc.sections[0]!.mark).toBe('A');
+  });
+
+  it('throws away anything that is not a list', () => {
+    const base = sanitizeDocument(v1Document());
+    expect(sanitizeDocument({ ...base, sections: 'two of them' }).sections).toEqual([]);
+    expect(sanitizeDocument({ ...base, sections: null }).sections).toEqual([]);
+  });
+});

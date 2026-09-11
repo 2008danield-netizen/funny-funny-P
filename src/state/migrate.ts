@@ -417,6 +417,22 @@ function migrateV10ToV11(doc: Record<string, unknown>): Record<string, unknown> 
 }
 
 /**
+ * v11 → v12: section cuts.
+ *
+ * An empty list, not a pair of preset cuts.
+ *
+ * A preset section is derived from the shape of the building, and generating
+ * one here would freeze it against the building as it was at migration time —
+ * so a house whose walls moved afterwards would carry a cut line that no longer
+ * runs through the middle of anything, with nothing to say it had gone stale.
+ * The presets are offered by the section tool instead, computed from the plan
+ * at the moment somebody asks for them.
+ */
+function migrateV11ToV12(doc: Record<string, unknown>): Record<string, unknown> {
+  return { ...doc, schemaVersion: 12, sections: [] };
+}
+
+/**
  * Brings a document up to the current schema.
  *
  * Migrations are applied in sequence, so a v1 document passes through every
@@ -461,6 +477,9 @@ export function migrateDocument(input: Record<string, unknown>): Record<string, 
   }
   if (declared < 11) {
     doc = migrateV10ToV11(doc);
+  }
+  if (declared < 12) {
+    doc = migrateV11ToV12(doc);
   }
 
   return doc;

@@ -31,7 +31,12 @@ function house(city = 'Chicago, IL'): DesignDocument {
   level.plan.walls = [];
   level.plan.rooms = {};
 
-  addRectangle(level.plan, { x: 0, z: 0 }, 12, 8);
+  // Centred at (6, 4) so the house spans x 0-12 and z 0-8 and the partitions
+  // below land inside it. `addRectangle` takes the CENTRE, not a corner — at
+  // the origin the partitions fall outside as dangling walls enclosing
+  // nothing, which still yields a plan, still yields one room, and silently
+  // stops this fixture being the multi-room house it claims to be.
+  addRectangle(level.plan, { x: 6, z: 4 }, 12, 8);
   // Two cross walls, making a living room, a bedroom and a hall.
   drawWall(level.plan, { x: 5, z: 0 }, { x: 5, z: 8 });
   drawWall(level.plan, { x: 9, z: 0 }, { x: 9, z: 8 });
@@ -226,8 +231,11 @@ describe('Manual D sizing', () => {
      * happens in one season. A trunk may not be sized for one that happens in
      * none.
      *
-     * This holds regardless of whether the cap is currently binding on the
-     * test house — it is the invariant, not the symptom.
+     * On this fixture the cap genuinely binds: the branch flows sum to a few
+     * percent over what the blower moves. It took a real multi-room house to
+     * show that — an earlier version of this fixture had its partitions
+     * outside the rectangle, so it was a one-room house wearing a three-room
+     * comment, and the cap never bound.
      */
     const doc = laidOut();
     const load = calculateLoad(doc);
