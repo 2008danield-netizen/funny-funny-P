@@ -321,6 +321,39 @@ real figure instead of one somebody typed in — with a heat pump's backup heat
 added to its compressor rather than compared against it, because below the
 balance point they run together.
 
+**Walk through it, at eye height.**
+Stand in the building and walk about — W A S D and the mouse, or a headset if
+you have one. The floor, the stairs and the doorways are the ones you drew: if a
+doorway is too narrow to walk through here, it is too narrow. The walker shares
+the collision solver with the furniture tool, so a door wide enough to place a
+sofa through is wide enough to walk through, and the two can never disagree.
+
+Nothing in the code knows what "climbing a staircase" is. It falls out of one
+rule applied every frame: every surface at this point is a candidate, and the
+highest one within a single step of where the foot already is wins. A tread
+180 mm up is taken; a floor 2.4 m up is a different storey and is not, even
+though it is directly overhead.
+
+Teleport throws a curved arc rather than a straight ray, because a straight ray
+gets flatter the further you aim until a few degrees of wrist swings the landing
+across the house. It lands only where the walker itself would have been allowed
+to stand — the same function, not a simplified copy, because that is the only
+way to be sure a jump cannot put you inside a wall.
+
+The comfort settings are on the first screen and default to the cautious ones.
+Smooth movement while standing still is a direct disagreement between the eyes
+and the inner ear, and it makes a real fraction of people unwell inside a
+minute. The vignette narrows the view while you move, which removes most of that
+for most people at almost no cost to what you can actually see; snap turning
+handles the worse offender of the two. Somebody who does not need either turns
+them off, rather than the other way round — because the other way round costs
+you the person who takes the headset off and does not put it back.
+
+There is a frame readout, and it is there on purpose. A slow frame on a screen
+is a slow frame; in a headset it is felt in the inner ear. Nothing has been cut
+from the renderer for VR yet — this is the measurement that will decide what
+should be, rather than guessing in advance and cutting the wrong thing.
+
 **Cut the building open.**
 A section is the drawing that answers what a plan and an elevation cannot: how
 tall anything is inside, how thick the floor build-up really is, whether the
@@ -596,6 +629,14 @@ src/
 │   ├── schedules.ts    Doors, windows, rooms, fittings
 │   └── set.ts          The whole set, assembled and numbered
 │
+├── walk/             A person moving through the building
+│   ├── ground.ts       What is underfoot, including stairs
+│   ├── Walker.ts       Collision, stepping up, and the body
+│   └── teleport.ts     The thrown arc, and where it may land
+│
+├── xr/
+│   └── XrWalk.ts       The session, the controllers, tracked height
+│
 ├── controls/
 │   └── CameraController.ts  Orbit controls, limits, eased viewpoints
 │
@@ -739,7 +780,10 @@ src/
 npm test
 ```
 
-809 tests covering the parts where a bug is invisible on screen: what a section
+848 tests covering the parts where a bug is invisible on screen: what is
+underfoot and what is not, sliding along walls and refusing to squeeze through a
+door narrower than a body, climbing a flight and arriving on the floor above,
+where a teleport arc may land, frame-time percentiles, what a section
 plane passes through and where it does not, construction build-ups against the
 assemblies they claim to be, section cuts that follow the building and
 hand-drawn ones that never move, the Manual J
@@ -907,6 +951,20 @@ mechanical-code citation. Findings now carry their own authority and two tests
 pin it, because a visibly wrong citation is worse than none at all: it teaches
 the reader to distrust the ones that are right.
 
+Session 14's sweep caught the walkthrough's first impression twice. Entering
+put you flat against a blank wall — the rule was "face the middle of the
+storey", which sounds right and is not: in a single-room house the middle IS
+where you are standing, so the heading fell back to zero and you opened on grey
+with no floor, no ceiling and nothing to say how big the room was. Facing the
+longest sight line in the room instead gives a corner, two walls and real depth.
+
+Then the corner had sky above it. Ceilings are off by default so the orbit
+camera can look down into the plan, which is exactly right from outside and
+exactly wrong from inside — a room open to the sky has no enclosure, and
+enclosure is most of what being somewhere is. They are forced on for the
+duration of a walkthrough, as a view decision rather than a change to the
+design.
+
 Session 13's sweep caught the live section cut twice over. The first version
 put a flat quad on the cut plane to hide the hollow edges, and in the viewport
 it was a large grey rectangle covering most of the frame — hiding exactly the
@@ -973,13 +1031,9 @@ their valleys across each other.
 - ~~**Session 13** — sections: a cut anywhere through the model with its real
   construction layers, the same cut live in 3D, hidden-line removal on the
   elevations, and door and window marks tying the plans to the schedules.~~ ✅
-- **Session 14 — into a headset.** WebXR, six degrees of freedom, teleport and
-  smooth locomotion with comfort options, and a hard 90 fps budget. Built to
-  the Quest's budget first so it runs everywhere, with the extra headroom of a
-  PC unlocking quality rather than being required for it. Note that this forks
-  the renderer: the progressive accumulation that makes the desktop view
-  photoreal depends on the camera holding still, and in a headset it never
-  does. VR wants baked lighting instead.
+- ~~**Session 14** — walking through it: the walker, stairs underfoot, the
+  teleport arc, comfort settings, a desktop walkthrough and a WebXR session
+  over the same code, and a frame budget to measure against.~~ ✅
 - **Session 15 — make it work.** Doors that swing on their hinges, switches
   that turn on the lights they are actually wired to, drawers and cabinet doors
   that open, taps that turn. Every one of those already exists in the model as
@@ -1004,6 +1058,14 @@ their valleys across each other.
   machine gets one machine and a warning. And the live section cut leaves the
   cut edges hollow, because capping them properly needs a stencil pass per
   plane — the printed section is where the real construction is drawn.
+- **Left over from session 14.** Cabinetry is not a collider, so a kitchen
+  island can be walked through; walls and furniture are. And the WebXR path is
+  the one thing in this project that has never been run — there is no headset in
+  the environment it was built in, so the session, the controllers and the rig
+  are written against the specification and verified only by the desktop
+  walkthrough sharing all of their logic below the input layer. That is
+  deliberate design rather than an excuse, but it is not the same as having
+  seen it work.
 - **A usability gap worth fixing early.** Drawing a wall across a room does not
   split it into two rooms: the new wall lands on a fresh vertex rather than
   cutting the wall it meets, so the partition dangles and no second region

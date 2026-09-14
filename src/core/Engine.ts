@@ -31,6 +31,7 @@ import { Electrical } from '@/scene/Electrical';
 import { Plumbing } from '@/scene/Plumbing';
 import { Hvac } from '@/scene/Hvac';
 import { SectionClip } from '@/scene/SectionClip';
+import { WalkMode } from './WalkMode';
 import { Fittings } from '@/scene/Fittings';
 import { GhostLevel } from '@/scene/GhostLevel';
 import { Roofs } from '@/scene/Roofs';
@@ -82,6 +83,8 @@ export class Engine {
   private plumbing: Plumbing;
   private hvac: Hvac;
   private sectionClip: SectionClip;
+  private walk: WalkMode | null = null;
+  private onWalkChange: (() => void) | null = null;
   private fittings: Fittings;
   private ghost: GhostLevel;
   private roofs: Roofs;
@@ -234,6 +237,178 @@ export class Engine {
     this.start();
   }
 
+  /* ------------------------------ Walkthrough ----------------------------- */
+
+  /** Told whenever the mode, the pointer lock or the XR session changes. */
+  setWalkHandler(handler: (() => void) | null): void {
+    this.onWalkChange = handler;
+  }
+
+  /** Drops somebody into the building. False when there is no room to enter. */
+  enterWalkthrough(): boolean {
+    const entered = this.walk?.enter(designStore.getState()) ?? false;
+    if (entered) {
+      /*
+       * The orbit controls have to be switched off, not merely ignored.
+       *
+       * They write the camera in their own `update()`, so leaving them enabled
+       * means two things writing the same camera every frame and a view that
+       * fights itself.
+       */
+      this.cameraController.controls.enabled = false;
+      // The ceiling override only takes effect on a rebuild, and nothing about
+      // the document changed — so ask for one.
+      this.rebuildForMode();
+      /*
+       * Accumulation is switched off for the duration.
+       *
+       * It converges on a still camera, and a walker is never still. Left on it
+       * would reset every frame and do nothing but cost — and in a headset it
+       * would cost the frame budget the whole feature depends on.
+       */
+      this.building.updateForCamera(this.cameraController.camera);
+      this.invalidate();
+    }
+    return entered;
+  }
+
+  exitWalkthrough(): void {
+    this.walk?.exit();
+    this.rebuildForMode();
+    // Put the orbit camera back in charge of its own framing.
+    this.cameraController.controls.enabled = true;
+    this.invalidate();
+  }
+
+  /** Rebuilds the storey because the MODE changed rather than the document. */
+  private rebuildForMode(): void {
+    const doc = designStore.getState();
+    const level = activeLevel(doc);
+    const holes = floorHoles(doc, level.id, (stair) => stairGeometry(doc, stair).wellOpening);
+
+    const wantCeilings = doc.showCeilings || this.walkingThrough;
+    this.lastCeilings = wantCeilings;
+    this.building.update(level.plan, wantCeilings, holes, doc.exterior);
+  }
+
+  get walkingThrough(): boolean {
+    return this.walk?.active ?? false;
+  }
+
+  get walkState() {
+    return this.walk?.state ?? null;
+  }
+
+  get pointerLocked(): boolean {
+    return this.walk?.pointerLocked ?? false;
+  }
+
+  resumeWalkPointer(): void {
+    this.walk?.resumePointer();
+  }
+
+  get frameSummary(): string {
+    return this.walk?.budget.summary ?? 'no frames measured yet';
+  }
+
+  get frameStats() {
+    return this.walk?.budget.stats ?? null;
+  }
+
+  applyComfort(comfort: Parameters<WalkMode['setComfort']>[0]): void {
+    this.walk?.setComfort(comfort);
+  }
+
+  static xrAvailable(): Promise<boolean> {
+    return WalkMode.xrAvailable();
+  }
+
+  get presenting(): boolean {
+    return this.walk?.presenting ?? false;
+  }
+
+  /**
+   * Enters a headset session and hands the frames over to the runtime.
+   *
+   * `requestAnimationFrame` does not drive an XR session — the headset does,
+   * through `setAnimationLoop`, at its own rate. Leaving the ordinary loop
+   * running gives a black headset with a perfectly healthy tab behind it.
+   */
+  async enterXr(): Promise<void> {
+    if (!this.walk) return;
+    await this.walk.enterXr(designStore.getState());
+
+    this.loop?.stop();
+    this.renderer.webgl.setAnimationLoop(() => this.renderXrFrame());
+  }
+
+  async exitXr(): Promise<void> {
+    if (!this.walk) return;
+    await this.walk.exitXr();
+
+    this.renderer.webgl.setAnimationLoop(null);
+    this.loop?.invalidate();
+  }
+
+  /**
+   * One frame inside a session.
+   *
+   * Deliberately the plain path: no accumulation, no pixel-ratio games, no
+   * post-processing. The runtime is rendering twice, once per eye, inside a
+   * budget under ten milliseconds — and everything clever this app does for a
+   * still desktop frame is worth nothing to somebody who is walking.
+   */
+  private renderXrFrame(): void {
+    const now = performance.now();
+    const delta = this.lastXrFrame > 0 ? (now - this.lastXrFrame) / 1000 : 1 / 90;
+    this.lastXrFrame = now;
+
+    const doc = designStore.getState();
+    this.walk?.update(doc, delta);
+
+    this.renderer.webgl.render(this.scene, this.cameraController.camera);
+    this.walk?.budget.record(performance.now() - now);
+  }
+
+  private lastXrFrame = 0;
+  /** What the ceilings were last built as, so the override can be noticed. */
+  private lastCeilings: boolean | null = null;
+
+  /**
+   * Two hooks on `window` for automated checking, and why they are not
+   * wrapped in a development-only flag.
+   *
+   * Pointer lock needs a real user gesture, which a headless browser cannot
+   * produce — so without these the entire walkthrough can only ever be tested
+   * by a person putting their hands on it, and a feature like that quietly
+   * rots. Both are read-only or drive the same intent the real input produces,
+   * neither exposes anything the console could not already reach through the
+   * scene, and stripping them in a production build would mean the thing
+   * shipped is not the thing tested.
+   */
+  private exposeProbe(): void {
+    const scope = window as unknown as Record<string, unknown>;
+
+    scope.__walkProbe = () => {
+      const camera = this.cameraController.camera;
+      const state = this.walkState;
+      return {
+        walking: this.walkingThrough,
+        presenting: this.presenting,
+        camera: {
+          x: +camera.position.x.toFixed(3),
+          y: +camera.position.y.toFixed(3),
+          z: +camera.position.z.toFixed(3),
+        },
+        standing: state ? { y: +state.standing.y.toFixed(3), kind: state.standing.kind } : null,
+        frames: this.frameSummary,
+      };
+    };
+
+    scope.__walkDrive = (intent: Record<string, number>, seconds: number) =>
+      this.walk?.drive(designStore.getState(), intent, seconds) ?? null;
+  }
+
   /** Registers a callback for the once-per-second performance report. */
   setStatsHandler(handler: (stats: EngineStats) => void): void {
     this.onStats = handler;
@@ -346,7 +521,21 @@ export class Engine {
     // Reference comparison is valid because the store treats documents as
     // immutable — an unchanged sub-object is guaranteed to be the same object.
     const planChanged = levelSwitched || !previousLevel || previousLevel.plan !== level.plan;
-    const ceilingsChanged = !previous || previous.showCeilings !== doc.showCeilings;
+    /*
+     * CEILINGS GO ON WHILE WALKING, WHATEVER THE DOCUMENT SAYS.
+     *
+     * They are off by default so an orbit camera can look down into the plan,
+     * which is exactly right from outside and exactly wrong from inside.
+     * Standing in a room open to the sky, the enclosure disappears and with it
+     * most of the sense of being anywhere — which the first browser run showed
+     * plainly: a corner of two walls and blue sky where the ceiling should be.
+     *
+     * This is a view decision for one mode, not a change to the design, so it
+     * overrides here rather than writing to the document.
+     */
+    const wantCeilings = doc.showCeilings || this.walkingThrough;
+    const ceilingsChanged = this.lastCeilings !== wantCeilings;
+    this.lastCeilings = wantCeilings;
 
     // The whole storey rides at its own height above the ground.
     this.levelGroup.position.y = elevationOf(doc, level.id);
@@ -359,7 +548,7 @@ export class Engine {
       previous?.stairs !== doc.stairs ||
       previous?.exterior !== doc.exterior
     ) {
-      this.building.update(level.plan, doc.showCeilings, holes, doc.exterior);
+      this.building.update(level.plan, wantCeilings, holes, doc.exterior);
     }
     if (levelSwitched || !previousLevel || previousLevel.furniture !== level.furniture) {
       this.furnishings.update(level.furniture);
@@ -532,6 +721,18 @@ export class Engine {
     this.electrical.setSelection(state.selection.kind === 'device' ? state.selection.id : null);
     this.plumbing.setVisible(state.showPlumbing);
     this.plumbing.setSystems(state.showDrainage, state.showSupply);
+    /*
+     * Entering and leaving the walkthrough is driven from the editor state
+     * rather than called directly, so the panel, a keyboard shortcut and
+     * anything else all go through one path.
+     */
+    if (state.walkthrough && !this.walkingThrough) {
+      if (!this.enterWalkthrough()) editorStore.patch({ walkthrough: false });
+    } else if (!state.walkthrough && this.walkingThrough) {
+      this.exitWalkthrough();
+    }
+    this.applyComfort(state.comfort);
+
     this.applySectionCut(state.activeSectionId);
     this.hvac.setVisible(state.showHvac);
     this.hvac.setSystems(state.showSupplyAir, state.showReturnAir);
@@ -599,8 +800,50 @@ export class Engine {
     );
     this.applyQuality();
 
+    this.walk = new WalkMode(
+      {
+        renderer: this.renderer.webgl,
+        scene: this.scene,
+        camera,
+        canvas: this.renderer.canvas,
+        invalidate: () => this.invalidate(),
+        onChange: () => {
+          this.onWalkChange?.();
+          this.invalidate();
+        },
+      },
+      editorStore.getState().comfort,
+    );
+
+    this.exposeProbe();
+
     this.loop = new FrameLoop((delta, dirty) => {
       const started = performance.now();
+
+      /*
+       * WALKTHROUGH TAKES THE FRAME OVER COMPLETELY.
+       *
+       * Not a variation on the orbit path: the camera is driven by a body
+       * rather than by controls, and progressive accumulation is meaningless
+       * because somebody walking is never still. So it is handled first and
+       * returns, and it always asks for another frame — a walkthrough that
+       * went to sleep would stop responding to a key being held.
+       */
+      if (this.walk?.active) {
+        const doc = designStore.getState();
+        this.walk.update(doc, delta);
+
+        this.building.updateForCamera(camera);
+        this.roofs.setVisible(this.showRoofs && !this.building.isCutaway);
+
+        this.applyPixelRatio(true);
+        this.restoreSun();
+        this.pipeline!.renderMoving(camera);
+
+        this.walk.budget.record(performance.now() - started);
+        this.reportStats(delta, started);
+        return true;
+      }
 
       /* ---- Advance the camera, and find out whether it actually moved ---- */
       const cameraMoved = this.cameraController.update(delta);

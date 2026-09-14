@@ -306,19 +306,30 @@ export function startingPoint(
   const standing = standingAt(doc, biggest.interiorPoint, 0);
   if (!standing) return null;
 
-  // Face the centre of the storey, so the first thing seen is the building
-  // rather than the inside of the nearest wall.
-  const centre = regions.reduce(
-    (sum, region) => ({
-      x: sum.x + region.interiorPoint.x / regions.length,
-      z: sum.z + region.interiorPoint.z / regions.length,
-    }),
-    { x: 0, z: 0 },
-  );
+  /*
+   * Face the longest sight line in the room, not its centroid.
+   *
+   * Facing the middle of the storey sounds right and is not: in a single-room
+   * house the middle IS where you are standing, so the heading falls back to
+   * zero and you enter looking at whichever wall happens to be north. That is
+   * exactly what the first browser check showed — a flat grey wall, no floor,
+   * no ceiling, nothing to tell you how big the room is.
+   *
+   * The furthest corner of the room is the view with the most depth in it, and
+   * depth is the whole reason somebody pressed the button.
+   */
+  let heading = 0;
+  let furthest = 0;
 
-  const dx = centre.x - biggest.interiorPoint.x;
-  const dz = centre.z - biggest.interiorPoint.z;
-  const heading = Math.hypot(dx, dz) < 0.2 ? 0 : Math.atan2(dx, dz);
+  for (const corner of biggest.polygon) {
+    const dx = corner.x - biggest.interiorPoint.x;
+    const dz = corner.z - biggest.interiorPoint.z;
+    const distance = Math.hypot(dx, dz);
+    if (distance > furthest) {
+      furthest = distance;
+      heading = Math.atan2(dx, dz);
+    }
+  }
 
   return { at: biggest.interiorPoint, standing, heading };
 }

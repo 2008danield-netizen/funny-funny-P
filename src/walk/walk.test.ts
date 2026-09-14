@@ -537,3 +537,43 @@ describe('the teleport arc', () => {
     expect(heights[heights.length - 1]).toBeLessThan(highest);
   });
 });
+
+describe('where the walkthrough starts looking', () => {
+  it('faces the longest sight line rather than the middle of the room', () => {
+    /*
+     * Found in the browser on the first run. "Face the centre of the storey"
+     * sounds right and is not: in a single-room house the centre IS where you
+     * are standing, so the heading fell back to zero and the walkthrough opened
+     * on a flat grey wall with no floor, no ceiling and nothing to say how big
+     * the room was.
+     */
+    const doc = house();
+    const start = startingPoint(doc)!;
+
+    // The room spans x 0-12 and z 0-8 with its interior point in the middle,
+    // so the longest sight line is towards a corner — never straight up an
+    // axis at a wall 4 m away.
+    const forward = { x: Math.sin(start.heading), z: Math.cos(start.heading) };
+    expect(Math.abs(forward.x)).toBeGreaterThan(0.2);
+    expect(Math.abs(forward.z)).toBeGreaterThan(0.2);
+  });
+
+  it('looks at something further away than the nearest wall', () => {
+    const doc = house();
+    const start = startingPoint(doc)!;
+
+    // Walk the heading until it leaves the building; that distance is the
+    // sight line, and it must beat the 4 m to the nearest wall.
+    let distance = 0;
+    for (let step = 0.1; step < 20; step += 0.1) {
+      const probe = {
+        x: start.at.x + Math.sin(start.heading) * step,
+        z: start.at.z + Math.cos(start.heading) * step,
+      };
+      if (!canStandAt(doc, probe, start.standing.y)) break;
+      distance = step;
+    }
+
+    expect(distance).toBeGreaterThan(4);
+  });
+});
