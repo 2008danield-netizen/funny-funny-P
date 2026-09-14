@@ -142,6 +142,23 @@ export interface EditorState {
   showReturnAir: boolean;
 
   /**
+   * Whether the viewport is a walkthrough rather than an orbit camera.
+   *
+   * View state, like every other mode here. Walking about in somebody's design
+   * changes nothing about the design.
+   */
+  walkthrough: boolean;
+
+  /**
+   * How somebody moves, and how hard the app works to stop them feeling ill.
+   *
+   * These are preferences about a PERSON, not about a building, which is why
+   * they sit here and not on the document. Two people looking at the same
+   * design want different settings, and one of them gets motion sick.
+   */
+  comfort: ComfortSettings;
+
+  /**
    * Which section cut is being previewed live in the model, by id.
    *
    * View state, like every other layer toggle. Which cut somebody is looking
@@ -161,6 +178,47 @@ export interface EditorState {
   traceCandidates: TraceCandidate[];
   acceptedTraceIds: string[];
 }
+
+/**
+ * Comfort settings.
+ *
+ * -----------------------------------------------------------------------------
+ * THESE ARE NOT PREFERENCES IN THE ORDINARY SENSE.
+ *
+ * A low frame rate in a headset is uncomfortable. Smooth movement that the
+ * inner ear disagrees with makes a real fraction of people genuinely unwell
+ * within a minute, and once that happens they take the headset off and do not
+ * put it back on. So the defaults here are the cautious ones — vignette on,
+ * snap turning on — and somebody who does not need them turns them off, rather
+ * than the other way round.
+ */
+export interface ComfortSettings {
+  /** Smooth stick movement, or hop from place to place. */
+  locomotion: 'smooth' | 'teleport';
+  /**
+   * Narrow the view while moving, which is what stops people feeling sick.
+   *
+   * The periphery is where the disagreement between eyes and inner ear is felt
+   * most, so covering it during movement removes most of the problem for most
+   * people at almost no cost to what they can see.
+   */
+  vignette: boolean;
+  /** How much of the view the vignette takes at full speed, 0 to 1. */
+  vignetteStrength: number;
+  /** Turn in steps rather than continuously. Continuous turning is the worst
+   *  offender of the two, worse than moving. */
+  snapTurn: boolean;
+  /** Walking pace, metres per second. Slower is calmer. */
+  speed: number;
+}
+
+export const DEFAULT_COMFORT: ComfortSettings = {
+  locomotion: 'smooth',
+  vignette: true,
+  vignetteStrength: 0.55,
+  snapTurn: true,
+  speed: 1.4,
+};
 
 const EMPTY: Selection = { kind: null, id: null };
 
@@ -201,6 +259,8 @@ function initialState(): EditorState {
     // Nothing cut until somebody asks. A first-time visitor should see their
     // building, not half of it.
     activeSectionId: null,
+    walkthrough: false,
+    comfort: { ...DEFAULT_COMFORT },
   };
 }
 
