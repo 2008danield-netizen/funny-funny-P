@@ -24,14 +24,48 @@ const GRID_OPTIONS = [
 
 interface ViewPanelProps {
   onAutoHideWallsChange: (enabled: boolean) => void;
+  /** Turns the refining renderer on. Null until the engine is running. */
+  onProgressiveChange: ((enabled: boolean) => void) | null;
+  progressive: boolean;
 }
 
-export function ViewPanel({ onAutoHideWallsChange }: ViewPanelProps) {
+export function ViewPanel({
+  onAutoHideWallsChange,
+  onProgressiveChange,
+  progressive,
+}: ViewPanelProps) {
   const [autoHideWalls, setAutoHideWalls] = useState(true);
   const { snapEnabled, gridSize } = useEditor();
 
   return (
     <Panel title="View & Snapping" defaultOpen={false}>
+      {/* ---------------------------- Picture quality --------------------- */}
+
+      <Toggle
+        label="Refine the picture when you stop moving"
+        checked={progressive}
+        onChange={(checked) => onProgressiveChange?.(checked)}
+      />
+      <p className="field__hint">
+        While you are moving the camera the view is drawn once, fast. The moment you
+        stop, it starts again and keeps adding samples &mdash; each one with the sun
+        treated as a disc rather than a point, and with ambient occlusion computed
+        afresh. Over about a second the corners darken the way real corners do, the
+        shadows go soft at their edges, and the jagged edges disappear.
+        <br />
+        <br />
+        It is the difference between a diagram and a photograph, and it is the single
+        biggest thing available here. It was written in session 11 and has been
+        switched off ever since, because the machine it was built on has no real GPU
+        and I could not confirm it worked &mdash; on a software renderer it draws the
+        sky and no building at all, and shipping a default that might blank the model
+        on somebody&rsquo;s laptop was not a trade worth making.
+        <br />
+        <br />
+        <strong>If the model disappears when you switch this on, turn it off and tell
+        me.</strong> That is the bug I could never reproduce.
+      </p>
+
       <Toggle
         label="Hide outside walls facing the camera"
         checked={autoHideWalls}
