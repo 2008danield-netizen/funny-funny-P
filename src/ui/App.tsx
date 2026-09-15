@@ -23,6 +23,7 @@ import { PlumbingPanel } from './panels/PlumbingPanel';
 import { HvacPanel } from './panels/HvacPanel';
 import { SectionPanel } from './panels/SectionPanel';
 import { WalkPanel } from './panels/WalkPanel';
+import { SoundPanel } from './panels/SoundPanel';
 import { DrawingsPanel } from './panels/DrawingsPanel';
 import { CataloguePanel } from './panels/CataloguePanel';
 import { AdvisorPanel } from './panels/AdvisorPanel';
@@ -169,6 +170,7 @@ export function App() {
                 re-render, so the panel would mount with a null engine and
                 never hear about the real one. */}
             <WalkPanel engine={engineReady ? engineRef.current : null} />
+            <SoundPanel engine={engineReady ? engineRef.current : null} />
             <DrawingsPanel />
             <PlanPanel />
             <LightingPanel />

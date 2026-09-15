@@ -38,6 +38,7 @@ import { checkElectrical, type NecReport } from '@/services/necCheck';
 import { checkFittings, type FittingReport } from '@/services/fittingCheck';
 import { checkPlumbing, type PlumbingReport } from '@/services/plumbingCheck';
 import { checkHvac, type HvacReport } from '@/services/hvacCheck';
+import { checkAcoustics, type AcousticReport } from '@/services/acousticCheck';
 import { deriveHvac, type HvacDerived } from '@/state/hvacOps';
 import type { AdvisorReport } from '@/advisor/types';
 import { activeLevel } from '@/state/levels';
@@ -226,6 +227,36 @@ export function hvacCheckFor(doc: DesignDocument): HvacReport {
 export function useHvacCheck(): HvacReport {
   const doc = useDesign();
   return useMemo(() => hvacCheckFor(doc), [doc]);
+}
+
+let acousticKey: DesignDocument | null = null;
+let acousticCache: AcousticReport | null = null;
+
+/**
+ * The acoustic report, computed at most once per version.
+ *
+ * Worth caching more than most: it walks every region of every storey, and for
+ * each one inventories its surfaces and the furniture standing in it. The
+ * Sound panel and the Issues panel both want it, and during a furniture drag
+ * that is every animation frame.
+ *
+ * The HVAC load is handed in where there is one, because the mechanical noise
+ * check needs the airflow Manual D computed rather than an assumption. Where
+ * there is no location and therefore no load, those findings are simply absent,
+ * which is the honest outcome.
+ */
+export function acousticsFor(doc: DesignDocument): AcousticReport {
+  if (acousticKey === doc && acousticCache) return acousticCache;
+  const { load, selection } = hvacFor(doc);
+  acousticCache = checkAcoustics(doc, load, selection);
+  acousticKey = doc;
+  return acousticCache;
+}
+
+/** Subscribes to the acoustic report. */
+export function useAcoustics(): AcousticReport {
+  const doc = useDesign();
+  return useMemo(() => acousticsFor(doc), [doc]);
 }
 
 /** Subscribes to the roof reports for the whole building. */

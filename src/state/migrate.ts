@@ -433,6 +433,27 @@ function migrateV11ToV12(doc: Record<string, unknown>): Record<string, unknown> 
 }
 
 /**
+ * v12 to v13: the two acoustic facts nothing else records.
+ *
+ * Everything else the acoustic report needs — floor finishes, paint, glazing,
+ * ceiling heights, the furniture in each room — has been in the document for
+ * sessions. These two are genuinely new information: what is outside the plot,
+ * and what is inside an interior partition.
+ *
+ * Both get the ordinary case rather than the flattering one. A suburban street
+ * is what most houses face, and an uninsulated single-stud partition is what
+ * most houses are actually built with — so an old document opens saying the
+ * true thing about itself rather than a quiet compliment.
+ */
+function migrateV12ToV13(doc: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...doc,
+    schemaVersion: 13,
+    acoustics: { outdoorNoiseId: 'suburban', partitionId: 'partition-single' },
+  };
+}
+
+/**
  * Brings a document up to the current schema.
  *
  * Migrations are applied in sequence, so a v1 document passes through every
@@ -480,6 +501,9 @@ export function migrateDocument(input: Record<string, unknown>): Record<string, 
   }
   if (declared < 12) {
     doc = migrateV11ToV12(doc);
+  }
+  if (declared < 13) {
+    doc = migrateV12ToV13(doc);
   }
 
   return doc;

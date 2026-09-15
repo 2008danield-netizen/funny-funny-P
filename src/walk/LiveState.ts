@@ -94,6 +94,23 @@ export class LiveState {
   }
 
   /**
+   * The same two sets, as sets, for anything that asks "is this one on".
+   *
+   * The renderer wants a list to iterate; the soundscape wants to test
+   * membership for every fixture in the building on every frame. Handing out
+   * the live sets rather than rebuilding them avoids an allocation per frame,
+   * and they are returned as ReadonlySet so nobody can quietly write to the
+   * live state through the back door.
+   */
+  get litSet(): ReadonlySet<string> {
+    return this.lit;
+  }
+
+  get runningSet(): ReadonlySet<string> {
+    return this.running;
+  }
+
+  /**
    * What using this thing does, and what to call it next time.
    *
    * Returns the verb for what just happened, which the crosshair shows for a

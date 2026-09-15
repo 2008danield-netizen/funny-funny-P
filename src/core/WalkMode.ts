@@ -42,7 +42,8 @@ import { aimTeleport, type TeleportAim } from '@/walk/teleport';
 import { LiveState } from '@/walk/LiveState';
 import { interactablesOn, reachFor, type Interactable } from '@/walk/interactables';
 import { RoomLights } from '@/scene/RoomLights';
-import type { ComfortSettings } from '@/state/selection';
+import { Soundscape, type SoundEvent } from '@/audio/Soundscape';
+import type { ComfortSettings, SoundSettings } from '@/state/selection';
 import type { DesignDocument } from '@/state/types';
 
 export interface WalkModeDeps {
@@ -73,6 +74,16 @@ export class WalkMode {
 
   readonly live = new LiveState();
   readonly lights = new RoomLights();
+  readonly sound: Soundscape;
+  /**
+   * What happened this frame that wants a sound.
+   *
+   * Collected rather than played at the moment of the action, so that using
+   * something has exactly one place where it becomes audible — and so that a
+   * headless test can drive the interaction and inspect what it would have
+   * sounded like without an AudioContext existing at all.
+   */
+  private soundEvents: SoundEvent[] = [];
   /**
    * What is touchable on the walker's storey, rebuilt only when the document
    * or the storey changes. A hand cannot reach through a floor, and deriving a
@@ -98,9 +109,10 @@ export class WalkMode {
   /** Where the camera was before the walkthrough, to put it back afterwards. */
   private parked: { position: THREE.Vector3; quaternion: THREE.Quaternion } | null = null;
 
-  constructor(deps: WalkModeDeps, comfort: ComfortSettings) {
+  constructor(deps: WalkModeDeps, comfort: ComfortSettings, sound: SoundSettings) {
     this.deps = deps;
     this.comfort = comfort;
+    this.sound = new Soundscape(sound);
 
     this.desktop = new DesktopWalk(deps.canvas, () => deps.onChange());
     this.xr = new XrWalk(deps.renderer, () => {
@@ -136,6 +148,10 @@ export class WalkMode {
     this.comfort = comfort;
   }
 
+  setSound(settings: SoundSettings): void {
+    this.sound.setSettings(settings);
+  }
+
   /* --------------------------------- Entry -------------------------------- */
 
   /** Drops somebody into the building. Returns false if there is nowhere to go. */
@@ -158,6 +174,16 @@ export class WalkMode {
 
     this.desktop.resetPitch();
     this.desktop.start();
+
+    /*
+     * The context is started here because this is the only place that is
+     * reliably inside a user gesture: somebody clicked "Walk through it".
+     * Browsers refuse to make noise otherwise, and they refuse by leaving the
+     * context suspended rather than by throwing — so an app that starts audio
+     * anywhere else is silently mute and looks like broken synthesis.
+     */
+    void this.sound.start().then(() => this.deps.onChange());
+
     this.deps.onChange();
     this.deps.invalidate();
     return true;
@@ -181,6 +207,8 @@ export class WalkMode {
      */
     this.live.reset();
     this.touched = false;
+    this.sound.stop();
+    this.soundEvents = [];
 
     // Put the camera back where the orbit controls left it, so leaving a
     // walkthrough returns to the view somebody was working from rather than
@@ -265,6 +293,28 @@ export class WalkMode {
     const eye = new THREE.Vector3(state.at.x, state.eyeY, state.at.z);
     this.lights.update(doc, new Set(this.live.litFittings), eye);
 
+    /*
+     * The sound, after the walker has moved and before the camera is written.
+     *
+     * After the move because footsteps are driven by distance travelled, and
+     * the distance is not known until the move has happened. The events
+     * collected this frame are handed over and cleared, so nothing can be
+     * played twice.
+     */
+    this.sound.update(
+      doc,
+      {
+        at: state.at,
+        eyeY: state.eyeY,
+        heading: state.heading,
+        speed: state.speed,
+        standing: state.standing,
+      },
+      { runningTaps: this.live.runningSet, litFittings: this.live.litSet },
+      this.soundEvents,
+    );
+    this.soundEvents.length = 0;
+
     if (this.flash && performance.now() > this.flashUntil) this.flash = '';
 
     if (this.presenting) {
@@ -325,6 +375,23 @@ export class WalkMode {
 
     const said = this.live.use(this.focused);
     this.touched = true;
+
+    /*
+     * The sound of using it, queued rather than played.
+     *
+     * `kind` maps straight from the interactable, because the thing that knows
+     * a drawer is a drawer is the thing that derived it — and a cabinet door
+     * latches like a door rather than running like a drawer, which is the one
+     * distinction that would be wrong if this were guessed from the verb.
+     */
+    this.soundEvents.push({
+      kind:
+        this.focused.kind === 'cabinet-door'
+          ? 'door'
+          : (this.focused.kind as SoundEvent['kind']),
+      at: { ...this.focused.at },
+    });
+
     this.flash = said;
     // Long enough to read, short enough not to linger over the next thing.
     this.flashUntil = performance.now() + 1400;
@@ -421,6 +488,35 @@ export class WalkMode {
 
     const said = this.live.use(item);
     this.touched = true;
+
+    const event: SoundEvent = {
+      kind: item.kind === 'cabinet-door' ? 'door' : (item.kind as SoundEvent['kind']),
+      at: { ...item.at },
+    };
+
+    if (this.on) {
+      // The walkthrough's own frame will play it, positioned at the walker.
+      this.soundEvents.push(event);
+    } else {
+      /*
+       * Used from the orbit view, where there is no walk frame to play it in.
+       * The click that got here is a genuine user gesture, so this is a legal
+       * place to start the audio context.
+       */
+      const camera = this.deps.camera;
+      void this.sound.playFromOrbit(
+        {
+          x: camera.position.x,
+          y: camera.position.y,
+          z: camera.position.z,
+          // The orbit camera's own yaw, so a door on the left of the screen is
+          // heard on the left.
+          heading: Math.atan2(-camera.matrixWorld.elements[8]!, -camera.matrixWorld.elements[10]!),
+        },
+        event,
+      );
+    }
+
     this.deps.invalidate();
     return said;
   }
@@ -609,6 +705,7 @@ export class WalkMode {
     this.desktop.stop();
     this.overlay.dispose();
     this.lights.dispose();
+    this.sound.dispose();
     this.xr.dispose();
     this.deps.scene.remove(this.overlay.world);
     this.deps.scene.remove(this.lights.group);

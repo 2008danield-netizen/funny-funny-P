@@ -18,6 +18,7 @@
 import * as THREE from 'three';
 
 import { interactablesOn } from '@/walk/interactables';
+import { checkAcoustics } from '@/services/acousticCheck';
 
 import { Renderer } from './Renderer';
 import { FrameLoop, QualityGovernor, type QualityTier } from './FrameLoop';
@@ -354,6 +355,40 @@ export class Engine {
     this.walk?.setLamp(lampId);
   }
 
+  /* ----------------------------------- Sound ------------------------------- */
+
+  /**
+   * Whether sound is actually coming out.
+   *
+   * Not "whether sound is switched on" — those are different, and the gap
+   * between them is the whole autoplay problem. A browser leaves the context
+   * suspended until a gesture and does it silently, so the panel has to be able
+   * to say "click to allow sound" rather than leaving somebody turning the
+   * volume up on a context that was never resumed.
+   */
+  get soundRunning(): boolean {
+    return this.walk?.sound.engine.running ?? false;
+  }
+
+  get soundState(): string {
+    return this.walk?.sound.engine.state ?? 'not started';
+  }
+
+  /** How many continuous sounds are open, for the panel to show honestly. */
+  get soundBeds(): number {
+    return this.walk?.sound.engine.bedCount ?? 0;
+  }
+
+  /** Starts the audio context. Must be called from a real user gesture. */
+  async startAudio(): Promise<boolean> {
+    return (await this.walk?.sound.start()) ?? false;
+  }
+
+  /** The level actually coming out of the master bus, as an RMS. */
+  get soundLevel(): number {
+    return this.walk?.sound.engine.level() ?? 0;
+  }
+
   /* --------------------- Using things from the orbit view ----------------- */
 
   /**
@@ -542,6 +577,90 @@ export class Engine {
     scope.__pickProbe = (x: number, y: number) => this.editController.pickAtClient(x, y);
 
     scope.__liveProbe = () => this.liveSummary;
+
+    /*
+     * What the sound is actually doing, for automated checking.
+     *
+     * `level` is the one that matters and the one nothing else can answer: a
+     * suspended context, a muted master, a voice that rendered silence and a
+     * panner pointing the wrong way all look identical from outside and all
+     * come back as zero here. Measuring it is the difference between checking
+     * that sound works and checking that it was switched on.
+     */
+    /*
+     * Uses something by id, for automated checking.
+     *
+     * The orbit-view path takes a real click and the walkthrough path takes a
+     * real crosshair, and neither is available to a headless browser: pointer
+     * lock needs a gesture it cannot produce. This goes through the same
+     * `useThing` both of those end in, so what it exercises is the real live
+     * state rather than a stand-in.
+     */
+    scope.__useProbe = (id: string) => this.useThing(id);
+
+    /*
+     * Flips one sound setting, for automated checking.
+     *
+     * Through the editor store rather than around it, so what it exercises is
+     * the real path: store → `applyEditorState` → `setSound` → the soundscape.
+     * The panel's own checkbox drives exactly the same line.
+     *
+     * It exists because the browser check runs at a very small viewport — a
+     * software rasteriser cannot render a walkthrough frame at full size
+     * without blocking the main thread for longer than a footstep lasts — and
+     * at that size the sidebar controls are overlapped and cannot be clicked.
+     */
+    scope.__soundSetting = (key: string, value: boolean | number) => {
+      const current = editorStore.getState().sound;
+      editorStore.patch({ sound: { ...current, [key]: value } });
+      return editorStore.getState().sound;
+    };
+
+    scope.__soundDiagnose = () => {
+      const sound = this.walk?.sound;
+      if (!sound) return null;
+      return { ...sound.engine.diagnose(), settings: sound.current };
+    };
+
+    scope.__soundProbe = () => {
+      const sound = this.walk?.sound;
+      if (!sound) return null;
+      return {
+        state: sound.engine.state,
+        running: sound.engine.running,
+        beds: sound.engine.bedCount,
+        elapsed: +sound.engine.elapsed.toFixed(3),
+        level: +sound.engine.level().toFixed(5),
+        ...sound.engine.counters,
+      };
+    };
+
+    /*
+     * The acoustic report, so the browser run can check the numbers the panel
+     * is showing rather than a second computation of them.
+     */
+    scope.__acousticProbe = () => {
+      const doc = designStore.getState();
+      const report = checkAcoustics(doc);
+      return {
+        rooms: report.rooms.map((room) => ({
+          name: room.name,
+          purpose: room.purpose,
+          volume: +room.volume.toFixed(1),
+          rt60: +room.midRt60.toFixed(2),
+          bass: +room.bassRatio.toFixed(2),
+          method: room.method,
+          dominant: room.dominant?.label ?? null,
+        })),
+        findings: report.findings.map((finding) => ({
+          id: finding.id,
+          severity: finding.severity,
+          authority: finding.authority,
+          section: finding.section,
+          title: finding.title,
+        })),
+      };
+    };
   }
 
   /** Registers a callback for the once-per-second performance report. */
@@ -876,6 +995,7 @@ export class Engine {
       this.exitWalkthrough();
     }
     this.applyComfort(state.comfort);
+    this.walk?.setSound(state.sound);
 
     this.applySectionCut(state.activeSectionId);
     this.hvac.setVisible(state.showHvac);
@@ -957,6 +1077,7 @@ export class Engine {
         },
       },
       editorStore.getState().comfort,
+      editorStore.getState().sound,
     );
 
     this.exposeProbe();

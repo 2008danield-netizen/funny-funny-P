@@ -51,7 +51,7 @@
  * v12 — section cuts: where the building is sliced through, which way the cut
  *      looks, and what each slice is called.
  */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 /** Which measurement system the UI displays. Storage is always metric. */
 export type UnitSystem = 'metric' | 'imperial';
@@ -198,6 +198,31 @@ export interface LightingSpec {
   intensity: number;
   /** Soft shadows look far better but cost frames on weak GPUs. */
   shadowsEnabled: boolean;
+}
+
+/* ─────────────────────────────── Acoustics ───────────────────────────── */
+
+/**
+ * The two things about sound the building model cannot tell you itself.
+ *
+ * Everything else in the acoustic report is derived — the reverberation of a
+ * room comes from its own floor finish, its own paint, its own glazing and the
+ * furniture standing in it, all of which are already modelled. These two are
+ * not derivable from any of that:
+ *
+ *   What is on the other side of the plot boundary. A model of a house knows
+ *   nothing about the road outside it.
+ *
+ *   How the interior partitions are actually built. The envelope spec records
+ *   the exterior assembly because the energy code asks about it; nothing has
+ *   ever had to ask what is inside a stud partition, and acoustically it is the
+ *   difference between hearing the words next door and hearing a murmur.
+ */
+export interface AcousticsSpec {
+  /** An id from `code/acoustics.ts` — how loud it is at the front facade. */
+  outdoorNoiseId: string;
+  /** A partition assembly id from the same file. */
+  partitionId: string;
 }
 
 /* ───────────────────────────── The document ──────────────────────────── */
@@ -1477,6 +1502,8 @@ export interface DesignDocument {
   hvac: HvacPlan;
   /** Where the building is cut through, for the sections. */
   sections: SectionCut[];
+  /** The two acoustic facts the model cannot derive for itself. */
+  acoustics: AcousticsSpec;
 
   /**
    * Kitchen and bathroom cabinetry, and the fixtures.

@@ -399,6 +399,44 @@ puts everything back. Persist it instead and an exported file carries which
 drawers were open, the plan sheets have to decide whether to draw them that way,
 and "the design" quietly stops meaning one thing.
 
+**And you can hear it.**
+Footsteps that change with the floor you are standing on — a tiled hall is
+bright and loud, a carpeted bedroom is barely there, a timber stair drums. Doors
+latch, switches click, drawers run, taps run. Air hisses at the registers, as
+loud as the airflow Manual D actually gave them. Traffic comes through the
+glazing you specified, louder in the rooms facing the road.
+
+**The reverberation is computed, not chosen.** There is no "small room" preset
+anywhere in this app. Each room's reverberation time comes from its own volume
+and its own surfaces — Sabine's equation, or Eyring's where the room is
+absorbent enough that Sabine's small-loss assumption fails, and it says which it
+used. Change the floor from oak to tile and the room sounds different, because
+the absorption changed.
+
+Every surface counts, and so does the furniture standing in the room: a
+three-seat sofa absorbs nearly as much at 1 kHz as the whole painted ceiling
+above it, so an empty room and a furnished one are genuinely two different
+rooms. That is also the actionable half — nobody re-tiles a bathroom because of
+a reverberation figure, but a rug and some curtains are a Saturday.
+
+It is worked out in six octave bands rather than one number, which is what finds
+the fault a single figure hides. Carpet over hard structure absorbs the top end
+well and the bass hardly at all: the headline figure looks fine and everybody who
+uses the room calls it boomy. The app reports the ratio and says so.
+
+**Nothing was recorded.** Every sound is synthesised from the model's own
+numbers, which is what makes a step on carpet dull *because carpet is dull*
+rather than because a clip named "carpet" was picked. Add a floor finish to the
+catalogue and it sounds right immediately, with nobody going to record anything.
+Each sound sits behind an interface a recorded clip can replace later, one at a
+time, without touching anything else.
+
+**And there is an acoustic report.** Reverberation per room against the range
+that kind of room wants, which surface is doing the absorbing, the bedroom whose
+wall backs onto the living room, the register that will be audible from the bed,
+and the bedroom on the road side of the house. Almost none of it is code —
+see below — and it says so on every finding.
+
 **Cut the building open.**
 A section is the drawing that answers what a plan and an elevation cannot: how
 tall anything is inside, how thick the floor build-up really is, whether the
@@ -842,7 +880,15 @@ src/
 npm test
 ```
 
-889 tests covering the parts where a bug is invisible on screen: what is
+949 tests covering the parts where a bug is invisible on screen — and, since
+session 16, a set that is invisible full stop: a reverberation time has no
+picture, and a sign error in an absorption sum produces a number that is merely
+wrong rather than obviously wrong. So the acoustics are pinned by RELATIONSHIPS
+rather than absolutes: a tiled room must ring longer than a carpeted one the
+same size, a sofa must shorten the tail, a step on carpet must carry less
+high-frequency energy than one on tile, a loop must join to itself, and an
+impulse must be 60 dB down after exactly one RT60, because that is what RT60
+means. The rest: what is
 underfoot and what is not, sliding along walls and refusing to squeeze through a
 door narrower than a body, climbing a flight and arriving on the floor above,
 where a teleport arc may land, frame-time percentiles, what a hand can reach and
@@ -1115,10 +1161,11 @@ their valleys across each other.
   a choice of lamp, drawers and cabinet doors that open, taps that run — reached
   from inside the walkthrough or clicked from the ordinary view with the Use
   tool, and none of it saved.~~ ✅
-- **Session 16 — sound.** Footsteps that change on tile and on oak, reverb from
-  the room's own volume, muffling through walls. The most underrated presence
-  lever there is, and the model already knows every floor material and every
-  room volume.
+- ~~**Session 16** — sound: footsteps voiced by the floor underfoot, latches,
+  switches, drawers and taps, air at the registers at the airflow Manual D gave
+  them, traffic through the glazing specified — and reverberation computed from
+  each room's own volume and surfaces rather than chosen from a preset, with an
+  acoustic report to go with it.~~ ✅
 - **Session 17 — baked lighting**, so it looks good and holds frame rate at the
   same time.
 - **Session 18 — x-ray in the headset.** Stand in the room and look through the
@@ -1135,6 +1182,17 @@ their valleys across each other.
   machine gets one machine and a warning. And the live section cut leaves the
   cut edges hollow, because capping them properly needs a stencil pass per
   plane — the printed section is where the real construction is drawn.
+- **Left over from session 16.** Nobody has heard any of this. There are no
+  speakers in the environment it was built in, so the *balance* — whether a
+  footstep sits right against a running tap — has never been set by ear, only
+  measured on a meter. The synthesis is also honestly crude next to a recording:
+  the impulse response uses one-pole filters rather than a real octave-band
+  filterbank, and running water is filtered noise with a wobble on it rather
+  than water. The seam for recorded clips exists precisely because that will
+  stop being good enough. Reverberation assumes the doors are shut, occupancy is
+  not modelled (a room full of people is a much deader room), and sound does not
+  travel between rooms — the STC figures drive the report but not what you hear,
+  so a television next door is silent however thin the partition.
 - **Left over from session 15.** A drawer slides its front out and the carcass
   stays visible behind it — there is no drawer box, which is four more panels
   per drawer on a kitchen that already has sixty fronts, for a difference that
@@ -1171,6 +1229,40 @@ their valleys across each other.
   replacing it: the rules give it measured facts to reason from and a way to be
   checked. Real looked-up prices. More retailers. A native app wrapping this
   same codebase.
+
+### About the acoustic report in particular
+
+Every other checker in this app cites a book that can fail you an inspection.
+This one mostly cannot, and that is a fact about the subject rather than about
+the app: a detached house has essentially no acoustic code to fail.
+
+The IBC does require STC 50 between separate **dwelling units** (1206.2) and
+IIC 50 for the floor between them (1206.3) — but that is the wall between two
+apartments, and a detached house contains no such wall. The report carries that
+citation anyway, in order to rule it out, because 50 is the number people have
+heard of and they assume it governs the wall between their bedroom and their
+living room. Silence on that would read as approval.
+
+So the report distinguishes four kinds of authority rather than the usual two,
+and prints which on every finding:
+
+| | |
+| --- | --- |
+| **IBC** | Real law. In a detached house it applies to nothing. |
+| **ASHRAE** | The mechanical industry's own recommendations for background noise. An engineer will recognise the figures. |
+| **WHO** | A health body's recommendation for sleep. Not law, not an engineering standard. |
+| **Guidance** | This app's opinion, printed with no citation at all. |
+
+Most of it is the last one. Inventing a section number to make acoustic advice
+look stronger would be the fastest possible way to make somebody stop believing
+the IRC, NEC, IPC and IECC citations that are real.
+
+Two further honesties. The absorption coefficients are typical published values
+— Egan, Cavanaugh & Wilkes, manufacturers' ISO 354 data — not a test report for
+a named product, which is the right kind of number at design stage and useless
+in a specification. And every STC figure is a laboratory value: built work does
+about five points worse as a matter of routine, and far worse if anything flanks
+the wall, which is usually the gap under the door rather than the wall at all.
 
 ### About the code checking
 

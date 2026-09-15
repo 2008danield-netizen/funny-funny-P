@@ -166,6 +166,8 @@ export interface EditorState {
    * design want different settings, and one of them gets motion sick.
    */
   comfort: ComfortSettings;
+  /** How the walkthrough sounds. Never exported — see `SoundSettings`. */
+  sound: SoundSettings;
 
   /**
    * Which section cut is being previewed live in the model, by id.
@@ -221,6 +223,58 @@ export interface ComfortSettings {
   speed: number;
 }
 
+/**
+ * Sound settings.
+ *
+ * -----------------------------------------------------------------------------
+ * VIEW STATE, LIKE COMFORT — NOT PART OF THE DESIGN.
+ *
+ * How loud somebody has their speakers and whether they want to hear the air
+ * handler is not a fact about the building, so none of it is exported, none of
+ * it reaches the drawings and none of it is on the document. The two acoustic
+ * facts that ARE design decisions — what is outside the plot and how the
+ * partitions are built — live on the document, in `AcousticsSpec`.
+ *
+ * The categories are separately switchable because they answer different
+ * questions. Footsteps and the things you touch are about presence. The
+ * mechanical bed is a design check: if you can hear the register from the bed,
+ * that is a finding you can also hear. And the outdoor bed answers "is this
+ * bedroom on the road", which is the question the glazing choice turns on.
+ */
+export interface SoundSettings {
+  /** Master, 0 to 1. */
+  volume: number;
+  muted: boolean;
+  /** Your own steps, voiced by the floor underfoot. */
+  footsteps: boolean;
+  /** Latches, switches, drawer runners, taps. */
+  interactions: boolean;
+  /** Air at the registers and the hum of the air handler. */
+  mechanical: boolean;
+  /** Traffic through the facade. */
+  outside: boolean;
+  /**
+   * Reverberation computed from the room, rather than none at all.
+   *
+   * Switchable because the convolver is the one genuinely expensive node in
+   * the graph, and because hearing a room dry alongside hearing it wet is the
+   * clearest way to tell what the room is doing to the sound.
+   */
+  reverb: boolean;
+}
+
+export const DEFAULT_SOUND: SoundSettings = {
+  // Not silent by default, and not loud either. A walkthrough that opens
+  // silently reads as broken; one that opens at full volume is rude.
+  volume: 0.7,
+  muted: false,
+  footsteps: true,
+  interactions: true,
+  mechanical: true,
+  outside: true,
+  reverb: true,
+};
+
 export const DEFAULT_COMFORT: ComfortSettings = {
   locomotion: 'smooth',
   vignette: true,
@@ -270,6 +324,7 @@ function initialState(): EditorState {
     activeSectionId: null,
     walkthrough: false,
     comfort: { ...DEFAULT_COMFORT },
+    sound: { ...DEFAULT_SOUND },
   };
 }
 

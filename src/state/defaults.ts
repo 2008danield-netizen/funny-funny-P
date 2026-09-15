@@ -73,10 +73,12 @@ import {
   type Vertex,
   type Wall,
   type WallFaceSpec,
+  type AcousticsSpec,
 } from './types';
 import { defaultLevelName } from './levels';
 import { conductorFor } from '@/code/nec';
 import { INFILTRATION, findConditions, getEquipment } from '@/code/acca';
+import { OUTDOOR_NOISE, TRANSMISSION } from '@/code/acoustics';
 import {
   DOOR_TYPES,
   FLOOR_ASSEMBLIES,
@@ -300,6 +302,7 @@ export function createDefaultDocument(): DesignDocument {
     plumbing: defaultPlumbing(),
     hvac: defaultHvac(),
     sections: [],
+    acoustics: defaultAcoustics(),
     runs: [],
     fixtures: [],
     lighting: {
@@ -1682,6 +1685,44 @@ function safePlumbing(
  * which side of it things are on, so those are dropped rather than repaired.
  * There is no sensible guess at what line somebody meant.
  */
+/**
+ * The ordinary case, not the flattering one.
+ *
+ * A suburban street is what most houses face, and an uninsulated single-stud
+ * partition is what most houses are actually built with. Defaulting to
+ * "quiet" and "insulated" would open every new design with a clean acoustic
+ * report that nobody had earned.
+ */
+export function defaultAcoustics(): AcousticsSpec {
+  return { outdoorNoiseId: 'suburban', partitionId: 'partition-single' };
+}
+
+/**
+ * Validates the acoustic spec, falling back rather than failing.
+ *
+ * An unknown id is not repairable and not worth refusing the document over —
+ * the lookups in `code/acoustics.ts` fall back on their own, but storing a
+ * value they will silently reinterpret means the panel shows one thing and the
+ * report computes another. So it is normalised here, once.
+ */
+function safeAcoustics(value: unknown): AcousticsSpec {
+  const base = defaultAcoustics();
+  if (typeof value !== 'object' || value === null) return base;
+
+  const raw = value as Record<string, unknown>;
+  const outdoorNoiseId = safeString(raw.outdoorNoiseId, base.outdoorNoiseId);
+  const partitionId = safeString(raw.partitionId, base.partitionId);
+
+  return {
+    outdoorNoiseId: OUTDOOR_NOISE.some((entry) => entry.id === outdoorNoiseId)
+      ? outdoorNoiseId
+      : base.outdoorNoiseId,
+    partitionId: TRANSMISSION.some((entry) => entry.id === partitionId)
+      ? partitionId
+      : base.partitionId,
+  };
+}
+
 function safeSections(value: unknown): SectionCut[] {
   if (!Array.isArray(value)) return [];
 
@@ -1929,6 +1970,7 @@ export function sanitizeDocument(input: unknown): DesignDocument {
     plumbing: safePlumbing(raw.plumbing, levels.list, fixtures),
     hvac: safeHvac(raw.hvac, levels.list),
     sections: safeSections(raw.sections),
+    acoustics: safeAcoustics(raw.acoustics),
     clearance: safeClearance(raw.clearance),
     currency: safeCurrency(raw.currency),
     lighting: {
