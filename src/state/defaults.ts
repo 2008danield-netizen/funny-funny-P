@@ -21,6 +21,8 @@ import {
   PLUMBING_LIMITS,
   ROOF_LIMITS,
   SCHEMA_VERSION,
+  SECTION_LIMITS,
+  type SectionCut,
   SITE_LIMITS,
   SKYLIGHT_LIMITS,
   STAIR_LIMITS,
@@ -36,6 +38,12 @@ import {
   type PipePoint,
   type PipeRun,
   type PlumbingPlan,
+  type HvacPlan,
+  type EnvelopeSpec,
+  type DuctRun,
+  type Register,
+  type Emitter,
+  HVAC_LIMITS,
   type CircuitKind,
   type DeviceKind,
   type ElectricalDevice,
@@ -65,9 +73,19 @@ import {
   type Vertex,
   type Wall,
   type WallFaceSpec,
+  type AcousticsSpec,
 } from './types';
 import { defaultLevelName } from './levels';
 import { conductorFor } from '@/code/nec';
+import { INFILTRATION, findConditions, getEquipment } from '@/code/acca';
+import { OUTDOOR_NOISE, TRANSMISSION } from '@/code/acoustics';
+import {
+  DOOR_TYPES,
+  FLOOR_ASSEMBLIES,
+  GLAZING,
+  ROOF_ASSEMBLIES,
+  WALL_ASSEMBLIES,
+} from '@/code/iecc';
 import { migrateDocument } from './migrate';
 import { addRectangle, normalizePlan } from './planOps';
 import { getCatalogEntry, isKnownCatalogId } from '@/furniture/catalog';
@@ -191,6 +209,42 @@ export function defaultPlumbing(): PlumbingPlan {
   };
 }
 
+/**
+ * An HVAC plan with nothing decided.
+ *
+ * The location is EMPTY rather than defaulted to a city. Every other default in
+ * this file is a sensible starting point, but there is no sensible default
+ * climate — a load computed for Miami in a Minneapolis house is not a rough
+ * answer, it is a confidently wrong one, and it looks exactly as authoritative
+ * as a right one. So the app refuses to compute until somebody says where.
+ *
+ * The envelope, by contrast, does get defaults: ordinary modern construction,
+ * flagged `confirmed: false` so every downstream figure can say it rests on
+ * assumptions.
+ */
+export function defaultHvac(): HvacPlan {
+  return {
+    locationKey: '',
+    envelope: {
+      wallAssemblyId: 'wall-2x6-r21',
+      roofAssemblyId: 'roof-r49',
+      floorAssemblyId: 'floor-slab',
+      glazingId: 'double-lowe',
+      doorId: 'door-insulated-steel',
+      infiltrationId: 'average',
+      confirmed: false,
+    },
+    system: 'forced-air',
+    heatingEquipmentId: null,
+    coolingEquipmentId: null,
+    ducts: [],
+    registers: [],
+    airHandler: null,
+    emitters: [],
+    equipmentManual: false,
+  };
+}
+
 /** A worktop somebody has not chosen anything about yet. */
 export function defaultWorktop(): WorktopSpec {
   return { material: 'laminate', colour: worktopMaterial('laminate').colour, splashback: true };
@@ -246,6 +300,9 @@ export function createDefaultDocument(): DesignDocument {
     services: [],
     electrical: defaultElectrical(),
     plumbing: defaultPlumbing(),
+    hvac: defaultHvac(),
+    sections: [],
+    acoustics: defaultAcoustics(),
     runs: [],
     fixtures: [],
     lighting: {
@@ -1612,6 +1669,264 @@ function safePlumbing(
 }
 
 /**
+ * Validates an HVAC plan out of arbitrary parsed JSON.
+ *
+ * The one rule worth stating: an unknown assembly id falls back to the default
+ * rather than being dropped. A missing wall assembly would make the load
+ * calculation skip the walls entirely and report a house that loses almost no
+ * heat — a silently wrong answer, which is the worst kind. A substituted
+ * default is at least visible in the panel.
+ */
+/**
+ * Section cuts, validated.
+ *
+ * A cut with a degenerate line — both ends at the same point — would produce a
+ * zero-width section that draws as nothing and divides by zero working out
+ * which side of it things are on, so those are dropped rather than repaired.
+ * There is no sensible guess at what line somebody meant.
+ */
+/**
+ * The ordinary case, not the flattering one.
+ *
+ * A suburban street is what most houses face, and an uninsulated single-stud
+ * partition is what most houses are actually built with. Defaulting to
+ * "quiet" and "insulated" would open every new design with a clean acoustic
+ * report that nobody had earned.
+ */
+export function defaultAcoustics(): AcousticsSpec {
+  return { outdoorNoiseId: 'suburban', partitionId: 'partition-single' };
+}
+
+/**
+ * Validates the acoustic spec, falling back rather than failing.
+ *
+ * An unknown id is not repairable and not worth refusing the document over —
+ * the lookups in `code/acoustics.ts` fall back on their own, but storing a
+ * value they will silently reinterpret means the panel shows one thing and the
+ * report computes another. So it is normalised here, once.
+ */
+function safeAcoustics(value: unknown): AcousticsSpec {
+  const base = defaultAcoustics();
+  if (typeof value !== 'object' || value === null) return base;
+
+  const raw = value as Record<string, unknown>;
+  const outdoorNoiseId = safeString(raw.outdoorNoiseId, base.outdoorNoiseId);
+  const partitionId = safeString(raw.partitionId, base.partitionId);
+
+  return {
+    outdoorNoiseId: OUTDOOR_NOISE.some((entry) => entry.id === outdoorNoiseId)
+      ? outdoorNoiseId
+      : base.outdoorNoiseId,
+    partitionId: TRANSMISSION.some((entry) => entry.id === partitionId)
+      ? partitionId
+      : base.partitionId,
+  };
+}
+
+function safeSections(value: unknown): SectionCut[] {
+  if (!Array.isArray(value)) return [];
+
+  const seen = new Set<string>();
+  const result: SectionCut[] = [];
+
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const raw = entry as Record<string, unknown>;
+
+    const id = safeString(raw.id, '');
+    if (!id || seen.has(id)) continue;
+
+    const from = safePoint(raw.from);
+    const to = safePoint(raw.to);
+    if (!from || !to) continue;
+    if (Math.hypot(to.x - from.x, to.z - from.z) < SECTION_LIMITS.minLength) continue;
+
+    seen.add(id);
+    result.push({
+      id,
+      mark: safeString(raw.mark, String.fromCharCode(65 + (result.length % 26))),
+      name: safeString(raw.name, 'Section'),
+      from,
+      to,
+      looks: raw.looks === 'right' ? 'right' : 'left',
+      automatic: raw.automatic === true,
+    });
+  }
+
+  return result;
+}
+
+function safeHvac(
+  value: unknown,
+  levels: readonly Level[],
+): HvacPlan {
+  const base = defaultHvac();
+  if (typeof value !== 'object' || value === null) return base;
+  const raw = value as Record<string, unknown>;
+
+  const levelIds = new Set(levels.map((level) => level.id));
+  const fallbackLevel = levels[0]?.id ?? '';
+
+  const rawEnvelope =
+    typeof raw.envelope === 'object' && raw.envelope !== null
+      ? (raw.envelope as Record<string, unknown>)
+      : {};
+
+  const known = (list: readonly { id: string }[], id: unknown, fallback: string): string =>
+    typeof id === 'string' && list.some((entry) => entry.id === id) ? id : fallback;
+
+  const envelope: EnvelopeSpec = {
+    wallAssemblyId: known(WALL_ASSEMBLIES, rawEnvelope.wallAssemblyId, base.envelope.wallAssemblyId),
+    roofAssemblyId: known(ROOF_ASSEMBLIES, rawEnvelope.roofAssemblyId, base.envelope.roofAssemblyId),
+    floorAssemblyId: known(FLOOR_ASSEMBLIES, rawEnvelope.floorAssemblyId, base.envelope.floorAssemblyId),
+    glazingId: known(GLAZING, rawEnvelope.glazingId, base.envelope.glazingId),
+    doorId: known(DOOR_TYPES, rawEnvelope.doorId, base.envelope.doorId),
+    infiltrationId: known(INFILTRATION, rawEnvelope.infiltrationId, base.envelope.infiltrationId),
+    confirmed: rawEnvelope.confirmed === true,
+  };
+
+  const readRuns = (input: unknown): DuctRun[] => {
+    const runs: DuctRun[] = [];
+    const seen = new Set<string>();
+    if (!Array.isArray(input)) return runs;
+
+    for (const entry of input.slice(0, 2000)) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const run = entry as Record<string, unknown>;
+
+      const id = safeString(run.id, `d${runs.length + 1}`, 60);
+      if (seen.has(id)) continue;
+
+      const points: PipePoint[] = [];
+      if (Array.isArray(run.points)) {
+        for (const rawPoint of run.points.slice(0, 200)) {
+          if (typeof rawPoint !== 'object' || rawPoint === null) continue;
+          const point = rawPoint as Record<string, unknown>;
+          const at = safePoint(point.at);
+          if (!at) continue;
+          points.push({
+            levelId:
+              typeof point.levelId === 'string' && levelIds.has(point.levelId)
+                ? point.levelId
+                : fallbackLevel,
+            at,
+            height: clamp(point.height, -20, 60, 0),
+          });
+        }
+      }
+      // A one-point duct is not a duct, and would size as zero-length.
+      if (points.length < 2) continue;
+
+      seen.add(id);
+      runs.push({
+        id,
+        system: run.system === 'return' ? 'return' : 'supply',
+        points,
+        serves: safeIdList(run.serves),
+        upstreamId: typeof run.upstreamId === 'string' ? run.upstreamId : null,
+        manual: run.manual === true,
+      });
+    }
+    return runs;
+  };
+
+  const ducts = readRuns(raw.ducts);
+  const ductIds = new Set(ducts.map((run) => run.id));
+  for (const run of ducts) {
+    if (run.upstreamId !== null && !ductIds.has(run.upstreamId)) run.upstreamId = null;
+  }
+
+  const registers: Register[] = [];
+  const seenRegisters = new Set<string>();
+  if (Array.isArray(raw.registers)) {
+    for (const entry of raw.registers.slice(0, 400)) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const register = entry as Record<string, unknown>;
+      const at = safePoint(register.at);
+      if (!at) continue;
+
+      const id = safeString(register.id, `rg${registers.length + 1}`, 60);
+      if (seenRegisters.has(id)) continue;
+      seenRegisters.add(id);
+
+      registers.push({
+        id,
+        levelId:
+          typeof register.levelId === 'string' && levelIds.has(register.levelId)
+            ? register.levelId
+            : fallbackLevel,
+        at,
+        height: clamp(register.height, 0, 5, HVAC_LIMITS.supplyRegisterHeight),
+        system: register.system === 'return' ? 'return' : 'supply',
+        roomKey: safeString(register.roomKey, '', 200),
+      });
+    }
+  }
+
+  const emitters: Emitter[] = [];
+  if (Array.isArray(raw.emitters)) {
+    for (const entry of raw.emitters.slice(0, 400)) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const emitter = entry as Record<string, unknown>;
+      const at = safePoint(emitter.at);
+      if (!at) continue;
+      emitters.push({
+        id: safeString(emitter.id, `em${emitters.length + 1}`, 60),
+        levelId:
+          typeof emitter.levelId === 'string' && levelIds.has(emitter.levelId)
+            ? emitter.levelId
+            : fallbackLevel,
+        at,
+        kind: emitter.kind === 'underfloor' ? 'underfloor' : 'radiator',
+        roomKey: safeString(emitter.roomKey, '', 200),
+        outputWatts: clamp(emitter.outputWatts, 0, 50000, 0),
+        length: clamp(emitter.length, 0, 20, 1),
+      });
+    }
+  }
+
+  let airHandler: HvacPlan['airHandler'] = null;
+  if (typeof raw.airHandler === 'object' && raw.airHandler !== null) {
+    const entry = raw.airHandler as Record<string, unknown>;
+    const at = safePoint(entry.at);
+    if (at) {
+      airHandler = {
+        levelId:
+          typeof entry.levelId === 'string' && levelIds.has(entry.levelId)
+            ? entry.levelId
+            : fallbackLevel,
+        at,
+      };
+    }
+  }
+
+  return {
+    // An unknown city resolves to empty, which stops the load rather than
+    // computing one for somewhere the user did not choose.
+    locationKey: findConditions(safeString(raw.locationKey, '', 80)) ? String(raw.locationKey) : '',
+    envelope,
+    system: oneOf(
+      raw.system,
+      ['forced-air', 'heat-pump', 'mini-split', 'hydronic', 'load-only'] as const,
+      base.system,
+    ),
+    heatingEquipmentId:
+      typeof raw.heatingEquipmentId === 'string' && getEquipment(raw.heatingEquipmentId)
+        ? raw.heatingEquipmentId
+        : null,
+    coolingEquipmentId:
+      typeof raw.coolingEquipmentId === 'string' && getEquipment(raw.coolingEquipmentId)
+        ? raw.coolingEquipmentId
+        : null,
+    ducts,
+    registers,
+    airHandler,
+    emitters,
+    equipmentManual: raw.equipmentManual === true,
+  };
+}
+
+/**
  * Coerces an arbitrary parsed object into a valid DesignDocument.
  *
  * Deliberately forgiving rather than strict: a document saved by an older build
@@ -1653,6 +1968,9 @@ export function sanitizeDocument(input: unknown): DesignDocument {
     // After the fixtures, because a connection to a fixture that did not
     // survive validation has to be dropped rather than left dangling.
     plumbing: safePlumbing(raw.plumbing, levels.list, fixtures),
+    hvac: safeHvac(raw.hvac, levels.list),
+    sections: safeSections(raw.sections),
+    acoustics: safeAcoustics(raw.acoustics),
     clearance: safeClearance(raw.clearance),
     currency: safeCurrency(raw.currency),
     lighting: {

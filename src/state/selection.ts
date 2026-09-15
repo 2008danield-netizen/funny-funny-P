@@ -30,7 +30,17 @@ export type SelectionKind =
   /** A soil stack. */
   | 'stack'
   /** The water heater. */
-  | 'heater';
+  | 'heater'
+  /** One run of ductwork, supply or return. */
+  | 'duct'
+  /** A supply register or a return grille. */
+  | 'register'
+  /** The furnace, air handler or heat pump. */
+  | 'air-handler'
+  /** A radiator or an underfloor loop. */
+  | 'emitter'
+  /** A section cut line, selected on the plan. */
+  | 'section';
 
 export interface Selection {
   kind: SelectionKind | null;
@@ -56,7 +66,16 @@ export type EditTool =
   /** Drag along a wall to draw a run of cabinets, which fills itself. */
   | 'cabinet'
   /** Click inside a room to drop the armed fixture. */
-  | 'fixture';
+  | 'fixture'
+  /**
+   * Click a door, a switch, a drawer or a tap to work it.
+   *
+   * Nothing this tool does touches the document: it opens and shuts things
+   * inside the view, the same way the walkthrough does, and leaves nothing
+   * behind. It is here so that checking a door swing clears the island does
+   * not require walking in and back out again.
+   */
+  | 'use';
 
 export interface EditorState {
   tool: EditTool;
@@ -119,6 +138,47 @@ export interface EditorState {
   showSupply: boolean;
 
   /**
+   * Whether the ductwork is drawn in the model, and which half of it.
+   *
+   * View state, exactly like the plumbing. Supply and return are separated
+   * because they run at different heights and cross each other constantly —
+   * a house with both drawn is hard to read, and each is looked at for its
+   * own reason: supply for whether the trunk fits in the floor, return for
+   * whether the air can get back at all.
+   */
+  showHvac: boolean;
+  showSupplyAir: boolean;
+  showReturnAir: boolean;
+
+  /**
+   * Whether the viewport is a walkthrough rather than an orbit camera.
+   *
+   * View state, like every other mode here. Walking about in somebody's design
+   * changes nothing about the design.
+   */
+  walkthrough: boolean;
+
+  /**
+   * How somebody moves, and how hard the app works to stop them feeling ill.
+   *
+   * These are preferences about a PERSON, not about a building, which is why
+   * they sit here and not on the document. Two people looking at the same
+   * design want different settings, and one of them gets motion sick.
+   */
+  comfort: ComfortSettings;
+  /** How the walkthrough sounds. Never exported — see `SoundSettings`. */
+  sound: SoundSettings;
+
+  /**
+   * Which section cut is being previewed live in the model, by id.
+   *
+   * View state, like every other layer toggle. Which cut somebody is looking
+   * through while they work is not part of their design — the cuts themselves
+   * are on the document, and this is only which one is switched on.
+   */
+  activeSectionId: string | null;
+
+  /**
    * Walls the detector has proposed on the traced plan, and which are ticked.
    *
    * View state, deliberately: a proposal is not part of the design until it is
@@ -129,6 +189,99 @@ export interface EditorState {
   traceCandidates: TraceCandidate[];
   acceptedTraceIds: string[];
 }
+
+/**
+ * Comfort settings.
+ *
+ * -----------------------------------------------------------------------------
+ * THESE ARE NOT PREFERENCES IN THE ORDINARY SENSE.
+ *
+ * A low frame rate in a headset is uncomfortable. Smooth movement that the
+ * inner ear disagrees with makes a real fraction of people genuinely unwell
+ * within a minute, and once that happens they take the headset off and do not
+ * put it back on. So the defaults here are the cautious ones — vignette on,
+ * snap turning on — and somebody who does not need them turns them off, rather
+ * than the other way round.
+ */
+export interface ComfortSettings {
+  /** Smooth stick movement, or hop from place to place. */
+  locomotion: 'smooth' | 'teleport';
+  /**
+   * Narrow the view while moving, which is what stops people feeling sick.
+   *
+   * The periphery is where the disagreement between eyes and inner ear is felt
+   * most, so covering it during movement removes most of the problem for most
+   * people at almost no cost to what they can see.
+   */
+  vignette: boolean;
+  /** How much of the view the vignette takes at full speed, 0 to 1. */
+  vignetteStrength: number;
+  /** Turn in steps rather than continuously. Continuous turning is the worst
+   *  offender of the two, worse than moving. */
+  snapTurn: boolean;
+  /** Walking pace, metres per second. Slower is calmer. */
+  speed: number;
+}
+
+/**
+ * Sound settings.
+ *
+ * -----------------------------------------------------------------------------
+ * VIEW STATE, LIKE COMFORT — NOT PART OF THE DESIGN.
+ *
+ * How loud somebody has their speakers and whether they want to hear the air
+ * handler is not a fact about the building, so none of it is exported, none of
+ * it reaches the drawings and none of it is on the document. The two acoustic
+ * facts that ARE design decisions — what is outside the plot and how the
+ * partitions are built — live on the document, in `AcousticsSpec`.
+ *
+ * The categories are separately switchable because they answer different
+ * questions. Footsteps and the things you touch are about presence. The
+ * mechanical bed is a design check: if you can hear the register from the bed,
+ * that is a finding you can also hear. And the outdoor bed answers "is this
+ * bedroom on the road", which is the question the glazing choice turns on.
+ */
+export interface SoundSettings {
+  /** Master, 0 to 1. */
+  volume: number;
+  muted: boolean;
+  /** Your own steps, voiced by the floor underfoot. */
+  footsteps: boolean;
+  /** Latches, switches, drawer runners, taps. */
+  interactions: boolean;
+  /** Air at the registers and the hum of the air handler. */
+  mechanical: boolean;
+  /** Traffic through the facade. */
+  outside: boolean;
+  /**
+   * Reverberation computed from the room, rather than none at all.
+   *
+   * Switchable because the convolver is the one genuinely expensive node in
+   * the graph, and because hearing a room dry alongside hearing it wet is the
+   * clearest way to tell what the room is doing to the sound.
+   */
+  reverb: boolean;
+}
+
+export const DEFAULT_SOUND: SoundSettings = {
+  // Not silent by default, and not loud either. A walkthrough that opens
+  // silently reads as broken; one that opens at full volume is rude.
+  volume: 0.7,
+  muted: false,
+  footsteps: true,
+  interactions: true,
+  mechanical: true,
+  outside: true,
+  reverb: true,
+};
+
+export const DEFAULT_COMFORT: ComfortSettings = {
+  locomotion: 'smooth',
+  vignette: true,
+  vignetteStrength: 0.55,
+  snapTurn: true,
+  speed: 1.4,
+};
 
 const EMPTY: Selection = { kind: null, id: null };
 
@@ -161,6 +314,17 @@ function initialState(): EditorState {
     showPlumbing: false,
     showDrainage: true,
     showSupply: true,
+    // Same again. The HVAC panel switches this on when it lays anything out,
+    // so nobody has to find it to see what they just got.
+    showHvac: false,
+    showSupplyAir: true,
+    showReturnAir: true,
+    // Nothing cut until somebody asks. A first-time visitor should see their
+    // building, not half of it.
+    activeSectionId: null,
+    walkthrough: false,
+    comfort: { ...DEFAULT_COMFORT },
+    sound: { ...DEFAULT_SOUND },
   };
 }
 

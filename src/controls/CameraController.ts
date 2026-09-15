@@ -164,8 +164,15 @@ export class CameraController {
     }
   }
 
-  /** Advances any in-flight transition and the damping simulation. */
-  update(delta: number): void {
+  /**
+   * Advances any in-flight transition and the damping simulation.
+   *
+   * Returns whether the camera actually moved. That return value is what lets
+   * the frame loop stop drawing: OrbitControls' damping keeps the camera
+   * drifting for a few tenths of a second after the pointer is released, and
+   * a loop that stopped on mouse-up would freeze mid-glide.
+   */
+  update(delta: number): boolean {
     if (this.flight) {
       this.flight.elapsed += delta;
       const t = Math.min(1, this.flight.elapsed / FLY_DURATION);
@@ -180,7 +187,14 @@ export class CameraController {
       }
     }
 
-    this.controls.update();
+    /*
+     * `OrbitControls.update()` returns whether it changed the camera, which
+     * covers damping, inertia and user input in one flag. A flight is always a
+     * change, and it is checked separately because the flight moves the camera
+     * directly rather than through the controls.
+     */
+    const orbited = this.controls.update();
+    return orbited || this.flight !== null;
   }
 
   /** Keeps the projection matrix in step with the viewport aspect ratio. */

@@ -43,6 +43,7 @@ const TOOL_KEYS: Record<string, EditTool> = {
   c: 'cabinet',
   // X for fiXture: F is Furnish.
   x: 'fixture',
+  u: 'use',
 };
 
 /** Input types that swallow keystrokes as text and own their own undo stack. */

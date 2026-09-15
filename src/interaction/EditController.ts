@@ -25,6 +25,7 @@ import { Building, type PickResult } from '@/scene/Building';
 import type { Furnishings } from '@/scene/Furnishings';
 import type { Electrical } from '@/scene/Electrical';
 import type { Plumbing } from '@/scene/Plumbing';
+import type { Hvac } from '@/scene/Hvac';
 import type { Fittings } from '@/scene/Fittings';
 import { nearestSnapCandidates, snapPoint } from './snapping';
 import { distance, indexVertices, resolveWall } from '@/scene/planGraph';
@@ -86,6 +87,7 @@ export class EditController {
   private furnishings: Furnishings;
   private electrical: Electrical;
   private plumbing: Plumbing;
+  private hvac: Hvac;
   private fittings: Fittings;
   private orbit: { enabled: boolean };
 
@@ -101,6 +103,16 @@ export class EditController {
 
   private disposers: Array<() => void> = [];
 
+  /**
+   * How the Use tool reaches the live state.
+   *
+   * A pair of callbacks rather than a reference to the engine: this class
+   * knows about the scene and the document and nothing else, and handing it
+   * the whole engine to open a door would be handing it everything.
+   */
+  private useThing: ((id: string) => string | null) | null = null;
+  private describeThing: ((id: string) => { label: string; verb: string } | null) | null = null;
+
   constructor(
     canvas: HTMLCanvasElement,
     camera: THREE.Camera,
@@ -109,6 +121,7 @@ export class EditController {
     electrical: Electrical,
     fittings: Fittings,
     plumbing: Plumbing,
+    hvac: Hvac,
     orbit: { enabled: boolean },
   ) {
     this.canvas = canvas;
@@ -118,6 +131,7 @@ export class EditController {
     this.electrical = electrical;
     this.fittings = fittings;
     this.plumbing = plumbing;
+    this.hvac = hvac;
     this.orbit = orbit;
 
     const onPointerDown = (event: PointerEvent) => this.handlePointerDown(event);
@@ -143,6 +157,34 @@ export class EditController {
   /** Keeps the controller pointed at the live camera after a rebuild. */
   setCamera(camera: THREE.Camera): void {
     this.camera = camera;
+  }
+
+  /**
+   * What is under a canvas pixel, for automated checking.
+   *
+   * The real picker, not a copy: the whole value of a browser check is that it
+   * goes through the code a click goes through. It exists because a headless
+   * browser can click a pixel but cannot work out which pixel a door is at,
+   * and because a point that projects onto a door may still be behind the
+   * fridge — which is a thing worth being told rather than guessing at.
+   */
+  pickAtClient(clientX: number, clientY: number): { kind: string; id: string } | null {
+    const rect = this.canvas.getBoundingClientRect();
+    this.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+
+    const hit = this.pick();
+    return hit ? { kind: hit.kind, id: hit.id } : null;
+  }
+
+  /** Wires the Use tool up to whatever owns the live state. */
+  setUseHandlers(
+    use: (id: string) => string | null,
+    describe: (id: string) => { label: string; verb: string } | null,
+  ): void {
+    this.useThing = use;
+    this.describeThing = describe;
   }
 
   /* --------------------------- Ray utilities ------------------------- */
@@ -200,6 +242,17 @@ export class EditController {
      */
     const pipes = this.raycaster.intersectObjects(this.plumbing.pickTargets(), false);
     for (const intersection of pipes) {
+      const result = Building.interpret(intersection);
+      if (result) return result;
+    }
+
+    /*
+     * Ductwork, for exactly the same reason and immediately after it: a supply
+     * trunk is in the same floor void as the waste pipe, with the same floor
+     * between it and the pointer.
+     */
+    const ducts = this.raycaster.intersectObjects(this.hvac.pickTargets(), false);
+    for (const intersection of ducts) {
       const result = Building.interpret(intersection);
       if (result) return result;
     }
@@ -364,6 +417,31 @@ export class EditController {
       return;
     }
 
+    /* ---- Working a door, a switch, a drawer or a tap ---- */
+    if (state.tool === 'use') {
+      /*
+       * Nothing here edits the document, so nothing here goes through
+       * `designStore.edit`. That is the whole point of the tool: a door left
+       * standing open is how the view is being looked at, not what is being
+       * built, and it is thrown away the same way the walkthrough's is.
+       */
+      if (!pick) {
+        editorStore.patch({ readout: 'Click a door, a switch, a drawer or a tap.' });
+        return;
+      }
+
+      const said = this.useThing?.(pick.id) ?? null;
+      // Selected as well as used, so the inspector shows what was just worked
+      // — clicking a door to open it and finding it unselected reads as two
+      // different clicks being needed.
+      editorStore.select(pick.kind, pick.id);
+      editorStore.patch({
+        readout: said ?? 'That is not something you can open or switch.',
+      });
+      this.suppressOrbit();
+      return;
+    }
+
     /* ---- Placing an opening ---- */
     if (isOpeningTool(state.tool)) {
       this.placeOpening(pick, floor, state.tool === 'door');
@@ -437,6 +515,21 @@ export class EditController {
     const pick = this.pick();
     editorStore.setHover(pick?.kind ?? null, pick?.id ?? null);
     this.canvas.style.cursor = pick ? (state.tool === 'move' ? 'move' : 'pointer') : '';
+
+    /*
+     * With the Use tool the readout says what the click would do, because
+     * "Close — Internal door" before the click is worth far more than
+     * "Closed" after it: it is the difference between a tool you can aim and
+     * one you find out about by trying.
+     */
+    if (state.tool === 'use') {
+      const about = pick ? this.describeThing?.(pick.id) ?? null : null;
+      editorStore.patch({
+        readout: about
+          ? `${about.verb} — ${about.label}`
+          : 'Click a door, a switch, a drawer or a tap.',
+      });
+    }
   }
 
   private handlePointerUp(event: PointerEvent): void {

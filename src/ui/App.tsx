@@ -11,6 +11,7 @@ import { useCallback, useRef, useState } from 'react';
 
 import { Viewport } from './Viewport';
 import { Toolbar } from './Toolbar';
+import { WalkHud } from './WalkHud';
 import { PlanPanel } from './panels/PlanPanel';
 import { StoreyPanel } from './panels/StoreyPanel';
 import { RoofPanel } from './panels/RoofPanel';
@@ -19,6 +20,10 @@ import { SitePanel } from './panels/SitePanel';
 import { ElectricalPanel } from './panels/ElectricalPanel';
 import { FittingsPanel } from './panels/FittingsPanel';
 import { PlumbingPanel } from './panels/PlumbingPanel';
+import { HvacPanel } from './panels/HvacPanel';
+import { SectionPanel } from './panels/SectionPanel';
+import { WalkPanel } from './panels/WalkPanel';
+import { SoundPanel } from './panels/SoundPanel';
 import { DrawingsPanel } from './panels/DrawingsPanel';
 import { CataloguePanel } from './panels/CataloguePanel';
 import { AdvisorPanel } from './panels/AdvisorPanel';
@@ -31,6 +36,7 @@ import { ProjectPanel } from './panels/ProjectPanel';
 import { useAutosave } from '@/bridge/useAutosave';
 import { useDesignEdit, useDesignSlice, useHistoryState } from '@/bridge/useDesign';
 import { useKeyboardShortcuts } from '@/bridge/useKeyboardShortcuts';
+import { useEditor } from '@/bridge/useEditor';
 import { designStore } from '@/state/store';
 import type { Engine } from '@/core/Engine';
 import type { ViewpointId } from '@/controls/CameraController';
@@ -43,6 +49,9 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const name = useDesignSlice((doc) => doc.name);
+  // Only so the crosshair mounts and unmounts with the mode; nothing else here
+  // cares about editor state.
+  const { walkthrough } = useEditor();
   const edit = useDesignEdit();
   const { canUndo, canRedo } = useHistoryState();
 
@@ -128,7 +137,13 @@ export function App() {
       </header>
 
       <div className={`app__body ${sidebarOpen ? '' : 'app__body--collapsed'}`}>
-        <Viewport onEngineReady={handleEngineReady} toolbar={<Toolbar />} />
+        <Viewport
+          onEngineReady={handleEngineReady}
+          toolbar={<Toolbar />}
+          hud={
+            <WalkHud engine={engineReady ? engineRef.current : null} walking={walkthrough} />
+          }
+        />
 
         {sidebarOpen && (
           <aside className="sidebar">
@@ -149,6 +164,13 @@ export function App() {
             <FittingsPanel />
             <ElectricalPanel />
             <PlumbingPanel />
+            <HvacPanel />
+            <SectionPanel />
+            {/* `engineReady` rather than the ref alone: a ref does not
+                re-render, so the panel would mount with a null engine and
+                never hear about the real one. */}
+            <WalkPanel engine={engineReady ? engineRef.current : null} />
+            <SoundPanel engine={engineReady ? engineRef.current : null} />
             <DrawingsPanel />
             <PlanPanel />
             <LightingPanel />
