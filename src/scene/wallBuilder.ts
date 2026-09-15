@@ -24,7 +24,7 @@
 import * as THREE from 'three';
 
 import type { WallSegment } from './planGraph';
-import { getOpeningPreset } from './openings/presets';
+import { getOpeningPreset, type OpeningPreset } from './openings/presets';
 import type { Opening } from '@/state/types';
 
 /** Material slots in the geometry the builder returns. */
@@ -199,7 +199,36 @@ export function buildWallGeometry(segment: WallSegment): THREE.BufferGeometry {
 export interface OpeningFurniture {
   frame: THREE.BufferGeometry | null;
   glass: THREE.BufferGeometry | null;
-  leaf: THREE.BufferGeometry | null;
+  /**
+   * The moving parts, one per leaf, each about its own hinge.
+   *
+   * These used to be merged into the wall geometry at a fixed 65 degrees open,
+   * which drew correctly and could never move. A door that can be opened has to
+   * be its own object with its own transform, so the geometry is built at the
+   * hinge — unrotated, closed — and the caller turns it.
+   */
+  leaves: LeafPart[];
+}
+
+/** One swinging or sliding leaf, built at its own origin. */
+export interface LeafPart {
+  /**
+   * Geometry in LEAF space: the hinge is at the origin and the leaf extends
+   * along X. Rotating this about Y is the door opening, with no offset to
+   * correct for, which is the whole reason it is built this way.
+   */
+  geometry: THREE.BufferGeometry;
+  /** Where the hinge sits in the wall's local frame. */
+  hinge: THREE.Vector3;
+  /** Rotation about Y when fully open, radians. Zero is shut. */
+  openAngle: number;
+  /**
+   * How far a sliding leaf travels when open, in metres along its own X.
+   *
+   * Zero for a hinged leaf. Sliding doors do not rotate at all, so the two
+   * are genuinely different motions rather than one parameterised motion.
+   */
+  slide: number;
 }
 
 /** Frame section depth, as a fraction of wall thickness. */
@@ -293,7 +322,7 @@ export function buildOpeningFurniture(
   }
 
   /* ---- Door leaves ---- */
-  const leaf = buildLeaf(preset.leaf, opening, {
+  const leaves = buildLeaves(preset.leaf, opening, {
     left,
     right,
     bottom,
@@ -301,7 +330,7 @@ export function buildOpeningFurniture(
     thickness,
   });
 
-  return { frame, glass, leaf };
+  return { frame, glass, leaves };
 }
 
 interface LeafBounds {
@@ -313,69 +342,88 @@ interface LeafBounds {
 }
 
 /**
- * Builds the door panel(s).
+ * The leaves of one opening, each built at its own hinge.
  *
- * A hinged door is drawn standing ajar rather than flat in its frame: a closed
- * door is indistinguishable from a wall at a glance, whereas an open one reads
- * immediately as a door and — more usefully for a design tool — shows the floor
- * area its swing consumes. Session 4's clearance rules will want that arc.
+ * -----------------------------------------------------------------------------
+ * BUILT SHUT, AT THE ORIGIN.
+ *
+ * This used to build every leaf already rotated 65 degrees open and merged into
+ * the wall, which drew correctly and could never move. A door that opens has to
+ * be a separate object, and the transform that opens it has to be a single
+ * rotation with no offset to correct for — so the geometry is built with the
+ * hinge at the origin, the leaf extending along X, and the door shut.
+ *
+ * The caller places the hinge and turns it. Nothing here knows what "open"
+ * looks like beyond reporting the angle it would be.
  */
-function buildLeaf(
-  style: 'single' | 'double' | 'sliding' | 'none',
+function buildLeaves(
+  style: OpeningPreset['leaf'],
   opening: Opening,
   bounds: LeafBounds,
-): THREE.BufferGeometry | null {
-  if (style === 'none') return null;
+): LeafPart[] {
+  if (style === 'none') return [];
 
   const { left, right, bottom, top, thickness } = bounds;
   const leafThickness = 0.04;
   const height = top - bottom - 0.01;
   const zCentre = thickness / 2;
+  const centreY = bottom + height / 2;
 
   if (style === 'sliding') {
-    // Slid open across half the aperture, sitting just inside the wall face.
+    // A sliding leaf covers half the aperture and slides the other half.
     const width = (right - left) / 2 - 0.02;
-    const panel = boxBetween(
-      [left + 0.01, bottom, zCentre - leafThickness],
-      [left + 0.01 + width, bottom + height, zCentre],
-    );
-    return panel;
+    const geometry = new THREE.BoxGeometry(width, height, leafThickness);
+    // Built extending in +X from its own left edge, so sliding is a translation
+    // along X and nothing else.
+    geometry.translate(width / 2, 0, 0);
+
+    return [
+      {
+        geometry,
+        hinge: new THREE.Vector3(left + 0.01, centreY, zCentre - leafThickness / 2),
+        openAngle: 0,
+        slide: width,
+      },
+    ];
   }
 
-  /** Builds one hinged leaf, rotated about its hinge stile. */
-  const hingedLeaf = (
+  /** One hinged leaf: at the origin, extending along X, shut. */
+  const hinged = (
     hingeX: number,
     leafWidth: number,
     /** +1 swings towards face a, -1 towards face b. */
     swingSign: number,
     /** +1 when the leaf extends in +X from its hinge. */
     directionSign: number,
-  ): THREE.BufferGeometry => {
-    // Built at the origin so it can be rotated about the hinge, then moved.
+  ): LeafPart => {
     const geometry = new THREE.BoxGeometry(leafWidth, height, leafThickness);
     geometry.translate((directionSign * leafWidth) / 2, 0, 0);
 
-    // 65 degrees reads as "open" without the leaf lying flat against the wall.
-    const angle = swingSign * directionSign * THREE.MathUtils.degToRad(65);
-    geometry.rotateY(angle);
-    geometry.translate(hingeX, bottom + height / 2, zCentre);
-    return geometry;
+    return {
+      geometry,
+      hinge: new THREE.Vector3(hingeX, centreY, zCentre),
+      // 65 degrees reads as "open" without the leaf lying flat on the wall.
+      openAngle: swingSign * directionSign * THREE.MathUtils.degToRad(65),
+      slide: 0,
+    };
   };
 
   const swingSign = opening.swing === 'a' ? 1 : -1;
 
   if (style === 'double') {
     const half = (right - left) / 2 - 0.01;
-    return mergeGeometries([
-      hingedLeaf(left + 0.01, half, swingSign, 1),
-      hingedLeaf(right - 0.01, half, swingSign, -1),
-    ]);
+    return [
+      hinged(left + 0.01, half, swingSign, 1),
+      hinged(right - 0.01, half, swingSign, -1),
+    ];
   }
 
   const width = right - left - 0.02;
-  return opening.hinge === 'start'
-    ? hingedLeaf(left + 0.01, width, swingSign, 1)
-    : hingedLeaf(right - 0.01, width, swingSign, -1);
+  return [
+    opening.hinge === 'start'
+      ? hinged(left + 0.01, width, swingSign, 1)
+      : hinged(right - 0.01, width, swingSign, -1),
+  ];
 }
 
 /* ------------------------------- Merging ------------------------------ */

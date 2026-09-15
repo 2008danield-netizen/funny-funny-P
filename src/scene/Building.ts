@@ -85,6 +85,24 @@ export interface PickResult {
  */
 export type SelectionState = Selection;
 
+/**
+ * One movable leaf, and everything needed to move it.
+ *
+ * `openAngle` and `slide` come from the wall builder rather than being
+ * recomputed here, so which way a door swings is decided in exactly one place —
+ * the place that also decided where to put the hinge.
+ */
+export interface LeafHinge {
+  openingId: string;
+  /** Sits on the hinge, carrying the wall's rotation. Turn this. */
+  pivot: THREE.Group;
+  mesh: THREE.Mesh;
+  /** Rotation about Y when fully open. Zero for a sliding leaf. */
+  openAngle: number;
+  /** Travel along local X when fully open. Zero for a hinged leaf. */
+  slide: number;
+}
+
 interface WallEntry {
   mesh: THREE.Mesh;
   faceA: THREE.MeshStandardMaterial;
@@ -93,7 +111,15 @@ interface WallEntry {
   edges: THREE.MeshStandardMaterial;
   frames: THREE.Mesh | null;
   glass: THREE.Mesh | null;
-  leaves: THREE.Mesh | null;
+  /**
+   * One hinge group per leaf, keyed by the opening it belongs to.
+   *
+   * Groups rather than meshes because opening a door is a rotation ABOUT THE
+   * HINGE, and a group placed at the hinge makes that a single `rotation.y`
+   * with no offset to correct for. Several leaves share an opening id — a pair
+   * of double doors is two entries.
+   */
+  leaves: LeafHinge[];
   /** Invisible slabs used to pick individual openings for editing. */
   openingPicks: THREE.Mesh[];
   segment: WallSegment;
@@ -381,7 +407,7 @@ export class Building {
       edges,
       frames: null,
       glass: null,
-      leaves: null,
+      leaves: [],
       openingPicks: [],
       segment: null as never,
     };
@@ -389,16 +415,72 @@ export class Building {
     return entry;
   }
 
+  /* ------------------------------- Leaves --------------------------------- */
+
+  /**
+   * How far open each leaf is drawn, keyed by opening id. 1 is fully open.
+   *
+   * Held here rather than read from a store, because the scene is rebuilt on
+   * every plan change and a door that snapped shut each time somebody nudged a
+   * wall would be its own small betrayal. A leaf built after such a rebuild
+   * comes up at whatever its opening was last set to, which is why there is no
+   * separate restore step to forget to call.
+   */
+  private leafOpenness = new Map<string, number>();
+
+  /**
+   * Sets how far one opening's leaves stand open, 0 to 1.
+   *
+   * The default is 1 — fully open — which is what this app has always drawn,
+   * and deliberately not changed here. Doors are drawn open so the floor area
+   * their swing needs is visible, and quietly shutting them all because
+   * interaction now exists would take away a thing the drawings rely on.
+   */
+  setOpeningOpenness(openingId: string, fraction: number): void {
+    const clamped = Math.max(0, Math.min(1, fraction));
+    this.leafOpenness.set(openingId, clamped);
+    this.applyOpenness(openingId, clamped);
+  }
+
+  /** Every opening that has something that moves. */
+  movableOpenings(): string[] {
+    const ids = new Set<string>();
+    for (const entry of this.walls.values()) {
+      for (const hinge of entry.leaves) ids.add(hinge.openingId);
+    }
+    return [...ids];
+  }
+
+  private applyOpenness(openingId: string, fraction: number): void {
+    for (const entry of this.walls.values()) {
+      for (const hinge of entry.leaves) {
+        if (hinge.openingId !== openingId) continue;
+
+        if (hinge.slide > 0) {
+          // A sliding leaf translates along its own X and never turns.
+          hinge.mesh.position.x = hinge.slide * fraction;
+        } else {
+          hinge.pivot.rotation.y = hinge.openAngle * fraction;
+        }
+      }
+    }
+  }
+
   /** Rebuilds the frames, glazing, leaves and pick volumes for one wall. */
   private rebuildOpenings(entry: WallEntry, segment: WallSegment): void {
-    for (const mesh of [entry.frames, entry.glass, entry.leaves]) {
+    for (const mesh of [entry.frames, entry.glass]) {
       if (!mesh) continue;
       mesh.geometry.dispose();
       this.group.remove(mesh);
     }
     entry.frames = null;
     entry.glass = null;
-    entry.leaves = null;
+
+    for (const hinge of entry.leaves) {
+      hinge.mesh.geometry.dispose();
+      this.group.remove(hinge.pivot);
+    }
+    entry.leaves = [];
 
     for (const pick of entry.openingPicks) {
       pick.geometry.dispose();
@@ -411,13 +493,44 @@ export class Building {
     const matrix = wallMatrix(segment);
     const frames: THREE.BufferGeometry[] = [];
     const glass: THREE.BufferGeometry[] = [];
-    const leaves: THREE.BufferGeometry[] = [];
 
     for (const opening of segment.wall.openings) {
       const furniture = buildOpeningFurniture(segment, opening);
       if (furniture.frame) frames.push(furniture.frame);
       if (furniture.glass) glass.push(furniture.glass);
-      if (furniture.leaf) leaves.push(furniture.leaf);
+
+      /*
+       * Each leaf gets a pivot group sitting exactly on its hinge, carrying the
+       * wall's own rotation. Opening the door is then one `rotation.y` on that
+       * group — no offset, no compound transform, and nothing to get subtly
+       * wrong when the wall is at an angle.
+       */
+      for (const part of furniture.leaves) {
+        const pivot = new THREE.Group();
+        pivot.name = `Leaf_${opening.id}`;
+        pivot.position.copy(part.hinge).applyMatrix4(matrix);
+        pivot.quaternion.setFromRotationMatrix(matrix);
+
+        const mesh = new THREE.Mesh(part.geometry, this.frameMaterial);
+        mesh.castShadow = true;
+        mesh.userData = { pickKind: 'opening', pickId: opening.id };
+        pivot.add(mesh);
+
+        // New leaves come up at whatever this opening was last set to, or
+        // fully open if nobody has touched it.
+        const fraction = this.leafOpenness.get(opening.id) ?? 1;
+        if (part.slide > 0) mesh.position.x = part.slide * fraction;
+        else pivot.rotation.y = part.openAngle * fraction;
+
+        this.group.add(pivot);
+        entry.leaves.push({
+          openingId: opening.id,
+          pivot,
+          mesh,
+          openAngle: part.openAngle,
+          slide: part.slide,
+        });
+      }
 
       // An invisible slab filling the aperture, so clicking a doorway selects
       // the door rather than falling through to whatever is behind it.
@@ -439,7 +552,7 @@ export class Building {
 
     entry.frames = this.addMergedMesh(frames, this.frameMaterial, matrix, `Frames_${segment.wall.id}`, true);
     entry.glass = this.addMergedMesh(glass, this.glassMaterial, matrix, `Glass_${segment.wall.id}`, false);
-    entry.leaves = this.addMergedMesh(leaves, this.frameMaterial, matrix, `Leaves_${segment.wall.id}`, true);
+
   }
 
   /** Merges geometries into one mesh and adds it to the scene. */
@@ -755,7 +868,7 @@ export class Building {
       entry.mesh.visible = visible;
       if (entry.frames) entry.frames.visible = visible;
       if (entry.glass) entry.glass.visible = visible;
-      if (entry.leaves) entry.leaves.visible = visible;
+      for (const hinge of entry.leaves) hinge.pivot.visible = visible;
     }
   }
 
@@ -779,7 +892,13 @@ export class Building {
     entry.faceB.dispose();
     entry.edges.dispose();
 
-    for (const mesh of [entry.frames, entry.glass, entry.leaves]) {
+    for (const hinge of entry.leaves) {
+      hinge.mesh.geometry.dispose();
+      this.group.remove(hinge.pivot);
+    }
+    entry.leaves = [];
+
+    for (const mesh of [entry.frames, entry.glass]) {
       if (!mesh) continue;
       mesh.geometry.dispose();
       this.group.remove(mesh);
