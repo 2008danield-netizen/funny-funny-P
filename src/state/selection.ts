@@ -66,7 +66,16 @@ export type EditTool =
   /** Drag along a wall to draw a run of cabinets, which fills itself. */
   | 'cabinet'
   /** Click inside a room to drop the armed fixture. */
-  | 'fixture';
+  | 'fixture'
+  /**
+   * Click a door, a switch, a drawer or a tap to work it.
+   *
+   * Nothing this tool does touches the document: it opens and shuts things
+   * inside the view, the same way the walkthrough does, and leaves nothing
+   * behind. It is here so that checking a door swing clears the island does
+   * not require walking in and back out again.
+   */
+  | 'use';
 
 export interface EditorState {
   tool: EditTool;

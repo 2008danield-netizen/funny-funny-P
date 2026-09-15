@@ -57,6 +57,17 @@ export interface XrFrameInput {
   aim: { origin: THREE.Vector3; direction: THREE.Vector3 } | null;
   /** True on the frame the teleport was released and should be taken. */
   confirmTeleport: boolean;
+  /**
+   * Where the reaching hand is, and which way it points.
+   *
+   * Always present while a controller is tracked, unlike `aim`, which only
+   * exists while the teleport is being held. People reach for things with
+   * their hands and find it uncanny when a gaze cursor decides what they meant,
+   * so the highlight follows the hand at all times.
+   */
+  hand: { origin: THREE.Vector3; direction: THREE.Vector3 } | null;
+  /** True on the frame the grip or A button was pressed. */
+  use: boolean;
 }
 
 export class XrWalk {
@@ -73,6 +84,7 @@ export class XrWalk {
   private right: THREE.XRTargetRaySpace | null = null;
   private snapArmed = true;
   private aimHeld = false;
+  private useHeld = false;
   private confirm = false;
   private onChange: (presenting: boolean) => void;
 
@@ -153,7 +165,7 @@ export class XrWalk {
   read(comfort: { locomotion: 'smooth' | 'teleport'; snapTurn: boolean }): XrFrameInput {
     const session = this.renderer.xr.getSession();
     if (!session) {
-      return { intent: { ...NO_INTENT }, aim: null, confirmTeleport: false };
+      return { intent: { ...NO_INTENT }, aim: null, hand: null, confirmTeleport: false, use: false };
     }
 
     let forward = 0;
@@ -162,6 +174,7 @@ export class XrWalk {
     let snap = 0;
     let running = false;
     let aiming = false;
+    let using = false;
 
     for (const source of session.inputSources) {
       const pad = source.gamepad;
@@ -208,6 +221,14 @@ export class XrWalk {
         // The trigger aims the teleport; releasing it takes the jump.
         const trigger = pad.buttons[0]?.pressed === true;
         aiming = trigger;
+
+        /*
+         * The grip uses whatever the hand is pointing at. Grip rather than
+         * trigger because the trigger is already the teleport, and because
+         * closing your hand around something is what taking hold of a door
+         * handle feels like.
+         */
+        using = pad.buttons[1]?.pressed === true;
       }
     }
 
@@ -217,21 +238,28 @@ export class XrWalk {
     this.aimHeld = aiming;
     this.confirm = confirmTeleport;
 
-    const hand = this.right;
-    let aim: XrFrameInput['aim'] = null;
+    const controller = this.right;
+    let hand: XrFrameInput['hand'] = null;
 
-    if (aiming && hand) {
+    if (controller) {
       const origin = new THREE.Vector3();
       const direction = new THREE.Vector3(0, 0, -1);
-      hand.getWorldPosition(origin);
-      direction.applyQuaternion(hand.getWorldQuaternion(new THREE.Quaternion()));
-      aim = { origin, direction };
+      controller.getWorldPosition(origin);
+      direction.applyQuaternion(controller.getWorldQuaternion(new THREE.Quaternion()));
+      hand = { origin, direction };
     }
+
+    // A press, not a hold: using something is an event, and a held grip should
+    // not open and shut a door sixty times a second.
+    const use = using && !this.useHeld;
+    this.useHeld = using;
 
     return {
       intent: { forward, strafe, turn, snap, running, teleportTo: null },
-      aim,
+      aim: aiming ? hand : null,
+      hand,
       confirmTeleport,
+      use,
     };
   }
 

@@ -2277,3 +2277,62 @@ select {
   gap: 6px;
   align-items: center;
 }
+
+/* ---------------------------------------------------------------------------
+   The walkthrough crosshair.
+
+   Pointer-events are off on the whole thing: while the pointer is locked there
+   is no cursor to hit it with, and while it is not, a click on the canvas is
+   how somebody asks for the pointer back. An overlay that swallowed that click
+   would strand them outside the walkthrough with no obvious way in.
+   --------------------------------------------------------------------------- */
+
+.walkhud {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.walkhud__cross {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.55);
+  /* A dark ring round a pale dot, so it stays visible against both a white
+     ceiling and a dark floor without having to sample what is behind it. */
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.walkhud__cross--live {
+  background: #f2d16b;
+  transform: scale(1.5);
+}
+
+.walkhud__prompt {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 12px;
+  background: rgba(14, 16, 19, 0.78);
+  backdrop-filter: blur(10px);
+  padding: 6px 11px;
+  border-radius: var(--radius-sm);
+  max-width: 320px;
+  text-align: center;
+}
+
+.walkhud__verb {
+  color: #f2d16b;
+  font-weight: 600;
+}
+
+.walkhud__label {
+  color: var(--text-primary);
+}

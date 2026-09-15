@@ -36,6 +36,8 @@ export interface DesktopWalkState {
   active: boolean;
   /** True on the frame a teleport was confirmed. */
   confirmTeleport: boolean;
+  /** True on the frame the use key or the left button was pressed. */
+  use: boolean;
 }
 
 export class DesktopWalk {
@@ -45,6 +47,7 @@ export class DesktopWalk {
   private yawDelta = 0;
   private snapQueued = 0;
   private confirm = false;
+  private useQueued = false;
   private teleportHeld = false;
   private locked = false;
   private onLockChange: (locked: boolean) => void;
@@ -79,6 +82,10 @@ export class DesktopWalk {
       if (event.repeat) return;
       if (event.code === 'KeyQ') this.snapQueued -= 1;
       if (event.code === 'KeyE') this.snapQueued += 1;
+      // E is snap-turn and F is use, rather than E for both: reaching for a
+      // door handle and turning thirty degrees at the same moment is not a
+      // combination anybody wants.
+      if (event.code === 'KeyF') this.useQueued = true;
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
@@ -98,6 +105,8 @@ export class DesktopWalk {
       if (!this.locked) return;
       // Right button aims the teleport, the way a controller's grip does.
       if (event.button === 2) this.teleportHeld = true;
+      // Left button uses whatever is under the crosshair.
+      if (event.button === 0) this.useQueued = true;
     };
 
     const onMouseUp = (event: MouseEvent) => {
@@ -155,6 +164,7 @@ export class DesktopWalk {
     this.held.clear();
     this.teleportHeld = false;
     this.confirm = false;
+    this.useQueued = false;
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
   }
 
@@ -167,7 +177,13 @@ export class DesktopWalk {
    */
   read(delta: number): DesktopWalkState {
     if (!this.locked) {
-      return { intent: { ...NO_INTENT }, pitch: this.pitch, active: false, confirmTeleport: false };
+      return {
+        intent: { ...NO_INTENT },
+        pitch: this.pitch,
+        active: false,
+        confirmTeleport: false,
+        use: false,
+      };
     }
 
     const down = (code: string) => (this.held.has(code) ? 1 : 0);
@@ -187,6 +203,9 @@ export class DesktopWalk {
     const confirmTeleport = this.confirm;
     this.confirm = false;
 
+    const use = this.useQueued;
+    this.useQueued = false;
+
     return {
       intent: {
         forward: Math.max(-1, Math.min(1, forward)),
@@ -201,6 +220,7 @@ export class DesktopWalk {
       pitch: this.pitch,
       active: true,
       confirmTeleport,
+      use,
     };
   }
 

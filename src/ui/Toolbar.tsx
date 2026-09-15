@@ -82,6 +82,13 @@ const TOOLS: ToolDefinition[] = [
     hint: 'Pick a fixture on the Kitchen & Bathroom panel, then click inside a room.',
     shortcut: 'X',
   },
+  {
+    id: 'use',
+    label: 'Use',
+    icon: 'U',
+    hint: 'Click a door, a switch, a drawer or a tap to work it. Nothing is saved.',
+    shortcut: 'U',
+  },
 ];
 
 export function Toolbar() {

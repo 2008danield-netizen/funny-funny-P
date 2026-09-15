@@ -19,6 +19,22 @@
  * what is, in truth, about eight distinct shapes. So boxes are cached by their
  * rounded dimensions and instanced by transform — which is the same trick
  * `Furnishings` uses, for the same reason.
+ *
+ * -----------------------------------------------------------------------------
+ * THE FRONTS MOVE, AND THEY MOVE THE WAY THE REAL ONES DO.
+ *
+ * A door hinges about the edge away from its handle and swings out; a drawer
+ * slides straight out along the run's own normal. Both matter for the same
+ * reason the walkthrough matters at all: a 900 mm gangway between two runs of
+ * base units is a perfectly comfortable gangway until somebody opens a drawer
+ * in it. That is a real kitchen-design fault, it is invisible on a plan, and
+ * a drawer that actually comes out is what finds it.
+ *
+ * What is NOT modelled is the drawer BOX behind the front — sliding the front
+ * out leaves the carcass visible behind it. A real box is four more panels per
+ * drawer on a thing that already has sixty fronts, for a difference that does
+ * not change any answer: what the drawer costs you is the space in front of
+ * it, and that is exactly what the front already sweeps.
  */
 
 import * as THREE from 'three';
@@ -26,6 +42,7 @@ import * as THREE from 'three';
 import { runGeometry, type PlacedUnit } from '@/building/cabinetRun';
 import { CARCASS, WORKTOP, doorFinish, worktopMaterial } from '@/fittings/modules';
 import { getFixture, type FixtureEntry } from '@/fittings/fixtures';
+import { hasTap, tapHeightAbove } from '@/walk/interactables';
 import { elevationOf } from '@/state/levels';
 import type { CabinetRun, DesignDocument, Fixture } from '@/state/types';
 
@@ -36,6 +53,31 @@ const PLINTH_COLOUR = 0x3f4247;
 /** How proud of the carcass a door sits, and how thick it is. */
 const DOOR_THICKNESS = 0.018;
 const DOOR_GAP = 0.003;
+
+/**
+ * How far a cabinet door swings, fully open.
+ *
+ * Ninety-five degrees rather than ninety: a real hinge goes a little past
+ * square so the door clears the carcass edge and you can get a drawer out
+ * behind it. It is also what makes an open door read as open rather than as a
+ * modelling error.
+ */
+const DOOR_SWING = (95 * Math.PI) / 180;
+
+/** How far a drawer runs out, as a fraction of the carcass depth. */
+const DRAWER_TRAVEL = 0.75;
+
+/** The water, when a tap is running. */
+const WATER_COLOUR = 0xbcd9e8;
+
+/**
+ * And the tap it comes out of.
+ *
+ * Pale and only lightly metallic. Real chrome is nearly a mirror, and a mirror
+ * in a scene with no environment map to reflect renders as a black rod — which
+ * is what a fully metallic tap looked like the first time this was drawn.
+ */
+const TAP_COLOUR = 0xd6dadd;
 
 export class Fittings {
   readonly group = new THREE.Group();
@@ -49,8 +91,81 @@ export class Fittings {
   private geometries = new Map<string, THREE.BoxGeometry>();
   private materials = new Map<number, THREE.MeshStandardMaterial>();
 
+  /** The fronts that move, by the id of the unit they belong to. */
+  private movables = new Map<string, MovingFront[]>();
+  /** The stream of water over each tap-bearing fixture, by fixture id. */
+  private streams = new Map<string, THREE.Object3D[]>();
+  /** Everything parented to a pivot, so `clear` can take it apart. */
+  private pivots: THREE.Object3D[] = [];
+
+  /**
+   * How far open each unit is, remembered across rebuilds.
+   *
+   * The same reason `Building` remembers its door leaves: editing anything on
+   * the storey rebuilds all of this, and a drawer that shut itself because
+   * somebody moved a wall would be a bug that is very hard to describe.
+   */
+  private openness = new Map<string, number>();
+  private running = new Set<string>();
+
   constructor() {
     this.group.name = 'Fittings';
+  }
+
+  /* ----------------------------- Moving parts ----------------------------- */
+
+  /** Which units have something that opens, for anything that wants to know. */
+  movableUnits(): string[] {
+    return [...this.movables.keys()];
+  }
+
+  /** And which fixtures have a tap that can be turned on. */
+  tapFixtures(): string[] {
+    return [...this.streams.keys()];
+  }
+
+  /** Opens or shuts a unit's fronts. 0 is shut, 1 fully open. */
+  setUnitOpenness(unitId: string, fraction: number): void {
+    const clamped = Math.max(0, Math.min(1, fraction));
+    if (this.openness.get(unitId) === clamped) return;
+    this.openness.set(unitId, clamped);
+    this.applyUnit(unitId, clamped);
+  }
+
+  /** Turns a tap's water on or off. */
+  setTapRunning(fixtureId: string, on: boolean): void {
+    if (this.running.has(fixtureId) === on) return;
+    if (on) this.running.add(fixtureId);
+    else this.running.delete(fixtureId);
+
+    for (const part of this.streams.get(fixtureId) ?? []) part.visible = on;
+  }
+
+  private applyUnit(unitId: string, fraction: number): void {
+    for (const part of this.movables.get(unitId) ?? []) {
+      if (part.kind === 'drawer') {
+        // Straight out along the run's normal, which is the direction a runner
+        // physically allows and also the direction the gangway is measured in.
+        part.pivot.position.set(
+          part.facing.x * part.travel * fraction,
+          0,
+          part.facing.z * part.travel * fraction,
+        );
+      } else {
+        part.pivot.rotation.y = part.shutAngle + part.swing * fraction;
+      }
+    }
+  }
+
+  /** Re-applies everything remembered, after a rebuild threw the meshes away. */
+  private restoreState(): void {
+    for (const [unitId, fraction] of this.openness) {
+      if (fraction > 0) this.applyUnit(unitId, fraction);
+    }
+    for (const [fixtureId, parts] of this.streams) {
+      const on = this.running.has(fixtureId);
+      for (const part of parts) part.visible = on;
+    }
   }
 
   /** What the pointer may pick. */
@@ -100,6 +215,7 @@ export class Fittings {
     for (const run of runs) this.buildRun(run);
     for (const fixture of fixtures) this.buildFixture(fixture);
 
+    this.restoreState();
     this.applySelection();
     void elevationOf;
   }
@@ -180,14 +296,24 @@ export class Fittings {
     const frontColour = new THREE.Color(finish.front).getHex();
     const handleColour = new THREE.Color(finish.handle).getHex();
 
+    const moving: MovingFront[] = [];
+    const facing = { x: Math.sin(placed.rotation), z: Math.cos(placed.rotation) };
+
     for (const front of fronts) {
       const panel = new THREE.Mesh(
         this.boxFor(front.width - DOOR_GAP * 2, front.height - DOOR_GAP * 2, DOOR_THICKNESS),
         this.materialFor(frontColour, 0.5),
       );
-      this.placeOnFace(panel, placed, front.offsetX, lift + front.centreY, depth / 2 + DOOR_THICKNESS / 2);
-      panel.raycast = () => {};
-      this.add(panel, false);
+
+      /*
+       * The handle goes on the edge AWAY from the hinge, which is both where a
+       * real one is and what makes a pair of doors read as a pair: their
+       * handles meet in the middle rather than both sitting on the right.
+       */
+      const handleAcross =
+        front.kind === 'drawer'
+          ? front.offsetX
+          : front.offsetX - front.hinge * (front.width / 2 - 0.05);
 
       // A rail handle across the top of a drawer, or down the side of a door.
       const handle = new THREE.Mesh(
@@ -196,16 +322,92 @@ export class Fittings {
           : this.boxFor(0.014, Math.min(0.25, front.height * 0.4), 0.03),
         this.materialFor(handleColour, 0.35, 0.6),
       );
-      this.placeOnFace(
-        handle,
-        placed,
-        front.offsetX + (front.kind === 'drawer' ? 0 : front.width / 2 - 0.05),
-        lift + front.centreY + (front.kind === 'drawer' ? front.height / 2 - 0.05 : 0),
-        depth / 2 + DOOR_THICKNESS + 0.015,
-      );
+
+      const panelY = lift + front.centreY;
+      const handleY = panelY + (front.kind === 'drawer' ? front.height / 2 - 0.05 : 0);
+
+      panel.raycast = () => {};
       handle.raycast = () => {};
-      this.add(handle, false);
+
+      if (front.kind === 'drawer') {
+        /*
+         * A drawer needs no pivot of its own: everything it does is a
+         * translation, so the front and its handle are placed in world space
+         * and a group around them is simply slid outwards.
+         */
+        this.placeOnFace(panel, placed, front.offsetX, panelY, depth / 2 + DOOR_THICKNESS / 2);
+        this.placeOnFace(handle, placed, handleAcross, handleY, depth / 2 + DOOR_THICKNESS + 0.015);
+
+        const slide = new THREE.Group();
+        slide.add(panel, handle);
+        // Tagged so the motion can be inspected without reaching back into
+        // the run: the geometry is what the tests check, not the bookkeeping.
+        slide.userData.unitId = placed.unit.id;
+        slide.userData.shutAngle = 0;
+        this.addPivot(slide);
+
+        moving.push({
+          kind: 'drawer',
+          pivot: slide,
+          facing,
+          // Nearly the whole carcass, which is what a full-extension runner
+          // gives and what the gangway has to allow for.
+          travel: depth * DRAWER_TRAVEL,
+          shutAngle: 0,
+          swing: 0,
+        });
+        continue;
+      }
+
+      /*
+       * A door DOES need a pivot, at its hinge edge. The group is put there in
+       * world space with the unit's own rotation, so its children can be laid
+       * out in the same across/out frame `placeOnFace` uses — with the origin
+       * moved to the hinge.
+       */
+      const hingeAcross = front.offsetX + front.hinge * (front.width / 2);
+      const side = { x: Math.cos(placed.rotation), z: -Math.sin(placed.rotation) };
+      const out = depth / 2;
+
+      const pivot = new THREE.Group();
+      pivot.position.set(
+        placed.at.x + facing.x * out + side.x * hingeAcross,
+        0,
+        placed.at.z + facing.z * out + side.z * hingeAcross,
+      );
+      pivot.rotation.y = placed.rotation;
+
+      panel.position.set(front.offsetX - hingeAcross, panelY, DOOR_THICKNESS / 2);
+      handle.position.set(handleAcross - hingeAcross, handleY, DOOR_THICKNESS + 0.015);
+
+      pivot.add(panel, handle);
+      pivot.userData.unitId = placed.unit.id;
+      pivot.userData.shutAngle = placed.rotation;
+      this.addPivot(pivot);
+
+      moving.push({
+        kind: 'door',
+        pivot,
+        facing,
+        travel: 0,
+        shutAngle: placed.rotation,
+        /*
+         * The sign follows the hinge side. Yawing the pivot by +θ swings the
+         * free edge towards −across, so a door hinged on the +across edge
+         * needs a positive angle to come outwards and one hinged on the other
+         * edge needs a negative one.
+         */
+        swing: front.hinge * DOOR_SWING,
+      });
     }
+
+    if (moving.length > 0) this.movables.set(placed.unit.id, moving);
+  }
+
+  /** Adds a group of moving parts, tracked so `clear` can take it apart. */
+  private addPivot(pivot: THREE.Object3D): void {
+    this.group.add(pivot);
+    this.pivots.push(pivot);
   }
 
   /** Puts a part on the front face of a unit, offset across and up. */
@@ -273,6 +475,10 @@ export class Fittings {
       this.add(well, false);
     }
 
+    /* ---- The water, for the things with a tap on them ---- */
+
+    if (hasTap(entry)) this.buildWater(fixture, entry);
+
     /* ---- A cistern behind a WC, which is what makes it read as one ---- */
     if (entry.kind === 'wc') {
       const cistern = new THREE.Mesh(
@@ -289,6 +495,95 @@ export class Fittings {
       cistern.raycast = () => {};
       this.add(cistern, false);
     }
+  }
+
+  /**
+   * A stream of water, built hidden and shown when the tap is turned on.
+   *
+   * Built up front rather than on demand for the same reason the light pool
+   * is allocated up front: adding geometry to a live scene is a stall, and a
+   * tap should answer the moment it is used. Two meshes, invisible until they
+   * are wanted, cost nothing while they are not.
+   *
+   * It is deliberately not animated. A moving stream needs either a scrolling
+   * texture or a shader, both of which are real work on every frame for every
+   * running tap; what the tap is actually being asked is whether the water
+   * lands in the bowl rather than on the rim, and a still stream answers that
+   * exactly as well.
+   */
+  private buildWater(fixture: Fixture, entry: FixtureEntry): void {
+    const parts: THREE.Object3D[] = [];
+    const material = this.materialFor(WATER_COLOUR, 0.05);
+    const spout = fixture.y + tapHeightAbove(entry);
+
+    /*
+     * The tap itself, which was missing.
+     *
+     * A sink with no tap on it is wrong whether or not anything is running,
+     * and a stream of water starting in mid-air is worse. A post and a short
+     * arm is all a tap is at this scale; the arm reaches over the bowl, which
+     * is where the water comes out.
+     */
+    if (entry.kind !== 'shower') {
+      const back = { x: -Math.sin(fixture.rotation), z: -Math.cos(fixture.rotation) };
+      const stand = spout - fixture.y - entry.height * 0.5;
+
+      const post = new THREE.Mesh(this.boxFor(0.03, stand, 0.03), this.materialFor(TAP_COLOUR, 0.3, 0.25));
+      post.position.set(
+        fixture.at.x + back.x * (entry.depth / 2 - 0.05),
+        fixture.y + entry.height * 0.5 + stand / 2,
+        fixture.at.z + back.z * (entry.depth / 2 - 0.05),
+      );
+      post.rotation.y = fixture.rotation;
+      post.raycast = () => {};
+      this.add(post, false);
+
+      const arm = new THREE.Mesh(this.boxFor(0.026, 0.026, entry.depth / 2 - 0.05), this.materialFor(TAP_COLOUR, 0.3, 0.25));
+      arm.position.set(
+        fixture.at.x + back.x * (entry.depth / 4 - 0.025),
+        spout,
+        fixture.at.z + back.z * (entry.depth / 4 - 0.025),
+      );
+      arm.rotation.y = fixture.rotation;
+      arm.raycast = () => {};
+      this.add(arm, false);
+    }
+
+    // From the spout down to the bottom of the well — the same spout the hand
+    // reaches for, which is why the height comes from one place.
+    const top = spout;
+    const bottom = fixture.y + entry.height * (entry.kind === 'shower' ? 0.1 : 0.45);
+    const fall = Math.max(0.05, top - bottom);
+
+    const stream = new THREE.Mesh(
+      this.boxFor(entry.kind === 'shower' ? 0.16 : 0.018, fall, entry.kind === 'shower' ? 0.16 : 0.018),
+      material,
+    );
+    stream.position.set(fixture.at.x, bottom + fall / 2, fixture.at.z);
+    stream.rotation.y = fixture.rotation;
+    stream.raycast = () => {};
+    stream.castShadow = false;
+    stream.visible = false;
+    stream.userData.tapFixtureId = fixture.id;
+    parts.push(stream);
+    this.add(stream, false);
+
+    // And a disc where it lands, which is what makes it read as water hitting
+    // something rather than as a rod hanging in the air.
+    const pool = new THREE.Mesh(
+      this.boxFor(entry.width * 0.5, 0.004, entry.depth * 0.5),
+      material,
+    );
+    pool.position.set(fixture.at.x, bottom + 0.002, fixture.at.z);
+    pool.rotation.y = fixture.rotation;
+    pool.raycast = () => {};
+    pool.castShadow = false;
+    pool.visible = false;
+    pool.userData.tapFixtureId = fixture.id;
+    parts.push(pool);
+    this.add(pool, false);
+
+    this.streams.set(fixture.id, parts);
   }
 
   /* -------------------------------- Plumbing ------------------------------- */
@@ -364,8 +659,17 @@ export class Fittings {
       if (mesh.geometry instanceof THREE.ExtrudeGeometry) mesh.geometry.dispose();
       this.group.remove(mesh);
     }
+    for (const pivot of this.pivots) {
+      // The panels and handles inside share cached geometry and materials, so
+      // taking the group off the scene is the whole of the disposal.
+      pivot.clear();
+      this.group.remove(pivot);
+    }
     this.meshes = [];
     this.targets = [];
+    this.pivots = [];
+    this.movables.clear();
+    this.streams.clear();
   }
 
   dispose(): void {
@@ -378,6 +682,23 @@ export class Fittings {
   }
 }
 
+/* ------------------------------ Moving parts ------------------------------ */
+
+/** One front that opens, and everything needed to open it. */
+interface MovingFront {
+  kind: 'door' | 'drawer';
+  /** A drawer's slides; a door's hinges about its own Y. */
+  pivot: THREE.Object3D;
+  /** Which way is out of the carcass, for a drawer. */
+  facing: { x: number; z: number };
+  /** How far a drawer runs out, metres. */
+  travel: number;
+  /** A door's yaw when it is shut. */
+  shutAngle: number;
+  /** And how far it turns from there, signed by which edge it hinges on. */
+  swing: number;
+}
+
 /* ------------------------------ Front layout ------------------------------ */
 
 interface Front {
@@ -388,6 +709,14 @@ interface Front {
   offsetX: number;
   /** Up from the bottom of the carcass. */
   centreY: number;
+  /**
+   * Which edge the hinges are on: −1 the left edge, +1 the right.
+   *
+   * Meaningless for a drawer, which slides. For a pair of doors the two
+   * hinge on opposite edges so the handles meet in the middle, which is both
+   * how they are actually hung and how a pair reads at a glance.
+   */
+  hinge: -1 | 1;
 }
 
 /**
@@ -401,9 +730,10 @@ interface Front {
 function frontsOf(front: string, width: number, height: number): Front[] {
   switch (front) {
     case 'double-door':
+      // Hinged on the outer edges, so they part in the middle.
       return [
-        { kind: 'door', width: width / 2, height, offsetX: -width / 4, centreY: height / 2 },
-        { kind: 'door', width: width / 2, height, offsetX: width / 4, centreY: height / 2 },
+        { kind: 'door', width: width / 2, height, offsetX: -width / 4, centreY: height / 2, hinge: -1 },
+        { kind: 'door', width: width / 2, height, offsetX: width / 4, centreY: height / 2, hinge: 1 },
       ];
 
     case 'drawers-2':
@@ -424,12 +754,12 @@ function frontsOf(front: string, width: number, height: number): Front[] {
     case 'corner':
       // One door on the diagonal, drawn as a plain front across the leg. The
       // real thing is angled; at this scale the difference is a line.
-      return [{ kind: 'door', width: width * 0.4, height, offsetX: 0, centreY: height / 2 }];
+      return [{ kind: 'door', width: width * 0.4, height, offsetX: 0, centreY: height / 2, hinge: -1 }];
 
     case 'sink':
     case 'door':
     default:
-      return [{ kind: 'door', width, height, offsetX: 0, centreY: height / 2 }];
+      return [{ kind: 'door', width, height, offsetX: 0, centreY: height / 2, hinge: -1 }];
   }
 }
 
@@ -440,7 +770,14 @@ function stack(width: number, height: number, shares: readonly number[]): Front[
   // Bottom first, so the deepest is at the bottom where the pans go.
   for (const share of [...shares].reverse()) {
     const panel = height * share;
-    fronts.push({ kind: 'drawer', width, height: panel, offsetX: 0, centreY: cursor + panel / 2 });
+    fronts.push({
+      kind: 'drawer',
+      width,
+      height: panel,
+      offsetX: 0,
+      centreY: cursor + panel / 2,
+      hinge: -1,
+    });
     cursor += panel;
   }
   return fronts;

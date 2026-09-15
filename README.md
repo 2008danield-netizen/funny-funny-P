@@ -354,6 +354,51 @@ is a slow frame; in a headset it is felt in the inner ear. Nothing has been cut
 from the renderer for VR yet — this is the measurement that will decide what
 should be, rather than guessing in advance and cutting the wrong thing.
 
+**And the house works.**
+Doors open and shut. Light switches turn the lights on. Drawers pull out,
+cupboard doors swing, taps run. Walk up to something, click it or press **F**,
+and it does what it does — or pick the **Use** tool and click it from the
+ordinary view without going inside at all, which is much the easier way to check
+that a door swing clears the island.
+
+Nothing here was added to the model. Every door, switch, fitting, drawer and tap
+in the list was already there, with real dimensions and, in the switches' case, a
+real circuit — fourteen sessions of drawing a building properly turn out to be
+fourteen sessions of building something you can touch. The list of what is
+touchable is derived from the document every time, like the pipe sizes and the
+duct sizes, because a stored list is a list that is wrong the moment somebody
+moves a door.
+
+The switches work the lights in the room they are in. The model records no
+switch-to-fitting link and inventing a field for one would be inventing a
+decision nobody has made — but it does record where every switch and every
+fitting is, and the layout that placed them put the switch by the door of the
+room whose lights it works. That is what anybody walking up to it assumes, and
+it is derivable rather than guessed. A room with no switch has lights that answer
+to nothing, and the panel says so rather than pretending.
+
+The lights are real light sources at the real fitting positions, with a choice of
+lamp — 2700 K through 5000 K, the same room in two of them being two different
+rooms. Raising a room's brightness when its switch is flipped would be nearly
+free and would read convincingly; it also cannot tell you the one thing worth
+knowing, which is that the corner of the room is dark, or that the worktop is lit
+from behind so you work in your own shadow. Only the nearest six are computed:
+every light costs shader work on every lit fragment, and a house of downlights
+would take the frame budget with it. The frame meter is there to argue with that
+number.
+
+A drawer that comes out is not decoration either. A 900 mm gangway between two
+runs of base units is a perfectly comfortable gangway until somebody opens a
+drawer in it — a real kitchen fault, invisible on a plan, and one that a drawer
+which actually travels its full 450 mm finds for you.
+
+**None of it is saved.** A door you left open, a light you switched on, a drawer
+you pulled out — that is how you are looking at the design, not part of it.
+Nothing is exported, nothing reaches the drawings, and leaving the walkthrough
+puts everything back. Persist it instead and an exported file carries which
+drawers were open, the plan sheets have to decide whether to draw them that way,
+and "the design" quietly stops meaning one thing.
+
 **Cut the building open.**
 A section is the drawing that answers what a plan and an elevation cannot: how
 tall anything is inside, how thick the floor build-up really is, whether the
@@ -454,7 +499,24 @@ Edit any file under `src/` and the browser updates instantly without a refresh.
 | `W` | **Wall** — click to place corners; walls chain as you go |
 | `D` / `N` | **Door** / **Window** — click a wall to cut one |
 | `F` | **Furnish** — pick from the catalogue, then click in a room |
+| `T` | **Stair** — click the floor to put the foot of a staircase there |
+| `C` | **Cabinet** — click each end of a run along a wall |
+| `X` | **Fixture** — pick one on the Kitchen & Bathroom panel, then click |
+| `U` | **Use** — click a door, a switch, a drawer or a tap to work it |
 | `G` | Toggle snapping |
+
+The Use tool changes nothing about the design: it opens and shuts things inside
+the view, exactly as the walkthrough does, and leaves nothing behind. It shows
+the electrical devices while it is selected, because a switch you cannot see is
+a switch you cannot press.
+
+| Key | Action, while walking through |
+| --- | --- |
+| `W` `A` `S` `D` | Walk; hold `Shift` to hurry |
+| `Q` / `E` | Turn in steps |
+| Click or `F` | Open a door, flip a switch, pull a drawer, run a tap |
+| Right-drag | Aim a teleport; release to take it |
+| `Esc` | Release the mouse |
 
 | Key | Action |
 | --- | --- |
@@ -780,10 +842,12 @@ src/
 npm test
 ```
 
-848 tests covering the parts where a bug is invisible on screen: what is
+889 tests covering the parts where a bug is invisible on screen: what is
 underfoot and what is not, sliding along walls and refusing to squeeze through a
 door narrower than a body, climbing a flight and arriving on the floor above,
-where a teleport arc may land, frame-time percentiles, what a section
+where a teleport arc may land, frame-time percentiles, what a hand can reach and
+what using it does, which way a cabinet door swings and how far a drawer runs
+out, what a section
 plane passes through and where it does not, construction build-ups against the
 assemblies they claim to be, section cuts that follow the building and
 hand-drawn ones that never move, the Manual J
@@ -848,6 +912,18 @@ its own indoors — and a wall detector that proposed two hundred walls for a
 seven-wall plan, because a search tolerance comparable to the gap between a
 wall's two faces fuses them into one solid band, and then every shallow diagonal
 through that band reads as a continuous line.
+
+Session 15 added one more, and it is the clearest example yet of why the browser
+run matters. The list of what a hand can reach worked out where a cabinet's
+handle is by walking the run's path again and stepping out along each leg's
+normal — which is the same arithmetic the scene does, written twice. The sign of
+that normal depends on which way the run happens to have been drawn, so half the
+kitchen had its handles INSIDE the wall: reachable only by putting your arm
+through the plasterboard, and completely invisible in the code, in the types and
+in the unit tests, all of which were perfectly happy. It showed up the moment a
+real click was aimed at one and the picker answered "that is a wall". The fix
+was to delete the second derivation and take the position and the facing from
+`runGeometry`, which is what the carcasses themselves are built from.
 
 Session 7 also swept every earlier session's headline feature end to end in a
 real browser — draw a wall and undo it, furnish a room from the advisor, add a
@@ -1034,10 +1110,11 @@ their valleys across each other.
 - ~~**Session 14** — walking through it: the walker, stairs underfoot, the
   teleport arc, comfort settings, a desktop walkthrough and a WebXR session
   over the same code, and a frame budget to measure against.~~ ✅
-- **Session 15 — make it work.** Doors that swing on their hinges, switches
-  that turn on the lights they are actually wired to, drawers and cabinet doors
-  that open, taps that turn. Every one of those already exists in the model as
-  a real object with real dimensions; none of them can be touched yet.
+- ~~**Session 15** — making it work: doors that swing on their hinges, switches
+  that turn on the lights they are actually wired to with real light sources and
+  a choice of lamp, drawers and cabinet doors that open, taps that run — reached
+  from inside the walkthrough or clicked from the ordinary view with the Use
+  tool, and none of it saved.~~ ✅
 - **Session 16 — sound.** Footsteps that change on tile and on oak, reverb from
   the room's own volume, muffling through walls. The most underrated presence
   lever there is, and the model already knows every floor material and every
@@ -1058,6 +1135,18 @@ their valleys across each other.
   machine gets one machine and a warning. And the live section cut leaves the
   cut edges hollow, because capping them properly needs a stencil pass per
   plane — the printed section is where the real construction is drawn.
+- **Left over from session 15.** A drawer slides its front out and the carcass
+  stays visible behind it — there is no drawer box, which is four more panels
+  per drawer on a kitchen that already has sixty fronts, for a difference that
+  changes no answer: what a drawer costs you is the space in front of it, and
+  the front already sweeps exactly that. Every fitting is a point light, so a
+  recessed downlight throws in all directions rather than downwards; doing that
+  properly means spot lights, which means a second pool and a second shader
+  permutation, and it matters far less than whether the corner of the room is
+  lit at all. Running water is drawn but not animated. And the crosshair prompt
+  cannot be checked by the automated browser runs, because it only appears while
+  the pointer is locked and pointer lock needs a real user gesture — the same
+  limitation the walkthrough itself has.
 - **Left over from session 14.** Cabinetry is not a collider, so a kitchen
   island can be walked through; walls and furniture are. And the WebXR path is
   the one thing in this project that has never been run — there is no headset in

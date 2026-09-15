@@ -17,6 +17,8 @@
 
 import * as THREE from 'three';
 
+import { interactablesOn } from '@/walk/interactables';
+
 import { Renderer } from './Renderer';
 import { FrameLoop, QualityGovernor, type QualityTier } from './FrameLoop';
 import { RenderPipeline } from './RenderPipeline';
@@ -225,6 +227,16 @@ export class Engine {
       this.cameraController.controls,
     );
 
+    /*
+     * Closures rather than a reference, because the walk mode that owns the
+     * live state is not built until `start()` a few lines below. Looked up at
+     * the moment of the click, which is long after that.
+     */
+    this.editController.setUseHandlers(
+      (id) => this.useThing(id),
+      (id) => this.describeThing(id),
+    );
+
     // Apply current state immediately, then track future changes.
     this.applyDocument(designStore.getState());
     this.applyEditorState();
@@ -273,6 +285,23 @@ export class Engine {
   }
 
   exitWalkthrough(): void {
+    /*
+     * Every door back to fully open before the live state is thrown away —
+     * which is how this app draws them, so the swing is visible. Doing it after
+     * the reset would leave whatever was last pushed in sitting in the scene
+     * with nothing owning it.
+     */
+    for (const openingId of this.building.movableOpenings()) {
+      this.building.setOpeningOpenness(openingId, 1);
+    }
+    // And everything else back to shut and off, for the same reason.
+    for (const unitId of this.fittings.movableUnits()) {
+      this.fittings.setUnitOpenness(unitId, 0);
+    }
+    for (const fixtureId of this.fittings.tapFixtures()) {
+      this.fittings.setTapRunning(fixtureId, false);
+    }
+
     this.walk?.exit();
     this.rebuildForMode();
     // Put the orbit camera back in charge of its own framing.
@@ -305,6 +334,76 @@ export class Engine {
 
   resumeWalkPointer(): void {
     this.walk?.resumePointer();
+  }
+
+  /** What the crosshair should say: what is in reach and what using it does. */
+  get walkPrompt(): { label: string; verb: string } | null {
+    return this.walk?.prompt ?? null;
+  }
+
+  /** What is open and what is on, for the panel — null when there is nothing. */
+  get liveSummary() {
+    return this.walk?.liveSummary() ?? null;
+  }
+
+  get lightsInUse(): number {
+    return this.walk?.lightsInUse ?? 0;
+  }
+
+  setLamp(lampId: string): void {
+    this.walk?.setLamp(lampId);
+  }
+
+  /* --------------------- Using things from the orbit view ----------------- */
+
+  /**
+   * Opens, closes, switches or runs whatever was clicked.
+   *
+   * Takes what the picker already found rather than doing its own ray: the
+   * orbit view has a full mesh picker and it is better at this than a sphere
+   * test would be, because up there you are looking at the door itself rather
+   * than reaching for its handle.
+   *
+   * Returns what happened, for the toolbar to say, or null if that thing is
+   * not something you can use.
+   */
+  useThing(id: string): string | null {
+    if (!this.walk) return null;
+
+    const doc = designStore.getState();
+    const said = this.walk.useThing(doc, doc.activeLevelId, id);
+    if (said) this.pushOpenness();
+    return said;
+  }
+
+  /** What using it would do, for the hover readout. Nothing is changed. */
+  describeThing(id: string): { label: string; verb: string } | null {
+    if (!this.walk) return null;
+    const doc = designStore.getState();
+    return this.walk.describe(doc, doc.activeLevelId, id);
+  }
+
+  /**
+   * Pushes how far each door stands open into the scene.
+   *
+   * The live state owns the fractions and the scene owns the geometry, and
+   * this is the one line between them. Cheap: a handful of openings on one
+   * storey, and setting a rotation that has not changed costs nothing.
+   */
+  private pushOpenness(): void {
+    if (!this.walk) return;
+
+    for (const [openingId, fraction] of this.walk.opennessByOpening()) {
+      this.building.setOpeningOpenness(openingId, fraction);
+    }
+    for (const [unitId, fraction] of this.walk.opennessByUnit()) {
+      this.fittings.setUnitOpenness(unitId, fraction);
+    }
+
+    const running = this.walk.runningTaps();
+    for (const fixtureId of this.fittings.tapFixtures()) {
+      this.fittings.setTapRunning(fixtureId, running.has(fixtureId));
+    }
   }
 
   get frameSummary(): string {
@@ -407,6 +506,42 @@ export class Engine {
 
     scope.__walkDrive = (intent: Record<string, number>, seconds: number) =>
       this.walk?.drive(designStore.getState(), intent, seconds) ?? null;
+
+    /*
+     * Where each usable thing is on screen, for automated checking.
+     *
+     * Not a way to use things without clicking — the point is the opposite. A
+     * headless browser can click a pixel perfectly well; what it cannot do is
+     * work out WHICH pixel a door is at. So this answers only that, and the
+     * check then goes through the real picker, the real ray and the real tool,
+     * rather than through a shortcut that proves nothing about any of them.
+     */
+    scope.__usableProbe = () => {
+      if (!this.walk) return [];
+
+      const doc = designStore.getState();
+      const camera = this.cameraController.camera;
+      const canvas = this.renderer.canvas;
+      const items = interactablesOn(doc, doc.activeLevelId);
+
+      return items.map((item) => {
+        const projected = new THREE.Vector3(item.at.x, item.at.y, item.at.z).project(camera);
+        return {
+          id: item.id,
+          kind: item.kind,
+          label: item.label,
+          // Clipped points come back outside the canvas, which is the honest
+          // answer: a door behind the camera has no pixel.
+          x: Math.round(((projected.x + 1) / 2) * canvas.clientWidth),
+          y: Math.round(((1 - projected.y) / 2) * canvas.clientHeight),
+          onScreen: Math.abs(projected.x) <= 1 && Math.abs(projected.y) <= 1 && projected.z < 1,
+        };
+      });
+    };
+
+    scope.__pickProbe = (x: number, y: number) => this.editController.pickAtClient(x, y);
+
+    scope.__liveProbe = () => this.liveSummary;
   }
 
   /** Registers a callback for the once-per-second performance report. */
@@ -714,10 +849,19 @@ export class Engine {
     this.clearanceOverlay.setVisible(state.showClearance);
     if (state.showClearance) this.refreshClearance();
 
-    // The electrical layer builds nothing while hidden, so switching it on has
-    // to trigger the build the document change would otherwise have done.
-    this.electrical.setVisible(state.showElectrical);
-    this.electrical.setShowRuns(state.showElectricalRuns);
+    /*
+     * The electrical layer builds nothing while hidden, so switching it on has
+     * to trigger the build the document change would otherwise have done.
+     *
+     * The Use tool forces it on, because a switch you cannot see is a switch
+     * you cannot press: the device meshes ARE the switches, and they are the
+     * only thing on the wall at that position for a ray to hit. The wiring
+     * runs stay off unless they were already asked for — what the tool needs
+     * is the plates, not the circuit diagram.
+     */
+    const showingDevices = state.showElectrical || state.tool === 'use';
+    this.electrical.setVisible(showingDevices);
+    this.electrical.setShowRuns(state.showElectricalRuns && state.showElectrical);
     this.electrical.setSelection(state.selection.kind === 'device' ? state.selection.id : null);
     this.plumbing.setVisible(state.showPlumbing);
     this.plumbing.setSystems(state.showDrainage, state.showSupply);
@@ -756,7 +900,7 @@ export class Engine {
         ? state.selection.id
         : null,
     );
-    if (state.showElectrical) {
+    if (showingDevices) {
       const doc = designStore.getState();
       this.electrical.update(doc, activeLevel(doc).id);
     }
@@ -833,6 +977,8 @@ export class Engine {
         const doc = designStore.getState();
         this.walk.update(doc, delta);
 
+        this.pushOpenness();
+
         this.building.updateForCamera(camera);
         this.roofs.setVisible(this.showRoofs && !this.building.isCutaway);
 
@@ -849,6 +995,20 @@ export class Engine {
       const cameraMoved = this.cameraController.update(delta);
 
       /*
+       * A door opened from up here is still swinging, and nothing else in the
+       * orbit path would ask for the frames to show it. Returns true only
+       * while something is actually moving, so a still view still sleeps.
+       */
+      let swinging = false;
+      if (this.walk) {
+        const doc = designStore.getState();
+        if (this.walk.tickLive(doc, doc.activeLevelId, delta)) {
+          this.pushOpenness();
+          swinging = true;
+        }
+      }
+
+      /*
        * Wall hiding and the roof only depend on the camera, so they are
        * recomputed only when the camera has moved or the document changed.
        * Doing this every frame regardless was a real cost: it walks every wall
@@ -860,7 +1020,7 @@ export class Engine {
       }
 
 
-      const moving = cameraMoved || dirty;
+      const moving = cameraMoved || dirty || swinging;
       if (moving) {
         this.settleFrames = SETTLE_FRAMES;
         this.pipeline!.resetAccumulation();

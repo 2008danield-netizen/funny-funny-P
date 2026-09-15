@@ -34,7 +34,7 @@ import { pointInPolygon } from '@/physics/collision';
 import { resolveRoomSpec } from '@/state/planOps';
 import { elevationOf } from '@/state/levels';
 import { getOpeningPreset } from '@/scene/openings/presets';
-import { getModule } from '@/fittings/modules';
+import { runGeometry } from '@/building/cabinetRun';
 import { getFixture } from '@/fittings/fixtures';
 import { isLighting } from '@/services/layout';
 import type { DesignDocument, Point2 } from '@/state/types';
@@ -175,17 +175,45 @@ export function interactablesOn(doc: DesignDocument, levelId: string): Interacta
   for (const run of doc.runs) {
     if (run.levelId !== levelId) continue;
 
-    for (const unit of run.units) {
-      const module = getModule(unit.moduleId);
-      if (!module) continue;
+    /*
+     * `runGeometry` rather than walking the path again here.
+     *
+     * The first version of this did re-derive it, and it put the handles of
+     * half the kitchen INSIDE the wall: the outward normal of a leg depends on
+     * which way the run was drawn, and a second derivation got the sign right
+     * for one run and wrong for the next. `runGeometry` is what the scene
+     * builds the carcasses from, so taking the position and the facing from it
+     * means the handle is on the side the doors are on, by construction.
+     */
+    for (const placed of runGeometry(run).units) {
+      const module = placed.module;
       if (module.kind !== 'base' && module.kind !== 'tall' && module.kind !== 'wall') continue;
 
-      const spot = unitFront(run, unit.offset + unit.width / 2);
-      if (!spot) continue;
+      const unit = placed.unit;
+      // Where somebody stands to open it: just off the front face.
+      const facing = { x: Math.sin(placed.rotation), z: Math.cos(placed.rotation) };
+      const spot = {
+        at: {
+          x: placed.at.x + facing.x * (placed.depth / 2 + 0.06),
+          z: placed.at.z + facing.z * (placed.depth / 2 + 0.06),
+        },
+      };
 
       const room = roomAt(spot.at);
-      // A drawer unit opens as drawers; everything else opens as a door.
-      const drawers = /drawer/i.test(module.id) || /drawer/i.test(module.label);
+
+      /*
+       * `module.front` rather than the label, because the label is prose and
+       * the front is the thing the scene actually builds from. A unit whose
+       * front is `open`, `appliance` or `filler` has nothing to open — open
+       * shelving is open, and an appliance gap gets the appliance's own door,
+       * which is not modelled. Offering to open one of those would be offering
+       * an action that does nothing, which is worse than offering none.
+       */
+      const drawers = module.front.startsWith('drawers');
+      if (!drawers && module.front !== 'door' && module.front !== 'double-door' &&
+          module.front !== 'corner' && module.front !== 'sink') {
+        continue;
+      }
 
       found.push({
         id: unit.id,
@@ -193,9 +221,9 @@ export function interactablesOn(doc: DesignDocument, levelId: string): Interacta
         levelId,
         at: {
           x: spot.at.x,
-          // Base units get a handle near the top, wall units near the bottom:
-          // in both cases the edge nearest the person standing at them.
-          y: base + (module.kind === 'wall' ? 1.5 : 0.8),
+          // The handle, which is on the edge of the front nearest the person:
+          // near the top of a base unit and near the bottom of a wall one.
+          y: base + placed.lift + placed.height * (module.kind === 'wall' ? 0.15 : 0.85),
           z: spot.at.z,
         },
         radius: 0.28,
@@ -213,10 +241,7 @@ export function interactablesOn(doc: DesignDocument, levelId: string): Interacta
 
     const spec = getFixture(fixture.fixtureId);
     if (!spec) continue;
-    // Only the things with a tap on them. A bath has one; a toilet does not.
-    if (!/sink|basin|bath|shower/i.test(spec.id) && !/sink|basin|bath|shower/i.test(spec.name)) {
-      continue;
-    }
+    if (!hasTap(spec)) continue;
 
     const room = roomAt(fixture.at);
 
@@ -224,7 +249,7 @@ export function interactablesOn(doc: DesignDocument, levelId: string): Interacta
       id: fixture.id,
       kind: 'tap',
       levelId,
-      at: { x: fixture.at.x, y: base + fixture.y + 0.95, z: fixture.at.z },
+      at: { x: fixture.at.x, y: base + fixture.y + tapHeightAbove(spec), z: fixture.at.z },
       radius: 0.24,
       label: `${spec.name} tap`,
       verb: 'Turn on',
@@ -238,39 +263,31 @@ export function interactablesOn(doc: DesignDocument, levelId: string): Interacta
 }
 
 /**
- * A point just in front of a cabinet unit, at a distance along its run.
+ * Whether a fixture has a tap on it. A bath has one; a toilet does not.
  *
- * The run's path is a polyline, so this walks it to find which leg the offset
- * falls on and steps out perpendicular to that leg — which is where somebody
- * stands to open the unit, and therefore where the handle faces.
+ * Exported because the scene needs the same answer to decide where to hang a
+ * stream of water, and two copies of this would be two copies that disagree
+ * the first time a fixture is added.
  */
-function unitFront(
-  run: { path: Point2[]; depth?: number },
-  along: number,
-): { at: Point2 } | null {
-  const path = run.path;
-  if (path.length < 2) return null;
+export function hasTap(spec: { id: string; name: string }): boolean {
+  return /sink|basin|bath|shower/i.test(spec.id) || /sink|basin|bath|shower/i.test(spec.name);
+}
 
-  let travelled = 0;
-  for (let i = 1; i < path.length; i += 1) {
-    const a = path[i - 1]!;
-    const b = path[i]!;
-    const length = Math.hypot(b.x - a.x, b.z - a.z);
-    if (length < 1e-6) continue;
-
-    if (travelled + length >= along) {
-      const t = (along - travelled) / length;
-      const on = { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
-      // The outward normal of this leg, which is the side you stand on.
-      const outward = { x: (b.z - a.z) / length, z: -(b.x - a.x) / length };
-      const reach = (run.depth ?? 0.6) / 2;
-      return { at: { x: on.x + outward.x * reach, z: on.z + outward.z * reach } };
-    }
-
-    travelled += length;
-  }
-
-  return null;
+/**
+ * How far above a fixture's own base its tap is, in metres.
+ *
+ * Measured from the fixture rather than from the floor, because a sink sits on
+ * a worktop and a bath sits on the floor: a fixed height above the floor puts
+ * a kitchen tap either inside the cupboard or up by the wall units. A shower
+ * is the exception in the other direction — its "tap" is a head overhead.
+ *
+ * Exported because the scene hangs the water from the same point. Two numbers
+ * would mean a stream that starts somewhere the hand does not reach.
+ */
+export function tapHeightAbove(spec: { kind: string; height: number }): number {
+  if (spec.kind === 'shower') return 1.9;
+  // A spout stands a little proud of the bowl it fills.
+  return spec.height + 0.22;
 }
 
 /* -------------------------------- Reaching -------------------------------- */

@@ -12,8 +12,9 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { createDefaultDocument } from '@/state/defaults';
 import { addOpening, addRectangle, drawWall, normalizePlan, splitWall } from '@/state/planOps';
 import { layOutElectrical } from '@/state/buildingOps';
+import { addFixture, addRun } from '@/state/fittingOps';
 import { findRegions } from '@/scene/planGraph';
-import { REACH, interactablesOn, reachFor, type Interactable } from './interactables';
+import { REACH, hasTap, interactablesOn, reachFor, type Interactable } from './interactables';
 import { LiveState } from './LiveState';
 import { isLighting } from '@/services/layout';
 import type { DesignDocument } from '@/state/types';
@@ -378,5 +379,157 @@ describe('what is open and what is on', () => {
     expect(after.doorsOpen).toBe(0);
     expect(after.doorsClosed).toBe(1);
     expect(after.lightsOn).toBeGreaterThan(0);
+  });
+});
+
+/* ---------------------------- Cabinets and taps --------------------------- */
+
+/**
+ * The same house with a run of kitchen units and a sink in it.
+ *
+ * The modules are asked for by name rather than left to the filler. What is
+ * under test is how a unit's front decides what it does, so the run has to
+ * contain one of each kind — and the filler, left alone, fills four metres
+ * with four identical 1000 double-door bases.
+ */
+function kitchen(required: readonly string[] = ['base-600-drawers', 'base-600-door']): DesignDocument {
+  const doc = house();
+  const levelId = doc.levels[0]!.id;
+
+  // Along the inside of the north wall of the left-hand room, clear of the
+  // partition at x = 6.
+  addRun(doc, levelId, [{ x: 0.5, z: 0.4 }, { x: 4.5, z: 0.4 }], 'base', { required });
+  addFixture(doc, levelId, 'sink-1.5-bowl', { x: 2, z: 1 });
+
+  return doc;
+}
+
+/** The id of the unit built from a named module. */
+function unitOf(doc: DesignDocument, moduleId: string): string {
+  const unit = doc.runs[0]!.units.find((entry) => entry.moduleId === moduleId);
+  expect(unit, `the run should contain a ${moduleId}`).toBeDefined();
+  return unit!.id;
+}
+
+const kindsIn = (items: Interactable[], kind: Interactable['kind']) =>
+  items.filter((item) => item.kind === kind);
+
+describe('cabinets and taps', () => {
+  it('offers the units of a run', () => {
+    const doc = kitchen();
+    const items = interactablesOn(doc, doc.levels[0]!.id);
+
+    const cabinets = [
+      ...kindsIn(items, 'drawer'),
+      ...kindsIn(items, 'cabinet-door'),
+    ];
+    expect(cabinets.length).toBeGreaterThan(0);
+  });
+
+  it('calls a drawer unit a drawer and a door unit a door', () => {
+    const doc = kitchen();
+    const drawers = unitOf(doc, 'base-600-drawers');
+    const door = unitOf(doc, 'base-600-door');
+
+    const items = interactablesOn(doc, doc.levels[0]!.id);
+    expect(items.find((item) => item.id === drawers)!.kind).toBe('drawer');
+    expect(items.find((item) => item.id === door)!.kind).toBe('cabinet-door');
+  });
+
+  it('offers nothing on a unit with no front to open', () => {
+    /*
+     * Open shelving is already open and an appliance gap is filled by the
+     * appliance's own door, which is not modelled. Offering "Open" on either
+     * would be offering an action that visibly does nothing.
+     */
+    const doc = kitchen(['base-200-open', 'base-600-appliance']);
+    const shelf = unitOf(doc, 'base-200-open');
+    const gap = unitOf(doc, 'base-600-appliance');
+
+    const items = interactablesOn(doc, doc.levels[0]!.id);
+    expect(items.find((item) => item.id === shelf)).toBeUndefined();
+    expect(items.find((item) => item.id === gap)).toBeUndefined();
+  });
+
+  it('opens a sink base, which has a door under the bowl', () => {
+    // A `sink` front is a door in everything but name, and a kitchen without
+    // an openable cupboard under the sink would be a strange kitchen.
+    const doc = kitchen(['base-600-sink']);
+    const sinkBase = unitOf(doc, 'base-600-sink');
+
+    const items = interactablesOn(doc, doc.levels[0]!.id);
+    expect(items.find((item) => item.id === sinkBase)!.kind).toBe('cabinet-door');
+  });
+
+  it('puts a tap on a sink and not on a WC', () => {
+    const doc = kitchen();
+    const levelId = doc.levels[0]!.id;
+    addFixture(doc, levelId, 'wc-close-coupled', { x: 9, z: 6 });
+
+    const taps = kindsIn(interactablesOn(doc, levelId), 'tap');
+    expect(taps).toHaveLength(1);
+    expect(taps[0]!.label).toMatch(/tap/i);
+  });
+
+  it('agrees with the scene about which fixtures have a tap', () => {
+    // One predicate, used by both the reach test and the water geometry. Two
+    // copies would disagree the first time a fixture was added.
+    expect(hasTap({ id: 'sink-1.5-bowl', name: 'Kitchen sink' })).toBe(true);
+    expect(hasTap({ id: 'wc-close-coupled', name: 'Close-coupled WC' })).toBe(false);
+  });
+
+  it('runs a tap and turns it off again', () => {
+    const doc = kitchen();
+    const live = new LiveState();
+    const tap = kindsIn(interactablesOn(doc, doc.levels[0]!.id), 'tap')[0]!;
+
+    expect(live.isRunning(tap.id)).toBe(false);
+    expect(live.use(tap)).toBe('Turned on');
+    expect(live.isRunning(tap.id)).toBe(true);
+    expect(live.summary([tap]).tapsRunning).toBe(1);
+
+    expect(live.use(tap)).toBe('Turned off');
+    expect(live.isRunning(tap.id)).toBe(false);
+  });
+
+  it('slides a drawer and counts it as open', () => {
+    const doc = kitchen();
+    const live = new LiveState();
+    const unitId = unitOf(doc, 'base-600-drawers');
+
+    const drawer = interactablesOn(doc, doc.levels[0]!.id).find(
+      (item) => item.id === unitId,
+    )!;
+
+    expect(live.use(drawer)).toBe('Opened');
+    live.update(10);
+    expect(live.openness(drawer)).toBe(1);
+    expect(live.summary([drawer]).drawersOpen).toBe(1);
+  });
+});
+
+/* ------------------------------- Still moving ----------------------------- */
+
+describe('knowing when to keep drawing', () => {
+  it('is not busy until something is used', () => {
+    // Asked every frame by the orbit view, so it has to be both correct and
+    // free when nothing has happened.
+    const live = new LiveState();
+    expect(live.busy).toBe(false);
+  });
+
+  it('is busy while a door swings and still once it arrives', () => {
+    const doc = house();
+    const live = new LiveState();
+    const door = doorsIn(interactablesOn(doc, doc.levels[0]!.id))[0]!;
+
+    live.use(door);
+    expect(live.busy).toBe(true);
+
+    live.update(0.1);
+    expect(live.busy).toBe(true);
+
+    live.update(10);
+    expect(live.busy).toBe(false);
   });
 });

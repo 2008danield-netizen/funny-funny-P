@@ -17,9 +17,16 @@ interface ViewportProps {
   onEngineReady: (engine: Engine | null) => void;
   /** Editing toolbar, overlaid on the canvas. */
   toolbar?: ReactNode;
+  /**
+   * The walkthrough crosshair, overlaid on the middle of the canvas.
+   *
+   * Passed in rather than built here because it needs the engine, and the
+   * engine only exists once this component has mounted and started it.
+   */
+  hud?: ReactNode;
 }
 
-export function Viewport({ onEngineReady, toolbar }: ViewportProps) {
+export function Viewport({ onEngineReady, toolbar, hud }: ViewportProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
 
@@ -70,6 +77,7 @@ export function Viewport({ onEngineReady, toolbar }: ViewportProps) {
       ) : (
         <>
           {toolbar}
+          {hud}
           <div className="viewport__overlay">
             <div className="viewport__viewpoints">
               {VIEWPOINTS.map((viewpoint, index) => (

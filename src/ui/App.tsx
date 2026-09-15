@@ -11,6 +11,7 @@ import { useCallback, useRef, useState } from 'react';
 
 import { Viewport } from './Viewport';
 import { Toolbar } from './Toolbar';
+import { WalkHud } from './WalkHud';
 import { PlanPanel } from './panels/PlanPanel';
 import { StoreyPanel } from './panels/StoreyPanel';
 import { RoofPanel } from './panels/RoofPanel';
@@ -34,6 +35,7 @@ import { ProjectPanel } from './panels/ProjectPanel';
 import { useAutosave } from '@/bridge/useAutosave';
 import { useDesignEdit, useDesignSlice, useHistoryState } from '@/bridge/useDesign';
 import { useKeyboardShortcuts } from '@/bridge/useKeyboardShortcuts';
+import { useEditor } from '@/bridge/useEditor';
 import { designStore } from '@/state/store';
 import type { Engine } from '@/core/Engine';
 import type { ViewpointId } from '@/controls/CameraController';
@@ -46,6 +48,9 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const name = useDesignSlice((doc) => doc.name);
+  // Only so the crosshair mounts and unmounts with the mode; nothing else here
+  // cares about editor state.
+  const { walkthrough } = useEditor();
   const edit = useDesignEdit();
   const { canUndo, canRedo } = useHistoryState();
 
@@ -131,7 +136,13 @@ export function App() {
       </header>
 
       <div className={`app__body ${sidebarOpen ? '' : 'app__body--collapsed'}`}>
-        <Viewport onEngineReady={handleEngineReady} toolbar={<Toolbar />} />
+        <Viewport
+          onEngineReady={handleEngineReady}
+          toolbar={<Toolbar />}
+          hud={
+            <WalkHud engine={engineReady ? engineRef.current : null} walking={walkthrough} />
+          }
+        />
 
         {sidebarOpen && (
           <aside className="sidebar">

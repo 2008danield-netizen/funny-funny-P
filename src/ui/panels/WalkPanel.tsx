@@ -27,6 +27,8 @@ import { useDesign } from '@/bridge/useDesign';
 import { useEditor } from '@/bridge/useEditor';
 import { editorStore, DEFAULT_COMFORT } from '@/state/selection';
 import { buildingBounds } from '@/state/sectionOps';
+import { LAMPS, LIGHT_BUDGET, getLamp } from '@/scene/RoomLights';
+import type { LiveSummary } from '@/walk/LiveState';
 import type { Engine } from '@/core/Engine';
 
 interface WalkPanelProps {
@@ -42,6 +44,8 @@ export function WalkPanel({ engine }: WalkPanelProps) {
   const [locked, setLocked] = useState(false);
   const [frames, setFrames] = useState('no frames measured yet');
   const [notice, setNotice] = useState('');
+  const [live, setLive] = useState<LiveSummary | null>(null);
+  const [lamp, setLampId] = useState('warm-2700');
 
   const somewhereToGo = buildingBounds(doc) !== null;
 
@@ -89,6 +93,30 @@ export function WalkPanel({ engine }: WalkPanelProps) {
     return () => window.clearInterval(timer);
   }, [engine, walkthrough]);
 
+  /* ---- What is open and on ---- */
+
+  useEffect(() => {
+    if (!engine) {
+      setLive(null);
+      return;
+    }
+
+    /*
+     * Polled rather than pushed, twice a second.
+     *
+     * Pushing it would mean a React render inside the frame loop, sixty or
+     * ninety times a second, to change a number — exactly the kind of thing
+     * that eats a frame budget for no benefit. The prompt that has to keep up
+     * with the eye is not here; it is on the crosshair, in `WalkHud`, where
+     * somebody with the pointer locked is actually looking.
+     */
+    const tick = () => setLive(engine.liveSummary);
+    tick();
+    const timer = window.setInterval(tick, 500);
+
+    return () => window.clearInterval(timer);
+  }, [engine]);
+
   const patchComfort = (change: Partial<typeof comfort>) => {
     editorStore.patch({ comfort: { ...comfort, ...change } });
   };
@@ -135,8 +163,9 @@ export function WalkPanel({ engine }: WalkPanelProps) {
 
           <p className="field__hint">
             <strong>W A S D</strong> to walk, mouse to look, <strong>Shift</strong> to hurry,
-            <strong> Q</strong> and <strong>E</strong> to turn in steps. Hold the{' '}
-            <strong>right mouse button</strong> to aim a jump and release to take it.{' '}
+            <strong> Q</strong> and <strong>E</strong> to turn in steps.{' '}
+            <strong>Click</strong> or press <strong>F</strong> to open a door or flip a switch.
+            Hold the <strong>right mouse button</strong> to aim a jump and release to take it.{' '}
             <strong>Esc</strong> releases the mouse.
           </p>
 
@@ -148,6 +177,68 @@ export function WalkPanel({ engine }: WalkPanelProps) {
             Stop walking
           </button>
         </>
+      )}
+
+      {/* ----------------------------- What is open ------------------------- */}
+
+      {live && (
+        <div className="elec__section">
+          <div className="elec__section-title">
+            Right now
+            <span className="elec__meta">not saved</span>
+          </div>
+
+          <table className="elec__table">
+            <tbody>
+              <tr>
+                <td>Doors open</td>
+                <td className="elec__amount">
+                  {live.doorsOpen} of {live.doorsOpen + live.doorsClosed}
+                </td>
+              </tr>
+              <tr>
+                <td>Lights on</td>
+                <td className="elec__amount">{live.lightsOn}</td>
+              </tr>
+              {live.drawersOpen > 0 && (
+                <tr>
+                  <td>Drawers and cupboards open</td>
+                  <td className="elec__amount">{live.drawersOpen}</td>
+                </tr>
+              )}
+              {live.tapsRunning > 0 && (
+                <tr>
+                  <td>Taps running</td>
+                  <td className="elec__amount">{live.tapsRunning}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+
+          <p className="field__hint">
+            None of that is part of the design. Doors you opened, lights you switched on and
+            drawers you pulled out are how you are looking at it — nothing is saved, nothing is
+            exported, and nothing reaches the drawings. Leaving the walkthrough puts it all back.
+          </p>
+        </div>
+      )}
+
+      {/* -------------------------- Without walking in ---------------------- */}
+
+      {somewhereToGo && !walkthrough && (
+        <div className="elec__section">
+          <div className="elec__section-title">
+            From out here
+            <span className="elec__meta">the Use tool, or U</span>
+          </div>
+          <p className="field__hint">
+            You do not have to go inside to work anything. Pick <strong>Use</strong> on the
+            toolbar and click a door, a switch, a drawer or a tap in the ordinary view. It is the
+            same door and the same live state, so what you open out here is open when you walk in
+            — and checking that a door swing clears the island is much easier looking down at the
+            room than standing in it.
+          </p>
+        </div>
       )}
 
       {/* ------------------------------ The headset ------------------------- */}
@@ -180,6 +271,44 @@ export function WalkPanel({ engine }: WalkPanelProps) {
           )}
 
           {notice && <p className="field__hint">{notice}</p>}
+        </div>
+      )}
+
+      {/* -------------------------------- Lamps ----------------------------- */}
+
+      {somewhereToGo && (
+        <div className="elec__section">
+          <div className="elec__section-title">
+            Lamps
+            <span className="elec__meta">
+              {walkthrough ? `${engine?.lightsInUse ?? 0} of ${LIGHT_BUDGET.maxLights} lit` : `${LIGHT_BUDGET.maxLights} at once`}
+            </span>
+          </div>
+
+          <div className="field">
+            <select
+              className="select"
+              value={lamp}
+              onChange={(event) => {
+                setLampId(event.target.value);
+                engine?.setLamp(event.target.value);
+              }}
+            >
+              {LAMPS.map((choice) => (
+                <option key={choice.id} value={choice.id}>
+                  {choice.label}
+                </option>
+              ))}
+            </select>
+            <p className="field__hint">{getLamp(lamp).description}</p>
+          </div>
+
+          <p className="field__hint">
+            The fittings are real light sources at their real positions, so a corner a single
+            pendant cannot reach stays dark — which is the fault worth finding. Only the nearest{' '}
+            {LIGHT_BUDGET.maxLights} are computed: every light costs shader work on every lit
+            surface, and a house of downlights would take the frame budget with it.
+          </p>
         </div>
       )}
 

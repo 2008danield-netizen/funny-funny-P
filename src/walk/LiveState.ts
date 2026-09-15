@@ -171,6 +171,20 @@ export class LiveState {
   }
 
   /**
+   * Whether anything is part-way between shut and open.
+   *
+   * Asked before doing any work, because the orbit view calls this every frame
+   * and deriving a storey's worth of interactables to advance nothing would be
+   * a cost paid by everybody who never opens a door.
+   */
+  get busy(): boolean {
+    for (const entry of this.moving.values()) {
+      if (entry.value !== entry.target) return true;
+    }
+    return false;
+  }
+
+  /**
    * Advances everything that is moving.
    *
    * Returns whether anything changed, so the frame loop knows to keep drawing

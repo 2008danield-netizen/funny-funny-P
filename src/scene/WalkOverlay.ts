@@ -30,9 +30,11 @@
 import * as THREE from 'three';
 
 import type { TeleportAim } from '@/walk/teleport';
+import type { Interactable } from '@/walk/interactables';
 
 const ARC_GOOD = 0x6fc27a;
 const ARC_REFUSED = 0xc2706f;
+const FOCUS_COLOUR = 0xf2d16b;
 
 export class WalkOverlay {
   /** Goes in the scene: the arc and its marker live in world space. */
@@ -45,6 +47,17 @@ export class WalkOverlay {
   private arcMaterial: THREE.LineBasicMaterial;
   private marker: THREE.Mesh;
   private markerMaterial: THREE.MeshBasicMaterial;
+
+  /**
+   * A ring drawn around whatever is within reach.
+   *
+   * In world space rather than on the crosshair, because in a headset there is
+   * no crosshair to put it on — and a highlight that travels with the object
+   * reads as "this thing", while one fixed to the middle of the view reads as
+   * "something".
+   */
+  private focus: THREE.Mesh;
+  private focusMaterial: THREE.MeshBasicMaterial;
 
   private vignette: THREE.Mesh;
   private vignetteMaterial: THREE.ShaderMaterial;
@@ -83,6 +96,22 @@ export class WalkOverlay {
     this.marker.renderOrder = 10;
     this.marker.visible = false;
     this.world.add(this.marker);
+
+    /* ---- The focus ring ---- */
+
+    this.focusMaterial = new THREE.MeshBasicMaterial({
+      color: FOCUS_COLOUR,
+      transparent: true,
+      opacity: 0.9,
+      side: THREE.DoubleSide,
+      // Drawn over whatever it is on: a highlight hidden inside the door it is
+      // highlighting is not a highlight.
+      depthTest: false,
+    });
+    this.focus = new THREE.Mesh(new THREE.RingGeometry(0.075, 0.1, 24), this.focusMaterial);
+    this.focus.renderOrder = 11;
+    this.focus.visible = false;
+    this.world.add(this.focus);
 
     /* ---- The comfort vignette ---- */
 
@@ -127,6 +156,23 @@ export class WalkOverlay {
     this.vignette.renderOrder = 1000;
     this.vignette.visible = false;
     this.head.add(this.vignette);
+  }
+
+  /**
+   * Puts the focus ring on something, or takes it off.
+   *
+   * The ring always faces the viewer, so it reads as a target rather than as a
+   * decal lying on a surface at a glancing angle.
+   */
+  setFocus(item: Interactable | null, viewer: THREE.Vector3): void {
+    if (!item) {
+      this.focus.visible = false;
+      return;
+    }
+
+    this.focus.position.set(item.at.x, item.at.y, item.at.z);
+    this.focus.lookAt(viewer);
+    this.focus.visible = true;
   }
 
   /** Shows the arc and marker, or hides them. */
@@ -196,6 +242,7 @@ export class WalkOverlay {
     if (!visible) {
       this.arc.visible = false;
       this.marker.visible = false;
+      this.focus.visible = false;
       this.vignette.visible = false;
       this.vignetteAmount = 0;
       this.vignetteMaterial.uniforms.amount!.value = 0;
@@ -207,6 +254,8 @@ export class WalkOverlay {
     this.arcMaterial.dispose();
     this.marker.geometry.dispose();
     this.markerMaterial.dispose();
+    this.focus.geometry.dispose();
+    this.focusMaterial.dispose();
     this.vignette.geometry.dispose();
     this.vignetteMaterial.dispose();
     this.world.clear();
