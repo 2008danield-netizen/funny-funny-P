@@ -180,9 +180,17 @@ export class Lighting {
     this.sun = new THREE.DirectionalLight(0xffffff, 1);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
-    // Bias values fight shadow acne on large flat surfaces like the floor.
-    // Normal bias is the effective one for a room; it offsets along the surface
-    // normal and so scales correctly with the grazing sun angles of "evening".
+    /*
+     * Bias values fight shadow acne on large flat surfaces like the floor.
+     * Normal bias is the effective one for a room; it offsets along the surface
+     * normal and so scales correctly with the grazing sun angles of "evening".
+     *
+     * Both were suspected of erasing the room's shadows in session 17 and both
+     * were cleared: zeroing them changed the rendered frame by nothing at all.
+     * They are recorded here so the next person does not spend the same hour —
+     * 2 cm along the normal cannot hide the shadow of a sofa, and the shadows
+     * were never missing in the first place. See `report()` below.
+     */
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = 0.02;
     this.group.add(this.sun);
@@ -344,6 +352,120 @@ export class Lighting {
     camera.near = 0.5;
     camera.far = this.sun.position.length() + extent * 2;
     camera.updateProjectionMatrix();
+  }
+
+  /**
+   * What the sun is actually doing, for automated checking.
+   *
+   * Session 17 spent an hour on a room with no shadows in it while every line
+   * of code that could switch shadows off said they were on. Reading the
+   * settings proved nothing, because the settings were right — what was wrong
+   * was downstream of them. So this reports the state the renderer will
+   * actually consult at draw time: whether the shadow map has been allocated at
+   * all, what the frustum ended up covering, and how the bias compares to the
+   * size of the things the shadows are supposed to land on.
+   */
+  report(): {
+    castShadow: boolean;
+    intensity: number;
+    position: { x: number; y: number; z: number };
+    target: { x: number; y: number; z: number };
+    mapAllocated: boolean;
+    mapSize: number;
+    bias: number;
+    normalBias: number;
+    radius: number;
+    frustum: { extent: number; near: number; far: number };
+    environmentIntensity: number;
+    hemisphere: number;
+  } {
+    const camera = this.sun.shadow.camera;
+    return {
+      castShadow: this.sun.castShadow,
+      intensity: +this.sun.intensity.toFixed(3),
+      position: {
+        x: +this.sun.position.x.toFixed(2),
+        y: +this.sun.position.y.toFixed(2),
+        z: +this.sun.position.z.toFixed(2),
+      },
+      target: {
+        x: +this.sun.target.position.x.toFixed(2),
+        y: +this.sun.target.position.y.toFixed(2),
+        z: +this.sun.target.position.z.toFixed(2),
+      },
+      mapAllocated: this.sun.shadow.map !== null,
+      mapSize: this.sun.shadow.mapSize.width,
+      bias: this.sun.shadow.bias,
+      normalBias: this.sun.shadow.normalBias,
+      radius: this.sun.shadow.radius,
+      frustum: { extent: +camera.right.toFixed(2), near: camera.near, far: +camera.far.toFixed(2) },
+      environmentIntensity: +(this.scene.environmentIntensity ?? 1).toFixed(3),
+      hemisphere: +this.hemisphere.intensity.toFixed(3),
+    };
+  }
+
+  /**
+   * Reads the shadow map back off the GPU, for automated checking.
+   *
+   * The one question the settings cannot answer. A shadow map that was never
+   * rendered into is uniformly the far plane, and every setting that feeds it
+   * still reads as correct — which is precisely the state session 17 was stuck
+   * in. Sampling it says whether the depth pass actually drew the building.
+   *
+   * Slow, because it stalls the pipeline waiting for the read. Called only from
+   * the probe, never from a frame.
+   */
+  sampleShadowMap(renderer: THREE.WebGLRenderer, patch = 256): {
+    readable: boolean;
+    min: number;
+    max: number;
+    distinct: number;
+    note: string;
+    /** The depth pass, downsampled, so it can be looked at rather than trusted. */
+    preview: number[];
+    previewSize: number;
+  } {
+    const target = this.sun.shadow.map;
+    const empty = { readable: false, min: 0, max: 0, distinct: 0, preview: [], previewSize: 0 };
+    if (!target) return { ...empty, note: 'no map allocated' };
+
+    const buffer = new Uint8Array(target.width * target.height * 4);
+    try {
+      renderer.readRenderTargetPixels(target, 0, 0, target.width, target.height, buffer);
+    } catch (error) {
+      return { ...empty, note: String(error) };
+    }
+
+    // Three packs depth into RGBA; the red channel alone is enough to tell a
+    // uniform map from one with a building in it.
+    const seen = new Set<number>();
+    let min = 255;
+    let max = 0;
+    for (let i = 0; i < buffer.length; i += 4) {
+      const value = buffer[i]!;
+      seen.add(value);
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }
+    // Nearest-neighbour down to something that fits in a message.
+    const previewSize = Math.min(patch, target.width);
+    const step = Math.floor(target.width / previewSize);
+    const preview: number[] = [];
+    for (let y = 0; y < previewSize; y++) {
+      for (let x = 0; x < previewSize; x++) {
+        preview.push(buffer[((y * step) * target.width + x * step) * 4]!);
+      }
+    }
+
+    return {
+      readable: true,
+      min,
+      max,
+      distinct: seen.size,
+      note: seen.size <= 1 ? 'UNIFORM — nothing was drawn into the shadow map' : 'has depth',
+      preview,
+      previewSize,
+    };
   }
 
   dispose(): void {

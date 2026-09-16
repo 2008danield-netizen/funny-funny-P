@@ -107,3 +107,18 @@ export function renderHeightField(
   }
   return image;
 }
+
+/**
+ * Hermite interpolation between two edges, clamped outside them.
+ *
+ * Used wherever a generator needs a band with soft shoulders rather than a
+ * linear ramp with a visible crease at each end. A linear ramp has a
+ * discontinuous FIRST DERIVATIVE, and a normal map is built entirely from the
+ * first derivative — so a linear ramp puts a hard line either side of every
+ * soft edge, which is exactly what it was trying to avoid.
+ */
+export function smoothstep(edge0: number, edge1: number, value: number): number {
+  if (edge1 <= edge0) return value < edge0 ? 0 : 1;
+  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}

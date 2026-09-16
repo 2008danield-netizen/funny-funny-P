@@ -661,6 +661,61 @@ export class Engine {
         })),
       };
     };
+
+    /*
+     * Why the room has the shadows it has, for automated checking.
+     *
+     * Same reasoning as the sound level meter in session 16: the states that
+     * produce no shadow all look identical from outside. A light that is not
+     * casting, a shadow map that was disposed and never reallocated, a frustum
+     * that does not contain the building, a normal bias wider than the gap the
+     * shadow was supposed to fall into, and geometry that simply never set
+     * `castShadow` are five different bugs with one symptom, and no amount of
+     * reading the code distinguishes them. So each is reported separately.
+     */
+    scope.__shadowProbe = () => {
+      let casters = 0;
+      let receivers = 0;
+      let meshes = 0;
+      this.scene.traverse((object) => {
+        if (!(object as THREE.Mesh).isMesh) return;
+        meshes++;
+        if (object.castShadow) casters++;
+        if (object.receiveShadow) receivers++;
+      });
+      return {
+        renderer: {
+          shadowMapEnabled: this.renderer.webgl.shadowMap.enabled,
+          shadowMapType: this.renderer.webgl.shadowMap.type,
+          toneMapping: this.renderer.webgl.toneMapping,
+          exposure: this.renderer.webgl.toneMappingExposure,
+        },
+        sun: this.lighting.report(),
+        shadowMap: this.lighting.sampleShadowMap(this.renderer.webgl),
+        scene: { meshes, casters, receivers },
+        /*
+         * Whether the compiled shaders can sample a shadow map at all.
+         *
+         * The last place a shadow can be lost. Three decides a material's
+         * shader features when it first compiles it, and `USE_SHADOWMAP` is one
+         * of them — so a material compiled at a moment when nothing was casting
+         * has no `directionalShadowMap` uniform, samples nothing, and goes on
+         * rendering a perfectly lit unshadowed surface forever. Nothing about
+         * the light, the map or the mesh flags shows it.
+         */
+        programs: (this.renderer.webgl.info.programs ?? []).map((program) => {
+          const uniforms = Object.keys(
+            (program.getUniforms() as unknown as { map: Record<string, unknown> }).map,
+          );
+          return {
+            name: program.name,
+            usedTimes: program.usedTimes,
+            canSampleShadows: uniforms.includes('directionalShadowMap'),
+          };
+        }),
+      };
+    };
+
   }
 
   /** Registers a callback for the once-per-second performance report. */

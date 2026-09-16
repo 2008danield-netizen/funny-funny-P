@@ -17,7 +17,7 @@
  */
 
 import { ValueNoise2D, fbm, mulberry32 } from './noise';
-import { clamp255, hexToRgb, mixRgb, renderHeightField } from './textureUtils';
+import { clamp255, hexToRgb, mixRgb, renderHeightField, smoothstep } from './textureUtils';
 
 export interface SurfaceMaps {
   albedo: ImageData;
@@ -31,6 +31,52 @@ export interface SurfaceMaps {
 
 /** Shared noise lattice period. Powers of two keep the tiling maths exact. */
 const NOISE_PERIOD = 64;
+
+/**
+ * Signed distance INTO a repeating band, in metres.
+ *
+ * Every pattern here is a run of identical cells with a feature in each — a
+ * mortar joint, a batten, the shadow line under a lap board. Asking "am I in the
+ * feature?" gives a boolean, and a boolean in a height field is a vertical wall.
+ * Asking "how far inside it am I?" gives something a smoothstep can shape.
+ *
+ * `centre` and `halfWidth` are fractions of one cell; the answer is positive
+ * inside the feature and negative outside, scaled to metres of real surface. The
+ * offset is wrapped into ±half a cell first, so the answer stays continuous
+ * where one cell meets the next — which is where all of the old cliffs were.
+ */
+function bandDistance(
+  within: number,
+  centre: number,
+  halfWidth: number,
+  cellMetres: number,
+): number {
+  let offset = within - centre;
+  if (offset > 0.5) offset -= 1;
+  if (offset < -0.5) offset += 1;
+  return (halfWidth - Math.abs(offset)) * cellMetres;
+}
+
+/**
+ * The narrowest relief feature a map of this resolution can honestly carry.
+ *
+ * A normal map is a DERIVATIVE, taken by the Sobel operator over a one-texel
+ * neighbourhood. A derivative sampled that way cannot represent anything
+ * narrower than a texel or two — squeeze a bevel into that and you do not get a
+ * sharp bevel, you get an aliased cliff whose normal lies almost flat to the
+ * surface, which under a low sun is a mirror. Session 17 found three of those:
+ * the plank joints, the grout channel and the carpet pile, all of them chosen by
+ * eye at one resolution and all of them wrong.
+ *
+ * So every generator asks for its relief width in metres and gets back either
+ * that or the narrowest width this texture can hold, whichever is wider. A
+ * slightly soft edge is a cheap price for one that survives being sampled.
+ */
+const MIN_RELIEF_TEXELS = 6;
+
+function reliefWidth(tileMetres: number, size: number, wanted: number): number {
+  return Math.max(wanted, (tileMetres / size) * MIN_RELIEF_TEXELS);
+}
 
 /** Writes one RGB texel into an ImageData buffer. */
 function setPixel(image: ImageData, index: number, r: number, g: number, b: number): void {
@@ -70,7 +116,48 @@ export interface WoodOptions {
  * sampling noise that is stretched heavily along the plank so that the figuring
  * forms long streaks rather than isotropic blobs, then folded through a sine to
  * create the growth-ring banding characteristic of sawn timber.
+ *
+ * -----------------------------------------------------------------------------
+ * THE JOINTS ARE MEASURED IN MILLIMETRES, AND SESSION 17 IS WHY.
+ *
+ * They used to be measured in plank cells: one threshold of 0.035, applied to
+ * the distance to the nearest edge in normalised plank coordinates. But a plank
+ * is not square. On a 190 x 1200 mm oak board, 0.035 of the width is 6.6 mm and
+ * the same threshold across the length is 70 mm — so every board got a hairline
+ * joint down its long edges and a seven-centimetre smear across its ends, and
+ * the two changed size whenever anybody edited `plankWidth` or `plankLength`.
+ *
+ * Worse was what it did to the normal map. The height field dropped 0.75 of its
+ * full range across that 6.6 mm edge — under two texels at 1024 px over 2 m —
+ * which is not a bevel, it is a vertical cliff. The Sobel operator turned it
+ * into a near-horizontal normal, and a near-horizontal normal under a low sun
+ * is a mirror. That is where the bright streaks across the floor came from.
+ * They were not grain. They were specular highlights off joints modelled as
+ * walls.
+ *
+ * So: one function gives the distance in METRES to the nearest joint, and the
+ * three maps shape it for themselves. Colour wants a tight dark line, because
+ * that is what a board joint looks like. Relief wants a wide, shallow, smooth
+ * dish, because the normal map's job is micro-relief and anything steeper than
+ * the texel grid can resolve becomes an artefact rather than a detail.
  */
+
+/** The gap between two boards. Engineered flooring lands around 1 mm. */
+const JOINT_METRES = 0.0012;
+/** The micro-bevel milled on each board edge either side of that gap. */
+const BEVEL_METRES = 0.0025;
+/**
+ * How far the height field takes to climb out of the joint.
+ *
+ * Deliberately much wider than the real bevel. At 1024 px across 2 m one texel
+ * is about 2 mm, so a physically-honest 2.5 mm bevel is a single texel and
+ * aliases into a hard edge. Spreading the same small drop over 14 mm keeps the
+ * gradient inside what the texture can actually represent, and at any viewing
+ * distance where you could tell the difference you would be seeing real
+ * geometry anyway.
+ */
+const RELIEF_METRES = 0.014;
+
 export function generateWood(size: number, options: WoodOptions): SurfaceMaps {
   const albedo = new ImageData(size, size);
   const roughness = new ImageData(size, size);
@@ -84,72 +171,101 @@ export function generateWood(size: number, options: WoodOptions): SurfaceMaps {
   const rows = Math.max(1, Math.round(options.tileMetres / options.plankWidth));
   const cols = Math.max(1, Math.round(options.tileMetres / options.plankLength));
 
+  // The rounding above means the drawn board is not quite the board that was
+  // asked for. Joint widths are converted through the size actually drawn, so a
+  // 1 mm joint stays 1 mm rather than drifting with the rounding error.
+  const drawnWidth = options.tileMetres / rows;
+  const drawnLength = options.tileMetres / cols;
+
   // Each plank gets its own slight tone shift, as real timber does.
   const plankTone: number[] = [];
   for (let i = 0; i < rows * cols; i++) plankTone.push(random() * 2 - 1);
 
-  for (let y = 0; y < size; y++) {
-    const v = y / size;
+  /**
+   * Everything that varies across one texel of floor, in one place.
+   *
+   * Shared by the colour/roughness pass and the height pass so the grain in the
+   * normal map lines up with the grain in the albedo. It did not before — the
+   * height field sampled the noise without the per-plank offsets, so the relief
+   * was the grain of a different, imaginary floor laid over the visible one.
+   */
+  const plankAt = (u: number, v: number) => {
     const rowPos = v * rows;
     const row = Math.floor(rowPos);
     const localV = rowPos - row;
 
+    // Offsetting each row by a constant fraction staggers the end joints.
+    const colPos = u * cols + row * 0.37 * cols;
+    const col = Math.floor(colPos);
+    const localU = colPos - col;
+
+    // Long streaks: low frequency along the plank, high frequency across it.
+    const streak = fbm(noise, u * 5 + col * 3.7, v * 70 + row * 11.3, 4, NOISE_PERIOD);
+    // Fold through a sine to produce growth-ring banding.
+    const rings = Math.abs(Math.sin((localV * 9 + streak * 5.5) * Math.PI));
+    let grain = 0.55 * streak + 0.45 * rings;
+
+    // Per-plank tone variation.
+    const toneIndex = (((row * cols + col) % plankTone.length) + plankTone.length) % plankTone.length;
+    grain += (plankTone[toneIndex] ?? 0) * 0.12;
+
+    // Distance to the nearest joint, in metres of real floor. Taking the
+    // minimum of the two axes AFTER converting to metres is the whole fix:
+    // a millimetre across the board is a millimetre along it.
+    const toLongEdge = Math.min(localV, 1 - localV) * drawnWidth;
+    const toEnd = Math.min(localU, 1 - localU) * drawnLength;
+
+    return { grain, streak, jointDistance: Math.min(toLongEdge, toEnd) };
+  };
+
+  for (let y = 0; y < size; y++) {
+    const v = y / size;
     for (let x = 0; x < size; x++) {
       const u = x / size;
-
-      // Offsetting each row by a constant fraction staggers the end joints.
-      const colPos = u * cols + row * 0.37 * cols;
-      const col = Math.floor(colPos);
-      const localU = colPos - col;
-
-      // Long streaks: low frequency along the plank, high frequency across it.
-      const streak = fbm(noise, u * 5 + col * 3.7, v * 70 + row * 11.3, 4, NOISE_PERIOD);
-      // Fold through a sine to produce growth-ring banding.
-      const rings = Math.abs(Math.sin((localV * 9 + streak * 5.5) * Math.PI));
-      let grain = 0.55 * streak + 0.45 * rings;
-
-      // Per-plank tone variation.
-      const toneIndex = (((row * cols + col) % plankTone.length) + plankTone.length) % plankTone.length;
-      grain += (plankTone[toneIndex] ?? 0) * 0.12;
+      const { grain, jointDistance } = plankAt(u, v);
 
       // Blend between the two wood tones, biased by the contrast setting.
       const t = Math.min(1, Math.max(0, 0.5 + (grain - 0.5) * (0.6 + options.grainContrast)));
       let color = mixRgb(dark, light, t);
 
-      // Darken the bevelled joints between planks.
-      const edgeV = Math.min(localV, 1 - localV);
-      const edgeU = Math.min(localU, 1 - localU);
-      const seamWidth = 0.035;
-      const seam = Math.min(1, Math.min(edgeV, edgeU * 0.6) / seamWidth);
-      const seamShade = 0.45 + 0.55 * seam;
+      // The joint itself: a tight dark line, which is what a board joint
+      // actually looks like from standing height.
+      const seam = smoothstep(JOINT_METRES, JOINT_METRES + BEVEL_METRES, jointDistance);
+      const seamShade = 0.5 + 0.5 * seam;
       color = { r: color.r * seamShade, g: color.g * seamShade, b: color.b * seamShade };
 
       const index = (y * size + x) * 4;
       setPixel(albedo, index, color.r, color.g, color.b);
 
-      // Denser late-growth grain is slightly glossier; joints are matte.
-      const rough = options.baseRoughness + (1 - grain) * 0.16 - (1 - seam) * -0.12;
+      // Denser late-growth grain takes lacquer more evenly and reads slightly
+      // glossier; the unlacquered joint is matte.
+      const rough = options.baseRoughness + (1 - grain) * 0.16 + (1 - seam) * 0.12;
       setGrey(roughness, index, rough * 255);
     }
   }
 
-  // Height: joints recessed, grain very lightly raised.
+  /*
+   * Relief.
+   *
+   * Centred on a mid grey with a small amplitude, for two reasons. It cannot
+   * clip — the old field sat at 0.90 on the plank face and added grain on top,
+   * so every bright grain line was flattened against the ceiling of the byte
+   * range and the figuring vanished from the normal map entirely. And a small
+   * amplitude spread over a wide ramp is a shallow slope, which is what a
+   * floor is.
+   */
+  const reliefMetres = reliefWidth(options.tileMetres, size, RELIEF_METRES);
   const height = renderHeightField(size, (u, v) => {
-    const rowPos = v * rows;
-    const row = Math.floor(rowPos);
-    const localV = rowPos - row;
-    const colPos = u * cols + row * 0.37 * cols;
-    const localU = colPos - Math.floor(colPos);
-
-    const edgeV = Math.min(localV, 1 - localV);
-    const edgeU = Math.min(localU, 1 - localU);
-    const seam = Math.min(1, Math.min(edgeV, edgeU * 0.6) / 0.035);
-
-    const streak = fbm(noise, u * 5, v * 70, 3, NOISE_PERIOD);
-    return 0.15 + seam * 0.75 + streak * 0.1;
+    const { streak, grain, jointDistance } = plankAt(u, v);
+    const relief = smoothstep(0, reliefMetres, jointDistance);
+    const figure = (streak - 0.5) * 0.10 + (grain - 0.5) * 0.05;
+    return 0.6 + figure - (1 - relief) * 0.30;
   });
 
-  return { albedo, roughness, height, normalStrength: 2.2, tileMetres: options.tileMetres };
+  // Was 2.2, which on the old cliff-edged field produced normals lying almost
+  // flat to the floor. The field is gentle now and the grain has to carry the
+  // texture rather than the joints, so the whole thing is dialled back.
+  return { albedo, roughness, height, normalStrength: 1.1, tileMetres: options.tileMetres };
 }
 
 /* ────────────────────────────── Tile ────────────────────────────── */
@@ -169,6 +285,15 @@ export interface TileOptions {
   seed: number;
   tileMetres: number;
 }
+
+/**
+ * How far the tile face takes to fall into the grout channel.
+ *
+ * Wider than a real arris, for the reason given on `RELIEF_METRES` above: a
+ * texel is roughly 2 mm of floor, and relief narrower than the grid that holds
+ * it becomes an aliasing artefact rather than a detail.
+ */
+const TILE_BEVEL_METRES = 0.008;
 
 /**
  * Ceramic or stone tile with grout lines.
@@ -237,20 +362,39 @@ export function generateTile(size: number, options: TileOptions): SurfaceMaps {
     }
   }
 
+  /*
+   * Relief, in metres and without clipping — same fix as the plank floor above.
+   *
+   * The ramp out of the grout channel used to be `half * 1.6` of a cell wide,
+   * which for a 6 mm joint in a 600 mm tile is under 5 mm, or about two texels.
+   * Climbing 0.95 of the full height range in two texels is a vertical wall, and
+   * a measurement of the resulting normal map found 6% of its texels tilted more
+   * than 45° off the floor. Grout does not do that. It is a shallow dish.
+   *
+   * The ramp is therefore fixed in millimetres of real floor, wide enough to
+   * span several texels at any sane texture resolution, and the whole field sits
+   * inside the byte range so the face mottling survives instead of being
+   * flattened against 255.
+   */
+  const drawnTile = options.tileMetres / tiles;
+  const groutHalf = options.groutWidth * 0.5;
+  const bevelMetres = reliefWidth(options.tileMetres, size, TILE_BEVEL_METRES);
   const height = renderHeightField(size, (u, v) => {
     const cellX = u * tiles;
     const cellY = v * tiles;
     const localU = cellX - Math.floor(cellX);
     const localV = cellY - Math.floor(cellY);
-    const edge = Math.min(localU, 1 - localU, localV, 1 - localV);
-    const half = groutFraction * 0.5;
+    // Distance to the nearest joint, in metres.
+    const edge = Math.min(localU, 1 - localU, localV, 1 - localV) * drawnTile;
 
-    // Ramp up out of the grout channel over a short distance for a soft bevel.
-    if (edge < half) return 0.05;
-    return Math.min(1, 0.05 + ((edge - half) / (half * 1.6)) * 0.95);
+    const bevel = smoothstep(groutHalf, groutHalf + bevelMetres, edge);
+    const face = fbm(noise, u * 14, v * 14, 3, NOISE_PERIOD);
+    return 0.68 + (face - 0.5) * 0.06 - (1 - bevel) * 0.36;
   });
 
-  return { albedo, roughness, height, normalStrength: 3.0, tileMetres: options.tileMetres };
+  // Was 3.0, against a field that was mostly a cliff. The bevel is a real bevel
+  // now, so the strength only has to express it rather than rescue it.
+  return { albedo, roughness, height, normalStrength: 1.3, tileMetres: options.tileMetres };
 }
 
 /* ──────────────────────────── Concrete ──────────────────────────── */
@@ -294,10 +438,18 @@ export function generateConcrete(size: number, options: ConcreteOptions): Surfac
     }
   }
 
+  /*
+   * The aggregate grit carried more amplitude than the broad cloudy form did,
+   * at eighteen times the frequency. High frequency times high amplitude is
+   * steep, and steep at near-texel scale is the aliasing artefact this file
+   * has been working through all session: measured, stucco had a MEAN normal
+   * tilt of 34° off the wall. Grit is meant to be felt, not seen, so the two
+   * now sit in the right order — the form dominates and the grit decorates.
+   */
   const height = renderHeightField(size, (u, v) => {
     const clouds = fbm(broad, u * 6, v * 6, 4, NOISE_PERIOD);
     const speckle = fbm(fine, u * 110, v * 110, 2, NOISE_PERIOD);
-    return 0.5 + (clouds - 0.5) * 0.4 + (speckle - 0.5) * 0.6;
+    return 0.5 + (clouds - 0.5) * 0.44 + (speckle - 0.5) * 0.22;
   });
 
   // Polishing physically flattens the surface, so the normal map eases off too.
@@ -353,13 +505,28 @@ export function generateCarpet(size: number, options: CarpetOptions): SurfaceMap
     }
   }
 
+  /*
+   * Pile, not gravel.
+   *
+   * This field used to span almost the entire byte range at a frequency of one
+   * cycle per seven texels, amplified by a normal strength of 3.4. Measured, the
+   * result had a MEAN tilt of 45° off the floor and more than half its texels
+   * steeper than that — a field of vertical spikes, which is why carpet caught
+   * specular glints it should never have had and shimmered when the camera
+   * moved. Wool has essentially no gloss; the only thing its relief has to do is
+   * break up the light very slightly.
+   *
+   * The frequencies are unchanged — at 1024 px over 1.2 m the strand noise lands
+   * near 8 mm a cycle, which is the size of a real tuft. It is the amplitude and
+   * the strength that were wrong.
+   */
   const height = renderHeightField(size, (u, v) => {
     const strands = fbm(fibre, u * 150, v * 150, 2, NOISE_PERIOD);
     const clumps = fbm(weave, u * 18, v * 18, 3, NOISE_PERIOD);
-    return strands * 0.75 + clumps * 0.25;
+    return 0.5 + (strands - 0.5) * 0.34 + (clumps - 0.5) * 0.26;
   });
 
-  return { albedo, roughness, height, normalStrength: 3.4, tileMetres: options.tileMetres };
+  return { albedo, roughness, height, normalStrength: 1.15, tileMetres: options.tileMetres };
 }
 
 /* ───────────────────────────── Marble ───────────────────────────── */
@@ -512,14 +679,61 @@ export function generateSiding(size: number, options: SidingOptions): SurfaceMap
     }
   }
 
+  /*
+   * Relief.
+   *
+   * Colour keeps the crisp shadow line above — a shadow line SHOULD be crisp,
+   * and the albedo map is never differentiated so nothing goes wrong there. The
+   * height field is a different question. `proud` was a boolean, so a batten
+   * rose 0.35 of the full range in a single texel, and `jointDepth` jumped from
+   * 0 to 1 across every board boundary. Measured, that put 3% of the normal map
+   * more than 45° off the wall on lap siding and 13% on shingles; under a low
+   * sun those texels are mirrors, which is why cladding glinted along every
+   * course line.
+   *
+   * Both are now signed distances into a band, smoothed over a width the
+   * texture can carry.
+   */
+  const boardMetres = options.tileMetres / boards;
+  const ramp = reliefWidth(options.tileMetres, size, 0.010);
+
+  const relief = (across: number): number => {
+    const cell = across * boards;
+    const withinBoard = cell - Math.floor(cell);
+
+    if (options.battenWidth > 0) {
+      // Board and batten: a raised strip with a soft arris down each side.
+      const inside = bandDistance(withinBoard, battenFraction * 0.5, battenFraction * 0.5, boardMetres);
+      return 0.35 + smoothstep(-ramp * 0.5, ramp * 0.5, inside) * 0.5;
+    }
+
+    /*
+     * Lap siding. Each board leans out from the wall, so its face climbs
+     * steadily from the lap line to the bottom edge, and then the next board
+     * starts again behind it.
+     *
+     * Written as a lerp between that climbing face and the proud edge rather
+     * than as a max of the two, because a max has a kink where the curves cross
+     * and a kink is exactly the sub-texel feature this is all trying to avoid.
+     * The lerp is continuous across the board boundary by construction: at the
+     * moment it hands over, both sides are at the same height.
+     */
+    const signed = withinBoard > 0.5 ? withinBoard - 1 : withinBoard;
+    const half = (ramp / boardMetres) * 0.5;
+    const edge = 1 - smoothstep(-half, half, signed);
+    const face = 0.3 + withinBoard * 0.5;
+    return face * (1 - edge) + 0.8 * edge;
+  };
+
   const height = renderHeightField(size, (u, v) => {
     const across = options.orientation === 'horizontal' ? v : u;
     const along = options.orientation === 'horizontal' ? u : v;
-    const sample = shade(across, along);
-    return 0.45 + sample.proud * 0.35 - sample.jointDepth * 0.4 + (sample.grain - 0.5) * 0.1;
+    const grain = fbm(noise, along * 9, across * boards * 1.4, 3, NOISE_PERIOD);
+    return relief(across) + (grain - 0.5) * 0.08;
   });
 
-  return { albedo, roughness, height, normalStrength: 2.2, tileMetres: options.tileMetres };
+  // Was 2.2, against a field built out of boolean steps.
+  return { albedo, roughness, height, normalStrength: 1.2, tileMetres: options.tileMetres };
 }
 
 /* ──────────────────────────── Masonry ──────────────────────────── */
@@ -614,15 +828,39 @@ export function generateMasonry(size: number, options: MasonryOptions): SurfaceM
     }
   }
 
+  /*
+   * Relief.
+   *
+   * `inJoint` is a boolean, and this used to branch straight on it: 0.72 on the
+   * face of a brick and 0.25 in the mortar, with nothing in between. Across one
+   * texel that is a half-height vertical wall at every joint in the wall, and
+   * measured it left 17% of the brick normal map tilted more than 45° off the
+   * surface. Mortar is recessed by a few millimetres, not by a storey.
+   *
+   * So the joint is a distance now rather than a test, and the raked profile
+   * between face and mortar is smoothed over a width the texture can hold. The
+   * albedo above still branches, and should: the lighter mortar against the
+   * darker unit is a colour boundary and colour boundaries are allowed to be
+   * sharp.
+   */
+  const unitMetresH = options.tileMetres / courses;
+  const unitMetresW = options.tileMetres / perCourse;
+  const rake = reliefWidth(options.tileMetres, size, 0.006);
+
   const height = renderHeightField(size, (u, v) => {
     const face = sample(u, v);
     const speckle = fbm(grit, u * 90, v * 90, 2, NOISE_PERIOD);
-    // The joint is recessed; the face of each unit stands proud and is itself
-    // slightly uneven, which is what catches raking light on a real wall.
-    return face.inJoint
-      ? 0.25 + (speckle - 0.5) * 0.1
-      : 0.72 + (face.tone - 0.5) * options.irregularity * 0.35 + (speckle - 0.5) * 0.12;
+
+    // How far inside the mortar the texel is, on each axis, in metres.
+    const inCourse = bandDistance(face.withinCourse, jointV * 0.5, jointV * 0.5, unitMetresH);
+    const inUnit = bandDistance(face.withinUnit, jointU * 0.5, jointU * 0.5, unitMetresW);
+    // Either joint recesses the surface, so take whichever is deeper in.
+    const joint = smoothstep(-rake * 0.5, rake * 0.5, Math.max(inCourse, inUnit));
+
+    const proud = 0.62 + (face.tone - 0.5) * options.irregularity * 0.2 + (speckle - 0.5) * 0.08;
+    return proud - joint * 0.3;
   });
 
-  return { albedo, roughness, height, normalStrength: 2.6, tileMetres: options.tileMetres };
+  // Was 2.6, against a field made of boolean steps.
+  return { albedo, roughness, height, normalStrength: 1.4, tileMetres: options.tileMetres };
 }
