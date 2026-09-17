@@ -1182,6 +1182,15 @@ their valleys across each other.
   machine gets one machine and a warning. And the live section cut leaves the
   cut edges hollow, because capping them properly needs a stencil pass per
   plane — the printed section is where the real construction is drawn.
+- **Session 18 found a four-session-old bug in the movement, and it is worth
+  recording how.** Walking diagonally was 41% faster than walking straight. The
+  input vector for W+D is (1, 1), whose length is 1.414, and the code normalised
+  the direction by the CLAMPED magnitude of 1 rather than by the real 1.414 — so
+  every diagonal came out too long. It shipped in session 14 and survived every
+  walk test written since, because all of them checked where the walker ended up
+  rather than how fast it got there. It was caught by a test written for
+  momentum, which had nothing to do with it.
+
 - **Left over from session 18.** The figure's walk cycle is verified twice and
   neither check is a picture of it walking. Unit tests exercise the cycle
   directly — the knee never hyperextends anywhere in it, the legs stay half a

@@ -39,6 +39,7 @@ import { BUDGET, FrameBudget } from './FrameBudget';
 import { BODY, NO_INTENT, Walker, startingPoint, type WalkIntent } from '@/walk/Walker';
 import { standingAt } from '@/walk/ground';
 import { Stride } from '@/walk/stride';
+import { BASE_FOV, easeFov, headBob } from '@/walk/feel';
 import { Figure } from '@/scene/Figure';
 import { ThirdPerson } from './ThirdPerson';
 import { aimTeleport, type TeleportAim } from '@/walk/teleport';
@@ -96,6 +97,15 @@ export class WalkMode {
   private thirdPerson = new ThirdPerson();
   /** First person unless asked otherwise. See `setView`. */
   private view: 'first' | 'third' = 'first';
+
+  /**
+   * The field of view actually in use, which lags the one this speed wants.
+   *
+   * Held here rather than read off the camera each frame because the camera is
+   * shared with the orbit view — leaving a widened field of view behind on the
+   * way out would silently change every screenshot taken afterwards.
+   */
+  private fov = BASE_FOV;
 
   /* ---- Interaction ---- */
 
@@ -255,6 +265,14 @@ export class WalkMode {
   }
 
   exit(): void {
+    /*
+     * Hand the camera back as it was found. It is shared with the orbit view,
+     * and a walkthrough that ended mid-sprint would otherwise leave every
+     * subsequent still six degrees wider than the one before it.
+     */
+    this.fov = BASE_FOV;
+    this.deps.camera.fov = BASE_FOV;
+    this.deps.camera.updateProjectionMatrix();
     this.deps.scene.remove(this.figure.group);
     if (!this.on) return;
     this.on = false;
@@ -476,11 +494,48 @@ export class WalkMode {
       );
     } else {
       const camera = this.deps.camera;
-      camera.position.set(state.at.x, state.eyeY, state.at.z);
+
+      /*
+       * The bob, added to the eye rather than baked into it.
+       *
+       * `state.eyeY` is where the walkthrough says the eye IS — it is what the
+       * sound listens from, what the reach ray starts at, and what the figure's
+       * head is drawn at. The bob is a camera affectation on top of that, and
+       * mixing the two would make a footstep's position wobble by a centimetre
+       * with every step.
+       */
+      const bob = this.comfort.headBob
+        ? headBob(stride, state.speed)
+        : { rise: 0, sway: 0 };
+
+      // Sideways, across the direction of travel rather than along it.
+      const across = state.heading + Math.PI / 2;
+      camera.position.set(
+        state.at.x + Math.sin(across) * bob.sway,
+        state.eyeY + bob.rise,
+        state.at.z + Math.cos(across) * bob.sway,
+      );
       // Yaw from the body, pitch from the mouse: a body does not tilt.
       camera.rotation.set(0, 0, 0);
       camera.rotateY(state.heading + Math.PI);
       camera.rotateX(this.pitch);
+    }
+
+    /*
+     * The field of view, after whichever camera branch ran.
+     *
+     * Applied in one place for both views: a run should feel like a run whether
+     * you are looking out of your own eyes or watching yourself do it.
+     */
+    if (!this.presenting) {
+      const wanted = this.comfort.fovKick
+        ? easeFov(this.fov, state.speed, intent.running, delta)
+        : BASE_FOV;
+      if (wanted !== this.fov) {
+        this.fov = wanted;
+        this.deps.camera.fov = wanted;
+        this.deps.camera.updateProjectionMatrix();
+      }
     }
 
     const moved =

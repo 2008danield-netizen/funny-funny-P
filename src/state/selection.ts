@@ -232,6 +232,23 @@ export interface ComfortSettings {
   snapTurn: boolean;
   /** Walking pace, metres per second. Slower is calmer. */
   speed: number;
+  /**
+   * Whether the head rises and falls as you walk.
+   *
+   * Loved by most people and genuinely sickening to a minority within about a
+   * minute, which is why it is a setting rather than a constant. It is driven by
+   * the same stride the footsteps are, so the head reaches the bottom of its
+   * travel exactly as the foot lands.
+   */
+  headBob: boolean;
+  /**
+   * Whether the view widens a little when you run.
+   *
+   * The strongest single cue for speed there is — most of how motion is
+   * perceived is the rate at which the edges of the frame sweep past. Also one
+   * of the strongest triggers for simulator sickness, hence the switch.
+   */
+  fovKick: boolean;
 }
 
 /**
@@ -292,6 +309,8 @@ export const DEFAULT_COMFORT: ComfortSettings = {
   vignetteStrength: 0.55,
   snapTurn: true,
   speed: 1.4,
+  headBob: true,
+  fovKick: true,
 };
 
 const EMPTY: Selection = { kind: null, id: null };

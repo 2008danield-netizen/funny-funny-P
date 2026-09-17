@@ -189,6 +189,8 @@ export function WalkPanel({ engine }: WalkPanelProps) {
           <p className="field__hint">
             <strong>W A S D</strong> to walk, mouse to look, <strong>Shift</strong> to hurry,
             <strong> Q</strong> and <strong>E</strong> to turn in steps.{' '}
+            <strong>Ctrl</strong> or <strong>C</strong> to crouch &mdash; which is how you
+            check what you can see from a chair.{' '}
             <strong>Click</strong> or press <strong>F</strong> to open a door or flip a switch.
             Hold the <strong>right mouse button</strong> to aim a jump and release to take it.{' '}
             <strong>Esc</strong> releases the mouse.
@@ -376,6 +378,38 @@ export function WalkPanel({ engine }: WalkPanelProps) {
           The periphery is where your eyes and your inner ear disagree most, so covering it while
           you move removes most of the problem — and costs almost nothing, because what you are
           looking at is in the middle.
+        </p>
+
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={comfort.headBob}
+            onChange={(event) => patchComfort({ headBob: event.target.checked })}
+          />
+          <span>Let your head rise and fall as you walk</span>
+        </label>
+        <p className="field__hint">
+          Driven by the same step the footsteps are, so your head reaches the bottom
+          of its travel at the exact moment your foot lands. It is a small movement
+          on purpose &mdash; the camera <em>is</em> your head, so a real
+          twenty-five millimetres moves the whole world and reads as a limp. Most
+          people stop noticing it within seconds and miss it when it is gone; a
+          minority feel ill within a minute, which is why the switch is here.
+        </p>
+
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={comfort.fovKick}
+            onChange={(event) => patchComfort({ fovKick: event.target.checked })}
+          />
+          <span>Widen the view when you hurry</span>
+        </label>
+        <p className="field__hint">
+          Six degrees, eased in. Almost all of how speed is felt is the rate at
+          which the edges of the frame sweep past, so this does more for the sense
+          of hurrying than the extra metres per second do. It is also one of the
+          stronger triggers for feeling queasy, so it comes off with one click.
         </p>
 
         {comfort.vignette && (

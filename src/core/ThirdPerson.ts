@@ -51,6 +51,22 @@ const SKIN = 0.22;
 /** Metres per second the boom extends back out once it is clear. */
 const EXTEND_SPEED = 4;
 
+/**
+ * How quickly the camera's aim catches up with the body, per second.
+ *
+ * A camera welded rigidly to a moving body transfers every one of that body's
+ * accelerations straight into the frame, and the result reads as stiff — it is
+ * the difference between a camera operator following somebody and a camera
+ * bolted to their back. Letting the aim trail and catch up costs a few
+ * centimetres of lag and is most of what separates a third-person view that
+ * feels expensive from one that does not.
+ *
+ * Too low and the body outruns its own frame, which is worse than being stiff.
+ * Ten per second lands around a tenth of a second behind, which is about a
+ * step's worth of lean and reads as weight rather than delay.
+ */
+const FOLLOW_RATE = 10;
+
 /** Limits, so the camera cannot go under the floor or straight overhead. */
 const MIN_PITCH = -0.95;
 const MAX_PITCH = 1.15;
@@ -77,6 +93,8 @@ export class ThirdPerson {
   private pitch = BASE_PITCH;
   /** The boom length actually in use, which lags the ideal one outwards only. */
   private reach = BOOM;
+  /** Where the camera is actually aimed, which trails the body. See FOLLOW_RATE. */
+  private aim: THREE.Vector3 | null = null;
 
   private raycaster = new THREE.Raycaster();
 
@@ -109,6 +127,9 @@ export class ThirdPerson {
   alignTo(heading: number): void {
     this.yaw = heading;
     this.reach = BOOM;
+    // Forget where it was trailing, so entering third person does not sweep the
+    // camera across the building from wherever the body last stood.
+    this.aim = null;
   }
 
   /**
@@ -124,7 +145,19 @@ export class ThirdPerson {
     scene: THREE.Scene,
     delta: number,
   ): void {
-    const focus = new THREE.Vector3(feet.x, feet.y + FOCUS_HEIGHT, feet.z);
+    const onBody = new THREE.Vector3(feet.x, feet.y + FOCUS_HEIGHT, feet.z);
+
+    /*
+     * The aim trails the body rather than sitting on it.
+     *
+     * Exponential catch-up, framed so it is frame-rate independent: a fixed
+     * fraction per frame would follow twice as fast at 120 fps as at 60, which
+     * is the most common way smoothing like this is written and quietly wrong.
+     */
+    if (!this.aim) this.aim = onBody.clone();
+    else this.aim.lerp(onBody, 1 - Math.exp(-FOLLOW_RATE * delta));
+
+    const focus = this.aim;
 
     /*
      * The direction from the focus out to the camera.
