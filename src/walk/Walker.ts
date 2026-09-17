@@ -137,6 +137,24 @@ export class Walker {
     };
   }
 
+  /**
+   * Points the body a given way, without moving it.
+   *
+   * First person has never needed this: there, the mouse turns the body and
+   * `intent.turn` is the only way heading ever changes. Third person is a
+   * different contract — the mouse orbits the camera and the body turns to face
+   * whichever way you walk — so the caller works out the direction of travel and
+   * tells the body to face it.
+   *
+   * Deliberately a separate method rather than a very large `turn` intent. Those
+   * are different statements: `turn` means "rotate at this rate", and rotating
+   * at whatever rate happens to land on the right heading this frame would
+   * silently depend on the frame time.
+   */
+  face(heading: number): void {
+    this.state = { ...this.state, heading };
+  }
+
   get current(): WalkState {
     return this.state;
   }

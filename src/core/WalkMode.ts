@@ -38,6 +38,9 @@ import { XrWalk } from '@/xr/XrWalk';
 import { BUDGET, FrameBudget } from './FrameBudget';
 import { BODY, NO_INTENT, Walker, startingPoint, type WalkIntent } from '@/walk/Walker';
 import { standingAt } from '@/walk/ground';
+import { Stride } from '@/walk/stride';
+import { Figure } from '@/scene/Figure';
+import { ThirdPerson } from './ThirdPerson';
 import { aimTeleport, type TeleportAim } from '@/walk/teleport';
 import { LiveState } from '@/walk/LiveState';
 import { interactablesOn, reachFor, type Interactable } from '@/walk/interactables';
@@ -69,6 +72,30 @@ export class WalkMode {
   private on = false;
   private aim: TeleportAim | null = null;
   private pitch = 0;
+
+  /**
+   * How far through a step the walker is.
+   *
+   * Owned here rather than by either consumer, because both the footstep sounds
+   * and the figure's legs need it and neither is always present — the sound only
+   * runs once a browser has let an audio context start, and the figure is only
+   * drawn in third person. Whichever of them is switched on has to see the same
+   * step as the other, so the count lives above both.
+   */
+  private stride = new Stride();
+
+  /**
+   * The body you see in third person, and the camera that looks at it.
+   *
+   * Both exist whether or not third person is switched on. The figure is simply
+   * hidden in first person — building and tearing it down on every toggle would
+   * cost a stall at the exact moment somebody is looking for a smooth
+   * transition, and an invisible group costs nothing per frame.
+   */
+  private figure = new Figure();
+  private thirdPerson = new ThirdPerson();
+  /** First person unless asked otherwise. See `setView`. */
+  private view: 'first' | 'third' = 'first';
 
   /* ---- Interaction ---- */
 
@@ -148,6 +175,35 @@ export class WalkMode {
     this.comfort = comfort;
   }
 
+  /**
+   * First person or third.
+   *
+   * First person is the default and stays the default: it is the honest way to
+   * judge a room, because it is the only one that puts your eye where a real eye
+   * would be. Third person is for looking AT the space rather than from inside
+   * it, and for the thing a figure is really for in an architectural view —
+   * telling you how big the room is by standing in it.
+   */
+  setView(view: 'first' | 'third'): void {
+    if (view === this.view) return;
+    this.view = view;
+    this.figure.setVisible(view === 'third');
+
+    // Entering third person from wherever the body is facing, so the camera
+    // arrives behind you rather than swinging round to find its default.
+    if (view === 'third' && this.walker) this.thirdPerson.alignTo(this.walker.current.heading);
+    this.deps.invalidate();
+  }
+
+  /** The figure's current joint angles, for automated checking. */
+  get figurePose(): ReturnType<Figure['report']> {
+    return this.figure.report();
+  }
+
+  get walkView(): 'first' | 'third' {
+    return this.view;
+  }
+
   setSound(settings: SoundSettings): void {
     this.sound.setSettings(settings);
   }
@@ -162,8 +218,17 @@ export class WalkMode {
     if (!start) return false;
 
     this.walker = new Walker(start.at, start.standing, start.heading);
+    this.stride.reset();
     this.on = true;
     this.pitch = 0;
+
+    this.deps.scene.add(this.figure.group);
+    this.thirdPerson.ignoreObject(this.figure.group);
+    this.figure.faceNow(start.heading);
+    // Aligned on entry so that switching to third person does not swing the
+    // camera round the building to find its default angle.
+    this.thirdPerson.alignTo(start.heading);
+    this.figure.setVisible(this.view === 'third');
 
     const camera = this.deps.camera;
     this.parked = { position: camera.position.clone(), quaternion: camera.quaternion.clone() };
@@ -190,6 +255,7 @@ export class WalkMode {
   }
 
   exit(): void {
+    this.deps.scene.remove(this.figure.group);
     if (!this.on) return;
     this.on = false;
 
@@ -265,6 +331,52 @@ export class WalkMode {
     this.deps.onChange();
   }
 
+  /**
+   * Turns a first-person intent into a free-orbit one.
+   *
+   * Three things happen, and the third is the one that makes it feel right:
+   *
+   *   the turn moves the CAMERA rather than the body;
+   *   forward and strafe are rotated out of camera space into the world;
+   *   the body is pointed at wherever that lands.
+   *
+   * The body is faced rather than turned because a heading is a fact, not a
+   * rate. Feeding the walker a very large `turn` to land on the right angle this
+   * frame would work and would silently depend on the frame time — press a key
+   * on a slow frame and the body would overshoot.
+   */
+  private orbitIntent(intent: WalkIntent, delta: number): WalkIntent {
+    this.thirdPerson.orbit(intent.turn, this.pitch, delta);
+
+    const magnitude = Math.hypot(intent.forward, intent.strafe);
+    if (magnitude < 1e-4) {
+      // Standing still: no direction to face, so leave the body where it is
+      // rather than snapping it to the camera every idle frame.
+      return { ...intent, turn: 0, forward: 0, strafe: 0 };
+    }
+
+    /*
+     * Camera space into world space.
+     *
+     * The walkthrough's convention is heading 0 looks towards +z, so forward is
+     * (sin h, cos h) and the strafe axis is that turned a quarter turn. Written
+     * out rather than done with a matrix because the sign conventions here have
+     * bitten this project twice already — once in the audio listener, once in
+     * the third-person boom — and an explicit pair of lines can be checked
+     * against the walker's own maths by eye.
+     */
+    const heading = this.thirdPerson.heading;
+    const x = Math.sin(heading) * intent.forward + Math.cos(heading) * intent.strafe;
+    const z = Math.cos(heading) * intent.forward - Math.sin(heading) * intent.strafe;
+
+    this.walker?.face(Math.atan2(x, z));
+
+    // All of the movement is now "forward" along the new heading, so the strafe
+    // has been fully consumed. Leaving it in would add the sideways component
+    // twice.
+    return { ...intent, turn: 0, forward: magnitude, strafe: 0 };
+  }
+
   /* -------------------------------- The frame ----------------------------- */
 
   /**
@@ -281,7 +393,23 @@ export class WalkMode {
       : this.readDesktop(doc, delta);
 
     const before = this.walker.current;
-    const state = this.walker.update(doc, intent, delta);
+
+    /*
+     * THIRD PERSON REDIRECTS THE INTENT BEFORE THE WALKER SEES IT.
+     *
+     * The mouse produced a `turn` and the keys produced a forward/strafe pair,
+     * exactly as they always have — the input layer knows nothing about which
+     * view is on, and should not. What changes is where those numbers go.
+     *
+     * The turn is spent on the camera instead of the body, and the movement is
+     * rotated out of camera space into the world, so "forward" means away from
+     * the camera. The body is then simply told to face wherever it is walking.
+     */
+    const driven = this.presenting || this.view === 'first'
+      ? intent
+      : this.orbitIntent(intent, delta);
+
+    const state = this.walker.update(doc, driven, delta);
 
     this.overlay.updateComfort(state.speed, delta, this.comfort);
 
@@ -292,6 +420,15 @@ export class WalkMode {
 
     const eye = new THREE.Vector3(state.at.x, state.eyeY, state.at.z);
     this.lights.update(doc, new Set(this.live.litFittings), eye);
+
+    /*
+     * The step, advanced once and read twice.
+     *
+     * After the walker has moved, because a stride is measured from the distance
+     * actually covered and that is not known until the collision solver has had
+     * its say.
+     */
+    const stride = this.stride.advance(state.at, state.speed);
 
     /*
      * The sound, after the walker has moved and before the camera is written.
@@ -309,6 +446,7 @@ export class WalkMode {
         heading: state.heading,
         speed: state.speed,
         standing: state.standing,
+        stride,
       },
       { runningTaps: this.live.runningSet, litFittings: this.live.litSet },
       this.soundEvents,
@@ -320,6 +458,22 @@ export class WalkMode {
     if (this.presenting) {
       // Move the space, not the head. See the note at the top.
       this.xr.place(state.at.x, state.standing.y, state.at.z, state.heading);
+    } else if (this.view === 'third') {
+      /*
+       * The figure first, the camera second.
+       *
+       * The camera casts a ray to find out how far back it can sit, and the
+       * figure is one of the things in the scene. Posing it after the cast would
+       * mean the boom was measured against last frame's body.
+       */
+      this.figure.place(state.at.x, state.standing.y, state.at.z, state.heading, delta);
+      this.figure.setPose(stride, state.speed);
+      this.thirdPerson.place(
+        this.deps.camera,
+        { x: state.at.x, y: state.standing.y, z: state.at.z },
+        this.deps.scene,
+        delta,
+      );
     } else {
       const camera = this.deps.camera;
       camera.position.set(state.at.x, state.eyeY, state.at.z);
@@ -567,8 +721,19 @@ export class WalkMode {
      * hand is the eye — a mouse has no other position to offer — which is why
      * the teleport arc starts there too.
      */
+    /*
+     * In third person you reach where the CAMERA is looking, not where the body
+     * happens to be facing — those are now two different directions, which is
+     * the entire point of free orbit. The ray still STARTS at the figure's eye,
+     * so you cannot reach through a wall the camera is looking over.
+     *
+     * One frame behind, because the camera's yaw is advanced further down in
+     * `orbitIntent`. That is the right frame anyway: it is the view the person
+     * was looking at when they clicked.
+     */
+    const viewHeading = this.view === 'third' ? this.thirdPerson.heading : state.heading;
     const facing = new THREE.Vector3(0, 0, -1).applyEuler(
-      new THREE.Euler(this.pitch, state.heading + Math.PI, 0, 'YXZ'),
+      new THREE.Euler(this.pitch, viewHeading + Math.PI, 0, 'YXZ'),
     );
 
     this.lookFor(
@@ -702,6 +867,7 @@ export class WalkMode {
   }
 
   dispose(): void {
+    this.figure.dispose();
     this.desktop.stop();
     this.overlay.dispose();
     this.lights.dispose();

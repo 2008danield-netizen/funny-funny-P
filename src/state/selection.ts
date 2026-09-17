@@ -159,6 +159,17 @@ export interface EditorState {
   walkthrough: boolean;
 
   /**
+   * Whether the walkthrough looks out of your own eyes or back at you.
+   *
+   * View state, like `walkthrough` itself. First person is the default and is
+   * the honest way to judge a room — it is the only view that puts your eye
+   * where a real eye would be. Third person is for looking AT the space rather
+   * than from inside it, and for the oldest trick in architectural drawing:
+   * telling somebody how big a room is by standing a person in it.
+   */
+  walkView: 'first' | 'third';
+
+  /**
    * How somebody moves, and how hard the app works to stop them feeling ill.
    *
    * These are preferences about a PERSON, not about a building, which is why
@@ -323,6 +334,7 @@ function initialState(): EditorState {
     // building, not half of it.
     activeSectionId: null,
     walkthrough: false,
+    walkView: 'first',
     comfort: { ...DEFAULT_COMFORT },
     sound: { ...DEFAULT_SOUND },
   };

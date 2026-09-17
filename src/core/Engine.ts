@@ -535,6 +535,8 @@ export class Engine {
           z: +camera.position.z.toFixed(3),
         },
         standing: state ? { y: +state.standing.y.toFixed(3), kind: state.standing.kind } : null,
+        view: this.walk?.walkView ?? null,
+        pose: this.walk?.figurePose ?? null,
         frames: this.frameSummary,
       };
     };
@@ -575,6 +577,20 @@ export class Engine {
     };
 
     scope.__pickProbe = (x: number, y: number) => this.editController.pickAtClient(x, y);
+
+    /*
+     * Enters the walkthrough in a given view, for automated checking.
+     *
+     * The panel's own buttons cannot be used from a headless browser: entering
+     * the walkthrough asks for pointer lock, and pointer lock needs a real user
+     * gesture that no automation can produce. This goes through `editorStore`,
+     * which is the same path the buttons take — the engine reacts to the state
+     * rather than to the click, so what this exercises is the real transition.
+     */
+    scope.__walkView = (view: 'first' | 'third') => {
+      editorStore.patch({ walkthrough: true, walkView: view });
+      return { walkthrough: true, view };
+    };
 
     scope.__liveProbe = () => this.liveSummary;
 
@@ -1050,6 +1066,7 @@ export class Engine {
       this.exitWalkthrough();
     }
     this.applyComfort(state.comfort);
+    this.walk?.setView(state.walkView);
     this.walk?.setSound(state.sound);
 
     this.applySectionCut(state.activeSectionId);

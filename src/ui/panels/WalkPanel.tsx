@@ -37,7 +37,7 @@ interface WalkPanelProps {
 
 export function WalkPanel({ engine }: WalkPanelProps) {
   const doc = useDesign();
-  const { walkthrough, comfort } = useEditor();
+  const { walkthrough, walkView, comfort } = useEditor();
 
   const [xrReady, setXrReady] = useState(false);
   const [presenting, setPresenting] = useState(false);
@@ -160,6 +160,31 @@ export function WalkPanel({ engine }: WalkPanelProps) {
               Click to look around
             </button>
           )}
+
+          <div className="field">
+            <span className="field__label">Point of view</span>
+            <div className="segmented">
+              {(['first', 'third'] as const).map((view) => (
+                <button
+                  key={view}
+                  type="button"
+                  className={`segmented__option${walkView === view ? ' segmented__option--active' : ''}`}
+                  onClick={() => editorStore.patch({ walkView: view })}
+                >
+                  {view === 'first' ? 'First person' : 'Third person'}
+                </button>
+              ))}
+            </div>
+            <p className="field__hint">
+              First person puts your eye where a real eye would be, which is the only
+              honest way to judge whether a room feels big enough. Third person shows
+              you standing in it &mdash; which is the oldest trick in architectural
+              drawing for the same question, and the one that works in a screenshot.
+              The mouse orbits around you rather than turning you, so you can walk to
+              the middle of a room and then look at it. Press <strong>V</strong> to
+              swap.
+            </p>
+          </div>
 
           <p className="field__hint">
             <strong>W A S D</strong> to walk, mouse to look, <strong>Shift</strong> to hurry,

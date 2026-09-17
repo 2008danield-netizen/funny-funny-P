@@ -1182,6 +1182,19 @@ their valleys across each other.
   machine gets one machine and a warning. And the live section cut leaves the
   cut edges hollow, because capping them properly needs a stencil pass per
   plane — the printed section is where the real construction is drawn.
+- **Left over from session 18.** The figure's walk cycle is verified twice and
+  neither check is a picture of it walking. Unit tests exercise the cycle
+  directly — the knee never hyperextends anywhere in it, the legs stay half a
+  cycle apart, the pose settles when standing — and a probe reads the joint
+  angles out of the running app to confirm the rig is actually being driven
+  rather than merely correct. What is missing is the frame in between: the
+  walkthrough renders on demand, so a headless browser that drives a step and
+  then screenshots always catches the pose a frame later, settled back to
+  standing. Somebody needs to watch it walk.
+
+  The figure is also not a collider. You can walk through yourself in third
+  person, which is unobservable, and the camera boom ignores the figure on
+  purpose — but nothing else in the building knows it is there.
 - **Left over from session 16.** Nobody has heard any of this. There are no
   speakers in the environment it was built in, so the *balance* — whether a
   footstep sits right against a running tap — has never been set by ear, only
