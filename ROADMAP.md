@@ -56,8 +56,14 @@ The complaint that started session 17. Half done.
 - [x] Wood floor streaks — joints measured in metres, relief the texture can hold
 - [x] Six other generators with the same defect — tile, carpet, brick, stone, shingle, siding
 - [x] `relief.test.ts` so it cannot come back
-- [ ] **Light calibration** — sun-to-ambient is 1.4:1 where reality is 5–10:1
-- [ ] **Shadow frustum fitted to where the shadow lands**, not to 1.35× the plan radius
+- [x] **Light calibration** — every preset now declares a sun-to-ambient ratio and
+      `lighting.test.ts` holds it. Measured against a shadows-off render of the
+      same frame, shadows now remove **33% of the light instead of 16%** under
+      daylight and **25% instead of 13%** at evening — about twice the depth
+- [x] **Shadow frustum fitted to where the shadow lands.** Also fixed a latent
+      bug found on the way: the far plane used distance from the world origin
+      rather than from the light to its target, so a plan moved a hundred metres
+      out would have lost every shadow
 - [ ] Ambient occlusion in the ordinary render path
 - [ ] Progressive accumulation — *gated on whether it works on real hardware*
 - [ ] A real sky and a ground that is not a flat green plane
@@ -65,6 +71,50 @@ The complaint that started session 17. Half done.
 
 Blocked on one answer: **does the progressive toggle work on your GPU?** It
 gates ambient occlusion and soft shadows, which are most of what is left.
+
+## Session 18 — the 3D view becomes where you work
+
+Scoped with the user. Not more geometry — **rectangular walls stay**. This is
+about the 3D view stopping being a preview and becoming the workspace.
+
+- [ ] **Direct manipulation in perspective.** Drag a wall, a window, a cabinet or
+      a chair in the 3D view, with gizmos, snapping and live collision. The
+      picker and the ray already exist from session 15; what is missing is drag
+      planes, handles and the undo grouping.
+- [ ] **Real camera control.** Saved viewpoints, smooth transitions, a lens
+      control, and two-point perspective so vertical edges stay vertical the way
+      they do in an architectural render.
+- [ ] **Edit from inside the walkthrough.** Today you can open a door and flip a
+      switch but you cannot change anything. Pick up a chair and move it, repaint
+      the wall you are facing, swap the cabinet door in front of you.
+
+The plan view stays — it is the right tool for setting out dimensions — but it
+stops being the only place work can happen.
+
+## Four ideas worth building, all approved
+
+Recorded so they are not lost. These change what the product *is*, rather than
+closing a gap.
+
+1. **Consequences, not compliance.** The model already knows the envelope, the
+   climate zone, the orientation, the Manual J load and the reverberation time of
+   every room. That same data answers *"your heating will cost about $140 in
+   January"*, *"the back bedroom is the coldest room in the house"*, *"this
+   living room overheats in July — it is the south glazing with no shade"*. An
+   architect charges thousands for an energy model; this is the useful half of
+   one, from a plan drawn in an afternoon.
+2. **Make time real.** Replace the four mood presets with a latitude, a date and
+   a time. Then the app can say *"this kitchen gets direct sun from 07:20 to
+   10:40 in June, and none at all between November and February"* — which is the
+   most persuasive sentence a home design tool can produce, and it is what makes
+   all the shadow work above mean something.
+3. **Cost of ownership, not cost.** `PriceBasis` already travels end to end.
+   Extend the total from what it costs to build to what it costs to own:
+   *"this wall costs $3,100 more and saves $14,200 over twenty years."* The
+   U-values, the degree days and the load are already in the model.
+4. **Compare two schemes.** Side by side, every derived number diffed. The
+   cheapest of the four, and it makes every other number more useful — a number
+   alone means little, a difference means everything.
 
 ## Phase B — Make it trustworthy *(1 session)*
 
