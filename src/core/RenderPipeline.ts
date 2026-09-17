@@ -38,6 +38,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 import { Progressive } from './Progressive';
 import type { QualitySettings } from './FrameLoop';
@@ -49,6 +50,15 @@ export class RenderPipeline {
   private composer: EffectComposer | null = null;
   private renderPass: RenderPass | null = null;
   private gtao: GTAOPass | null = null;
+  /**
+   * Tone maps and encodes on the way to the screen.
+   *
+   * Only wanted on the path that goes straight to the screen. The accumulating
+   * path needs the composer's output LINEAR, because it averages samples and
+   * then tone maps once at the end — tone mapping each sample and averaging the
+   * results is a different number, and a visibly flatter one.
+   */
+  private output: OutputPass | null = null;
 
   readonly progressive: Progressive;
 
@@ -122,6 +132,11 @@ export class RenderPipeline {
       this.configureAo();
       this.composer.addPass(this.gtao);
     }
+
+    // Last in the chain, and switched on only for the straight-to-screen path.
+    this.output = new OutputPass();
+    this.output.enabled = false;
+    this.composer.addPass(this.output);
   }
 
   /**
@@ -134,17 +149,42 @@ export class RenderPipeline {
    * junction, the underside of a worktop and a window reveal, and leaves the
    * middle of a wall alone.
    */
+  /**
+   * The occlusion settings actually in use, so a probe can sweep them.
+   *
+   * These are the best of a measured sweep rather than a guess: the AO buffer
+   * was captured on its own at each setting and the darkest fifth of it read
+   * off, which is where a corner lives. `radius` went from 0.5 m to 1.2 and
+   * `scale` from 1 to 2, and together they took the darkest fifth from 214 to
+   * 187 out of 255.
+   *
+   * That is an honest improvement and it is still not much. See the note on
+   * `renderStill` for what this pass is and is not doing.
+   */
+  private ao = {
+    radius: 1.2,
+    distanceExponent: 1,
+    thickness: 1,
+    scale: 2,
+    samples: 16,
+    distanceFallOff: 1,
+    screenSpaceRadius: false,
+  };
+
+  setAoParams(patch: Partial<RenderPipeline['ao']> & { blend?: number }): void {
+    const { blend, ...rest } = patch;
+    this.ao = { ...this.ao, ...rest };
+    if (blend !== undefined && this.gtao) this.gtao.blendIntensity = blend;
+    this.configureAo();
+  }
+
+  get aoParams(): RenderPipeline['ao'] {
+    return this.ao;
+  }
+
   private configureAo(): void {
     if (!this.gtao) return;
-    this.gtao.updateGtaoMaterial({
-      radius: 0.5,
-      distanceExponent: 1,
-      thickness: 1,
-      scale: 1,
-      samples: 16,
-      distanceFallOff: 1,
-      screenSpaceRadius: false,
-    });
+    this.gtao.updateGtaoMaterial({ ...this.ao });
     // Blending the AO under the colour rather than multiplying it flat keeps
     // lit surfaces from going muddy; only the crease darkens.
     this.gtao.blendIntensity = 1;
@@ -166,6 +206,26 @@ export class RenderPipeline {
     this.progressive.reset();
   }
 
+  /**
+   * Shows a stage of the occlusion pass on its own, for diagnosis.
+   *
+   * A post effect that contributes nothing looks exactly like one that is
+   * switched off, and both look exactly like one that is working on a scene
+   * with nothing to occlude. The only way to tell them apart is to look at the
+   * buffer rather than at the composite.
+   */
+  setAoOutput(mode: 'default' | 'ao' | 'denoise' | 'normal' | 'depth'): void {
+    if (!this.gtao) return;
+    const modes = {
+      default: GTAOPass.OUTPUT.Default,
+      ao: GTAOPass.OUTPUT.AO,
+      denoise: GTAOPass.OUTPUT.Denoise,
+      normal: GTAOPass.OUTPUT.Normal,
+      depth: GTAOPass.OUTPUT.Depth,
+    } as const;
+    this.gtao.output = modes[mode];
+  }
+
   /** Turns AO off entirely, e.g. for a machine that cannot afford it. */
   setAmbientOcclusion(enabled: boolean, camera: THREE.PerspectiveCamera): void {
     if (enabled === this.aoEnabled) return;
@@ -179,6 +239,66 @@ export class RenderPipeline {
     clearJitter(camera);
     this.renderer.setRenderTarget(null);
     this.renderer.render(this.scene, camera);
+  }
+
+  /**
+   * The still frame, with ambient occlusion, once.
+   *
+   * -----------------------------------------------------------------------------
+   * THE PATH THAT WAS MISSING, AND WHY IT MATTERED SO MUCH.
+   *
+   * There were two paths: cheap-while-moving, and accumulate-while-still. The
+   * second was switched off by default because it had never been seen working on
+   * real hardware. So in practice EVERY frame this app has ever drawn went down
+   * the cheap path — and the cheap path has no post-processing at all.
+   *
+   * Which meant the ambient occlusion written in session 11 has never once been
+   * on screen. Not because it was broken; because nothing called it.
+   *
+   * That is most of "the rooms look fake". Almost all of the shading information
+   * the eye uses indoors is contact darkening: the line where a wall meets a
+   * floor, the shade under a worktop, the gloom inside a window reveal, the dark
+   * under a sofa. A perfectly lit white wall meeting a perfectly lit white floor
+   * is one continuous white region, and the corner between them is invisible.
+   * Every render before this had exactly that problem in every corner of every
+   * room.
+   *
+   * This path costs one composited frame when the camera stops. It does not
+   * accumulate, so it does not depend on the progressive renderer working, and
+   * it is drawn once and then the loop sleeps.
+   *
+   * -----------------------------------------------------------------------------
+   * AND IT IS NOT ENOUGH ON ITS OWN. MEASURED.
+   *
+   * With the pass running and tuned as well as a parameter sweep could manage,
+   * the whole frame darkens by about 1.3 levels out of 255 — from a mean of 167
+   * to 165.7. Looking at the AO buffer alone confirms it is computing the right
+   * thing in the right places: the wall corner, under a chair, inside the window
+   * reveal. It is simply very faint, `blendIntensity` has no effect on the
+   * composite at all, and raising `scale` past 2 made it lighter rather than
+   * darker.
+   *
+   * So this is kept because it is a real improvement over never running, and
+   * recorded here as NOT the answer to a room looking flat. What remains missing
+   * is bounced light: everything indoors is lit by a sun, a hemisphere and a
+   * static probe, and none of it is lit by the light coming back off its own
+   * floor. That is the difference this pass was being asked to paper over, and
+   * it cannot.
+   */
+  renderStill(camera: THREE.PerspectiveCamera): void {
+    clearJitter(camera);
+
+    if (!this.composer || !this.output) {
+      // No post chain configured — nothing to add, so take the cheap path.
+      this.renderMoving(camera);
+      return;
+    }
+
+    this.output.enabled = true;
+    this.composer.renderToScreen = true;
+    this.composer.render();
+    this.composer.renderToScreen = false;
+    this.output.enabled = false;
   }
 
   /**

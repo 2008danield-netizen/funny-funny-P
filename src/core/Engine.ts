@@ -579,6 +579,27 @@ export class Engine {
     scope.__pickProbe = (x: number, y: number) => this.editController.pickAtClient(x, y);
 
     /*
+     * Ambient occlusion on or off, and a viewpoint to judge it from.
+     *
+     * A/B on the same frame is the only honest way to see what a post effect is
+     * contributing. Session 18 nearly shipped an occlusion pass that did
+     * nothing, on the strength of a screenshot that looked plausible.
+     */
+    scope.__aoProbe = (
+      enabled: boolean,
+      viewpoint?: string,
+      mode?: 'default' | 'ao' | 'denoise' | 'normal' | 'depth',
+      params?: Record<string, number | boolean>,
+    ) => {
+      if (viewpoint) this.goToViewpoint(viewpoint as ViewpointId);
+      this.pipeline?.setAmbientOcclusion(enabled, this.cameraController.camera);
+      if (mode) this.pipeline?.setAoOutput(mode);
+      if (params) this.pipeline?.setAoParams(params);
+      this.invalidate();
+      return { enabled, mode: mode ?? 'default', params: this.pipeline?.aoParams ?? null };
+    };
+
+    /*
      * Enters the walkthrough in a given view, for automated checking.
      *
      * The panel's own buttons cannot be used from a headless browser: entering
@@ -1251,7 +1272,14 @@ export class Engine {
       if (!this.progressiveEnabled) {
         this.applyPixelRatio(false);
         this.restoreSun();
-        this.pipeline!.renderMoving(camera);
+        /*
+         * `renderStill`, not `renderMoving`. The difference is the ambient
+         * occlusion, and it is the difference between a room and a diagram —
+         * see the long note on that method. It was `renderMoving` here until
+         * session 18, which meant the occlusion written in session 11 had never
+         * once been drawn.
+         */
+        this.pipeline!.renderStill(camera);
         this.reportStats(delta, started);
         return false;
       }
