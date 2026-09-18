@@ -24,6 +24,7 @@
 import * as THREE from 'three';
 
 import { chamferedBox } from './millwork';
+import { subdivideForLight } from './subdivide';
 
 import type { WallSegment } from './planGraph';
 import { getOpeningPreset, type OpeningPreset } from './openings/presets';
@@ -172,7 +173,7 @@ export function buildWallGeometry(segment: WallSegment): THREE.BufferGeometry {
   const thickness = segment.wall.thickness;
   const shape = buildElevation(segment, segment.wall.openings);
 
-  const geometry = new THREE.ExtrudeGeometry(shape, {
+  const extruded = new THREE.ExtrudeGeometry(shape, {
     depth: thickness,
     bevelEnabled: false,
     // The outline is made of straight lines only, so no curve subdivision is
@@ -180,6 +181,27 @@ export function buildWallGeometry(segment: WallSegment): THREE.BufferGeometry {
     curveSegments: 1,
     steps: 1,
   });
+
+  /*
+   * Cut into pieces small enough to carry a gradient, BEFORE the material
+   * groups are worked out.
+   *
+   * A wall came out of the extruder as two triangles a side, which is the fewest
+   * a rectangle can be and leaves nowhere for light to vary across it. See
+   * `subdivide.ts` for why that matters and why the limit is a length rather
+   * than a count.
+   *
+   * The ordering is the part worth not getting wrong. `assignMaterialGroups`
+   * classifies each triangle by reading its vertices' z — at the back face, at
+   * the front face, or somewhere between — and writes index ranges. Subdividing
+   * afterwards would renumber every triangle and leave those ranges pointing at
+   * the wrong ones, so a wall would wear its inside paint on its outside face.
+   * Subdividing first is safe precisely because the classification is positional:
+   * splitting a triangle that lies flat on the front face gives two triangles
+   * that also lie flat on the front face.
+   */
+  const geometry = subdivideForLight(extruded);
+  if (geometry !== extruded) extruded.dispose();
 
   assignMaterialGroups(geometry, thickness);
   geometry.computeVertexNormals();
