@@ -146,7 +146,23 @@ export function subdivideForLight(
     result = new TessellateModifier(target, 8).modify(result);
   }
 
-  // The source was a throwaway copy if we made one, and holding it would leak.
+  /*
+   * Keep the coarse version, because something else needs it.
+   *
+   * Subdividing turns a wall from about twenty triangles into several hundred,
+   * and anything that RAYCASTS against the building pays for every one of them.
+   * The sky bake casts a couple of hundred thousand rays, so the subdivision
+   * made it four hundred times more expensive — enough to hang the tab before
+   * the canvas had even appeared.
+   *
+   * The two want opposite things and both are right: shading wants many small
+   * triangles, intersection wants few large ones. They describe the same
+   * surface, so the coarse one is kept alongside rather than recomputed, and
+   * costs a few hundred bytes for a wall.
+   */
+  result.userData.coarse = geometry.clone();
+
+  // The intermediate copy was a throwaway, and holding it would leak.
   if (source !== geometry && source !== result) source.dispose();
 
   return result;

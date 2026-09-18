@@ -45,6 +45,7 @@ import { stairGeometry } from '@/building/stairs';
 import { activeLevel, elevationOf, floorHoles, levelBelow } from '@/state/levels';
 import { analyseClearance } from '@/clearance/analyze';
 import { MaterialLibrary } from '@/scene/materials/MaterialLibrary';
+import { bakeSkyVisibility, fillUnbaked, useBakedAmbient } from '@/scene/skyBake';
 import { designStore } from '@/state/store';
 import { editorStore } from '@/state/selection';
 import type { DesignDocument, Point2 } from '@/state/types';
@@ -142,6 +143,19 @@ export class Engine {
 
   /** The user's own "show roofs" setting, which the cutaway then overrides. */
   private showRoofs = true;
+
+  /**
+   * Pending sky-visibility bake, and why it is debounced rather than immediate.
+   *
+   * The bake casts forty-eight rays from every vertex of every surface, which
+   * for an ordinary room is around a hundred thousand casts. That is fine once
+   * and ruinous sixty times a second, and dragging a wall corner rebuilds the
+   * geometry on every mouse move. So the rebuild is cheap and unbaked, and the
+   * bake lands shortly after the dragging stops.
+   */
+  private bakeTimer: number | null = null;
+  /** Whether the sky bake runs at all. Off until it is fast enough — see below. */
+  private bakeEnabled = false;
 
   constructor(container: HTMLElement) {
     this.renderer = new Renderer(container);
@@ -579,6 +593,22 @@ export class Engine {
     scope.__pickProbe = (x: number, y: number) => this.editController.pickAtClient(x, y);
 
     /*
+     * What the sky bake did, for automated checking.
+     *
+     * The one number that separates a working bake from one that ran and
+     * achieved nothing is the SPREAD: if every vertex came back seeing the same
+     * amount of sky, the result is a uniform tint and the room is as flat as it
+     * was. `mean` and `darkest` together say whether there is a gradient at all.
+     */
+    scope.__bakeProbe = (run?: boolean) => {
+      if (run) {
+        this.bakeEnabled = true;
+        this.runSkyBake();
+      }
+      return this.lastBake;
+    };
+
+    /*
      * Ambient occlusion on or off, and a viewpoint to judge it from.
      *
      * A/B on the same frame is the only honest way to see what a post effect is
@@ -921,6 +951,7 @@ export class Engine {
       previous?.exterior !== doc.exterior
     ) {
       this.building.update(level.plan, wantCeilings, holes, doc.exterior);
+      this.scheduleSkyBake();
     }
     if (levelSwitched || !previousLevel || previousLevel.furniture !== level.furniture) {
       this.furnishings.update(level.furniture);
@@ -1042,6 +1073,101 @@ export class Engine {
 
     this.appliedDocument = doc;
   }
+
+  /**
+   * Works out how much sky each surface can see, shortly after things stop moving.
+   *
+   * See `skyBake.ts` for why this exists at all. The short version is that the
+   * sun is occluded by the building and the ambient light never was, so every
+   * interior surface was lit as though it stood in an open field — which is the
+   * whole of "the rooms look flat".
+   */
+  private scheduleSkyBake(): void {
+    /*
+     * OFF BY DEFAULT, AND THIS IS NOT A PLACEHOLDER — IT IS AN HONEST STOP.
+     *
+     * The bake is correct: eight tests in `skyBake.test.ts` hold the properties
+     * that matter, including the gradient near an opening, which is the whole
+     * point of it. What it is not is fast enough to run in a browser.
+     *
+     * Two costs were found and fixed, and a third was not. Baking every vertex
+     * of non-indexed geometry did eighteen times the necessary work, because a
+     * point where six triangles meet appears six times; that is deduplicated
+     * now. Casting rays against the SUBDIVIDED render meshes did four hundred
+     * times the necessary work, because session 18's own subdivision turned each
+     * wall from twenty triangles into several hundred; the coarse geometry is
+     * kept alongside for this and is what gets cast against now.
+     *
+     * With both fixed it still locks the page. The remaining cost is that there
+     * is no spatial index at all: every ray is tested against every triangle of
+     * every occluder, and a few hundred thousand rays against a house is a
+     * quantity of work that only a bounding-volume hierarchy makes reasonable.
+     * That is the next piece of work and it is a real one, not a tweak.
+     *
+     * So it is switched off rather than shipped slow. `__bakeProbe(true)` runs
+     * it on demand, which is how the next session can measure a BVH against
+     * something.
+     */
+    if (!this.bakeEnabled) return;
+    if (this.bakeTimer !== null) window.clearTimeout(this.bakeTimer);
+    this.bakeTimer = window.setTimeout(() => {
+      this.bakeTimer = null;
+      this.runSkyBake();
+    }, 180);
+  }
+
+  private runSkyBake(): void {
+    const surfaces: THREE.Mesh[] = [];
+    const occluders: THREE.Object3D[] = [];
+
+    /*
+     * Which meshes get the bake, and which merely block rays.
+     *
+     * The building's shell carries it: walls, floors, ceilings and the trim,
+     * because those are the large surfaces a gradient can be seen across. The
+     * furniture only occludes — a sofa should darken the wall behind it without
+     * needing per-vertex shading of its own, and giving every cushion a bake
+     * would multiply the cost for detail too small to see.
+     */
+    this.scene.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.visible) return;
+
+      // Picking proxies are invisible to the eye and must stay invisible to a
+      // ray, or every wall would report itself sealed by its own pick slab.
+      if (mesh.name.includes('Pick')) return;
+
+      occluders.push(mesh);
+
+      const shell =
+        mesh.name.startsWith('Wall') ||
+        mesh.name.startsWith('Floor') ||
+        mesh.name.startsWith('Ceiling') ||
+        mesh.name.startsWith('Skirting') ||
+        mesh.name.startsWith('Cornice');
+      if (shell) surfaces.push(mesh);
+    });
+
+    if (surfaces.length === 0) return;
+
+    const result = bakeSkyVisibility(surfaces, occluders);
+
+    // Everything else keeps its full ambient rather than reading a missing
+    // attribute as zero and rendering black.
+    for (const object of occluders) {
+      const mesh = object as THREE.Mesh;
+      if (mesh.isMesh) fillUnbaked(mesh.geometry);
+      for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+        if (material) useBakedAmbient(material);
+      }
+    }
+
+    this.lastBake = result;
+    this.invalidate();
+  }
+
+  /** What the last bake did, for the probe. */
+  private lastBake: ReturnType<typeof bakeSkyVisibility> | null = null;
 
   /** Recomputes the clearance report and pushes it to the overlay. */
   private refreshClearance(): void {
