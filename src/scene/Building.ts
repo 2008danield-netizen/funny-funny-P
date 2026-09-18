@@ -21,8 +21,8 @@ import { MaterialLibrary } from './materials/MaterialLibrary';
 import {
   buildCeilingGeometry,
   buildFloorGeometry,
-  buildSkirtingGeometry,
 } from './floorBuilder';
+import { CORNICE, SKIRTING, sweepSection } from './millwork';
 import {
   findRegions,
   pointInPolygon,
@@ -35,10 +35,11 @@ import { resolveRoomSpec } from '@/state/planOps';
 import type { Selection } from '@/state/selection';
 import type { Exterior, FloorVoid, PlanModel, Point2, WallFaceSpec } from '@/state/types';
 
-/** Height of the skirting board, in metres. */
-const SKIRTING_HEIGHT = 0.09;
-/** How far the skirting stands proud of the wall, in metres. */
-const SKIRTING_DEPTH = 0.016;
+/*
+ * The skirting's height and depth used to live here as two numbers. They are
+ * part of a real moulded SECTION now, in `millwork.ts`, because a board is a
+ * profile rather than a rectangle — see the note there.
+ */
 
 /** Radius of the draggable corner handles, in metres. */
 const HANDLE_RADIUS = 0.11;
@@ -131,6 +132,8 @@ interface RoomEntry {
   ceiling: THREE.Mesh;
   ceilingMaterial: THREE.MeshStandardMaterial;
   skirting: THREE.Mesh | null;
+  /** The cove where the wall meets the ceiling. */
+  cornice: THREE.Mesh | null;
   region: Region;
 }
 
@@ -632,17 +635,47 @@ export class Building {
         this.group.remove(entry.skirting);
         entry.skirting = null;
       }
-      const skirtingGeometry = buildSkirtingGeometry(
-        region.polygon,
-        SKIRTING_HEIGHT,
-        SKIRTING_DEPTH,
-      );
+      /*
+       * A swept profile, not a flat quad.
+       *
+       * `buildSkirtingGeometry` produced ONE RECTANGLE per wall — no top
+       * surface, no return into the wall, no section at all. That is the
+       * difference between a skirting board and a stripe painted at ankle
+       * height, and it was doing the second. See `millwork.ts`.
+       *
+       * The cornice is new. A room wants both: they are the two horizontal
+       * bands that stop a wall meeting a floor, or a ceiling, in one unbroken
+       * line, and the eye reads a room's proportions off them.
+       */
+      const skirtingGeometry = sweepSection(SKIRTING, {
+        polygon: region.polygon,
+        baseY: 0,
+      });
       if (skirtingGeometry) {
         const mesh = new THREE.Mesh(skirtingGeometry, this.trimMaterial);
+        mesh.castShadow = true;
         mesh.receiveShadow = true;
         mesh.name = `Skirting_${region.key}`;
         this.group.add(mesh);
         entry.skirting = mesh;
+      }
+
+      if (entry.cornice) {
+        entry.cornice.geometry.dispose();
+        this.group.remove(entry.cornice);
+        entry.cornice = null;
+      }
+      const corniceGeometry = sweepSection(CORNICE, {
+        polygon: region.polygon,
+        baseY: height,
+      });
+      if (corniceGeometry) {
+        const mesh = new THREE.Mesh(corniceGeometry, this.trimMaterial);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.name = `Cornice_${region.key}`;
+        this.group.add(mesh);
+        entry.cornice = mesh;
       }
     }
   }
@@ -667,6 +700,7 @@ export class Building {
       ceiling,
       ceilingMaterial,
       skirting: null,
+      cornice: null,
       region: null as never,
     };
     this.rooms.set(key, entry);

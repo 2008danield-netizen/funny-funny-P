@@ -17,6 +17,8 @@
 
 import * as THREE from 'three';
 
+import { chamferedBox } from './millwork';
+
 import { buildFurniture, type FurniturePart, type MaterialRole } from '@/furniture/builders';
 import {
   getCatalogEntry,
@@ -160,7 +162,7 @@ export class Furnishings {
      * user is actually pointing at.
      */
     const pick = new THREE.Mesh(
-      new THREE.BoxGeometry(dimensions.width, dimensions.height, dimensions.depth),
+      chamferedBox(dimensions.width, dimensions.height, dimensions.depth),
       this.pickMaterial,
     );
     pick.position.set(item.x, item.y + dimensions.height / 2, item.z);

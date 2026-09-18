@@ -23,6 +23,8 @@
 
 import * as THREE from 'three';
 
+import { chamferedBox } from './millwork';
+
 import type { WallSegment } from './planGraph';
 import { getOpeningPreset, type OpeningPreset } from './openings/presets';
 import type { Opening } from '@/state/types';
@@ -372,7 +374,7 @@ function buildLeaves(
   if (style === 'sliding') {
     // A sliding leaf covers half the aperture and slides the other half.
     const width = (right - left) / 2 - 0.02;
-    const geometry = new THREE.BoxGeometry(width, height, leafThickness);
+    const geometry = chamferedBox(width, height, leafThickness);
     // Built extending in +X from its own left edge, so sliding is a translation
     // along X and nothing else.
     geometry.translate(width / 2, 0, 0);
@@ -396,7 +398,7 @@ function buildLeaves(
     /** +1 when the leaf extends in +X from its hinge. */
     directionSign: number,
   ): LeafPart => {
-    const geometry = new THREE.BoxGeometry(leafWidth, height, leafThickness);
+    const geometry = chamferedBox(leafWidth, height, leafThickness);
     geometry.translate((directionSign * leafWidth) / 2, 0, 0);
 
     return {

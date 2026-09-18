@@ -24,6 +24,8 @@
 
 import * as THREE from 'three';
 
+import { chamferedBox } from '@/scene/millwork';
+
 import type { BuildSpec } from './catalog';
 
 /** Which material a part is drawn with. */
@@ -54,7 +56,7 @@ function box(
     Math.max(1e-4, max[1] - min[1]),
     Math.max(1e-4, max[2] - min[2]),
   ];
-  const geometry = new THREE.BoxGeometry(size[0], size[1], size[2]);
+  const geometry = chamferedBox(size[0], size[1], size[2]);
   geometry.translate(min[0] + size[0] / 2, min[1] + size[1] / 2, min[2] + size[2] / 2);
   return { geometry, role };
 }

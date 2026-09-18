@@ -729,7 +729,33 @@ export class Engine {
         },
         sun: this.lighting.report(),
         shadowMap: this.lighting.sampleShadowMap(this.renderer.webgl),
-        scene: { meshes, casters, receivers },
+        scene: {
+          meshes,
+          casters,
+          receivers,
+          // Named meshes, so a browser check can answer "was it built at all"
+          // instead of inferring it from a picture.
+          named: (() => {
+            const names: Record<string, { count: number; size: string }> = {};
+            this.scene.traverse((object) => {
+              const mesh = object as THREE.Mesh;
+              if (!mesh.isMesh) return;
+              const kind = mesh.name.replace(/_.*$/, '') || 'unnamed';
+              if (!names[kind]) {
+                mesh.geometry.computeBoundingBox();
+                const box = mesh.geometry.boundingBox;
+                names[kind] = {
+                  count: 0,
+                  size: box
+                    ? `${(box.max.x - box.min.x).toFixed(2)}x${(box.max.y - box.min.y).toFixed(3)}x${(box.max.z - box.min.z).toFixed(2)}`
+                    : 'none',
+                };
+              }
+              names[kind]!.count++;
+            });
+            return names;
+          })(),
+        },
         /*
          * Whether the compiled shaders can sample a shadow map at all.
          *
