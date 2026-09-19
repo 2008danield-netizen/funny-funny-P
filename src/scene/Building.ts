@@ -16,13 +16,14 @@
  */
 
 import * as THREE from 'three';
+import { sphereSegments } from './tessellation';
 
 import { MaterialLibrary } from './materials/MaterialLibrary';
 import {
   buildCeilingGeometry,
   buildFloorGeometry,
-  buildSkirtingGeometry,
 } from './floorBuilder';
+import { CORNICE, SKIRTING, sweepSection } from './millwork';
 import {
   findRegions,
   pointInPolygon,
@@ -35,10 +36,11 @@ import { resolveRoomSpec } from '@/state/planOps';
 import type { Selection } from '@/state/selection';
 import type { Exterior, FloorVoid, PlanModel, Point2, WallFaceSpec } from '@/state/types';
 
-/** Height of the skirting board, in metres. */
-const SKIRTING_HEIGHT = 0.09;
-/** How far the skirting stands proud of the wall, in metres. */
-const SKIRTING_DEPTH = 0.016;
+/*
+ * The skirting's height and depth used to live here as two numbers. They are
+ * part of a real moulded SECTION now, in `millwork.ts`, because a board is a
+ * profile rather than a rectangle — see the note there.
+ */
 
 /** Radius of the draggable corner handles, in metres. */
 const HANDLE_RADIUS = 0.11;
@@ -131,6 +133,8 @@ interface RoomEntry {
   ceiling: THREE.Mesh;
   ceilingMaterial: THREE.MeshStandardMaterial;
   skirting: THREE.Mesh | null;
+  /** The cove where the wall meets the ceiling. */
+  cornice: THREE.Mesh | null;
   region: Region;
 }
 
@@ -512,7 +516,13 @@ export class Building {
         pivot.quaternion.setFromRotationMatrix(matrix);
 
         const mesh = new THREE.Mesh(part.geometry, this.frameMaterial);
+        // Named, so the sky bake can find it. An unnamed mesh was treated as
+        // furniture: it blocked light for everything else and received none
+        // itself, which left every door flat-lit and brighter than the wall it
+        // sits in — the one surface in the room with no shading on it at all.
+        mesh.name = `LeafPanel_${opening.id}`;
         mesh.castShadow = true;
+        mesh.receiveShadow = true;
         mesh.userData = { pickKind: 'opening', pickId: opening.id };
         pivot.add(mesh);
 
@@ -552,6 +562,27 @@ export class Building {
 
     entry.frames = this.addMergedMesh(frames, this.frameMaterial, matrix, `Frames_${segment.wall.id}`, true);
     entry.glass = this.addMergedMesh(glass, this.glassMaterial, matrix, `Glass_${segment.wall.id}`, false);
+    if (entry.glass) {
+      /*
+       * GLASS IS NOT A WALL, AND THE SKY BAKE THOUGHT IT WAS.
+       *
+       * The bake casts a ray from every point and counts the ones that escape
+       * the building. It tested against every visible mesh, glazing included,
+       * so a picture window was as solid as the wall around it and a room with
+       * a whole glass gable baked exactly as dark as a cellar. The sun came
+       * through — `castShadow` is already false here — but nothing else did,
+       * which is the precise combination that makes a bright day outside a
+       * window look painted on.
+       *
+       * Marking it here rather than matching on the name in the bake, because
+       * this is the file that knows what the mesh IS. Real glazing passes
+       * about eighty per cent; treating it as a hundred is much nearer the
+       * truth than treating it as zero, and a partial count would need the
+       * bake's any-hit rays to report what they touched, which is most of what
+       * makes them cheap.
+       */
+      entry.glass.userData.transmissive = true;
+    }
 
   }
 
@@ -632,17 +663,47 @@ export class Building {
         this.group.remove(entry.skirting);
         entry.skirting = null;
       }
-      const skirtingGeometry = buildSkirtingGeometry(
-        region.polygon,
-        SKIRTING_HEIGHT,
-        SKIRTING_DEPTH,
-      );
+      /*
+       * A swept profile, not a flat quad.
+       *
+       * `buildSkirtingGeometry` produced ONE RECTANGLE per wall — no top
+       * surface, no return into the wall, no section at all. That is the
+       * difference between a skirting board and a stripe painted at ankle
+       * height, and it was doing the second. See `millwork.ts`.
+       *
+       * The cornice is new. A room wants both: they are the two horizontal
+       * bands that stop a wall meeting a floor, or a ceiling, in one unbroken
+       * line, and the eye reads a room's proportions off them.
+       */
+      const skirtingGeometry = sweepSection(SKIRTING, {
+        polygon: region.polygon,
+        baseY: 0,
+      });
       if (skirtingGeometry) {
         const mesh = new THREE.Mesh(skirtingGeometry, this.trimMaterial);
+        mesh.castShadow = true;
         mesh.receiveShadow = true;
         mesh.name = `Skirting_${region.key}`;
         this.group.add(mesh);
         entry.skirting = mesh;
+      }
+
+      if (entry.cornice) {
+        entry.cornice.geometry.dispose();
+        this.group.remove(entry.cornice);
+        entry.cornice = null;
+      }
+      const corniceGeometry = sweepSection(CORNICE, {
+        polygon: region.polygon,
+        baseY: height,
+      });
+      if (corniceGeometry) {
+        const mesh = new THREE.Mesh(corniceGeometry, this.trimMaterial);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.name = `Cornice_${region.key}`;
+        this.group.add(mesh);
+        entry.cornice = mesh;
       }
     }
   }
@@ -667,6 +728,7 @@ export class Building {
       ceiling,
       ceilingMaterial,
       skirting: null,
+      cornice: null,
       region: null as never,
     };
     this.rooms.set(key, entry);
@@ -687,7 +749,11 @@ export class Building {
       let handle = this.handles.get(vertex.id);
       if (!handle) {
         handle = new THREE.Mesh(
-          new THREE.SphereGeometry(HANDLE_RADIUS, 16, 12),
+          new THREE.SphereGeometry(
+        HANDLE_RADIUS,
+        sphereSegments(HANDLE_RADIUS).width,
+        sphereSegments(HANDLE_RADIUS).height,
+      ),
           this.handleMaterial,
         );
         handle.name = `Handle_${vertex.id}`;

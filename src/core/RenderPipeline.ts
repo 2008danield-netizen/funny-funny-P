@@ -38,6 +38,17 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
+
+import {
+  BLOOM_RADIUS,
+  BLOOM_STRENGTH,
+  BLOOM_THRESHOLD,
+  FilmLookShader,
+} from './FilmLook';
 
 import { Progressive } from './Progressive';
 import type { QualitySettings } from './FrameLoop';
@@ -49,6 +60,21 @@ export class RenderPipeline {
   private composer: EffectComposer | null = null;
   private renderPass: RenderPass | null = null;
   private gtao: GTAOPass | null = null;
+  /**
+   * Tone maps and encodes on the way to the screen.
+   *
+   * Only wanted on the path that goes straight to the screen. The accumulating
+   * path needs the composer's output LINEAR, because it averages samples and
+   * then tone maps once at the end — tone mapping each sample and averaging the
+   * results is a different number, and a visibly flatter one.
+   */
+  private output: OutputPass | null = null;
+  private probePass: ShaderPass | null = null;
+  private bloom: UnrealBloomPass | null = null;
+  private bokeh: BokehPass | null = null;
+  private film: ShaderPass | null = null;
+  private filmEnabled = true;
+  private depthOfField = false;
 
   readonly progressive: Progressive;
 
@@ -122,6 +148,73 @@ export class RenderPipeline {
       this.configureAo();
       this.composer.addPass(this.gtao);
     }
+
+    /*
+     * Bloom, before the film pass and after the occlusion.
+     *
+     * Order matters and this is the only one that does. Bloom has to see the
+     * scene's own bright values, so it must come before anything that shapes
+     * them; and it must come AFTER the occlusion, or a corner that the
+     * occlusion is about to darken will already have bled light into its
+     * neighbours.
+     */
+    this.bloom = new UnrealBloomPass(
+      new THREE.Vector2(this.width, this.height),
+      BLOOM_STRENGTH,
+      BLOOM_RADIUS,
+      BLOOM_THRESHOLD,
+    );
+    this.bloom.enabled = this.filmEnabled;
+    this.composer.addPass(this.bloom);
+
+    /*
+     * Depth of field, off unless asked for.
+     *
+     * A real lens has it and an architectural tool mostly should not: blurring
+     * the part of the room somebody is not looking at is exactly wrong when
+     * they are trying to judge a layout, and there is no eye tracking here to
+     * know where that is. So it exists, it is wired to focus on whatever is at
+     * the middle of the frame, and it is opt-in for the moments — a presentation
+     * still, a photograph of a finished design — when the picture matters more
+     * than the plan.
+     */
+    this.bokeh = new BokehPass(this.scene, camera, {
+      focus: 4,
+      aperture: 0.0002,
+      maxblur: 0.006,
+    });
+    this.bokeh.enabled = this.depthOfField;
+    this.composer.addPass(this.bokeh);
+
+    /* Grain and vignette, last before the output. */
+    this.film = new ShaderPass(FilmLookShader);
+    this.film.enabled = this.filmEnabled;
+    this.film.uniforms.aspect!.value = this.width / Math.max(1, this.height);
+    this.composer.addPass(this.film);
+
+    /*
+     * A deliberately unmissable pass, off by default.
+     *
+     * "The occlusion is very faint" and "the pass never runs" look identical
+     * from outside, and two sessions have now been spent on the first
+     * explanation. This tints the whole frame magenta when switched on, so the
+     * question can be settled in one frame instead of by inference.
+     */
+    this.probePass = new ShaderPass({
+      uniforms: { tDiffuse: { value: null } },
+      vertexShader:
+        'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+      fragmentShader:
+        'uniform sampler2D tDiffuse; varying vec2 vUv;' +
+        'void main(){ vec4 c = texture2D(tDiffuse, vUv); gl_FragColor = vec4(c.r, c.g * 0.2, c.b, c.a); }',
+    });
+    this.probePass.enabled = false;
+    this.composer.addPass(this.probePass);
+
+    // Last in the chain, and switched on only for the straight-to-screen path.
+    this.output = new OutputPass();
+    this.output.enabled = false;
+    this.composer.addPass(this.output);
   }
 
   /**
@@ -134,17 +227,136 @@ export class RenderPipeline {
    * junction, the underside of a worktop and a window reveal, and leaves the
    * middle of a wall alone.
    */
+  /**
+   * The occlusion settings actually in use, so a probe can sweep them.
+   *
+   * These are the best of a measured sweep, and the sweep was only possible
+   * once a mistake in HOW it was measured was found. Session 18 read the canvas
+   * a couple of seconds after changing a setting; under a software rasteriser
+   * the view had not finished settling, so what it read was a cheap moving
+   * frame with no post chain in it at all. Every conclusion drawn from that —
+   * "blendIntensity does nothing", "scale past 2 makes it lighter" — was about
+   * an image the pass had never touched. Rendering and reading inside a single
+   * call fixed it.
+   *
+   * With that fixed, `scale` turned out to be the whole lever. Measured on the
+   * AO buffer alone, where 255 is no occlusion: scale 1 gave a darkest-5% of
+   * 220, scale 4 gave 195, scale 8 gave 147 and scale 16 gave 54. Sixteen is
+   * far too much — the corner goes black and smears half a metre up the wall —
+   * and a radius over a metre smears with it. Six at 0.6 m is a corner that
+   * reads as a corner, which is the whole ask.
+   */
+  private ao = {
+    radius: 0.6,
+    distanceExponent: 1,
+    thickness: 1,
+    scale: 6,
+    samples: 16,
+    distanceFallOff: 1,
+    screenSpaceRadius: false,
+  };
+
+  setAoParams(patch: Partial<RenderPipeline['ao']> & { blend?: number }): void {
+    const { blend, ...rest } = patch;
+    this.ao = { ...this.ao, ...rest };
+    if (blend !== undefined && this.gtao) this.gtao.blendIntensity = blend;
+    this.configureAo();
+  }
+
+  get aoParams(): RenderPipeline['ao'] {
+    return this.ao;
+  }
+
+  /**
+   * What the post chain actually consists of right now.
+   *
+   * Reported because "the occlusion is very faint" and "there is no post chain
+   * at all" look identical from outside, and session 18 spent a long time on
+   * the first explanation before establishing the second.
+   */
+  get chain(): {
+    composer: boolean;
+    gtao: boolean;
+    gtaoEnabled: boolean;
+    film: boolean;
+    bloom: boolean;
+    bokeh: boolean;
+    drawn: { moving: number; still: number; composed: number };
+    passes: number;
+    output: number | null;
+  } {
+    return {
+      composer: this.composer !== null,
+      gtao: this.gtao !== null,
+      gtaoEnabled: this.gtao?.enabled ?? false,
+      film: this.film?.enabled ?? false,
+      bloom: this.bloom?.enabled ?? false,
+      bokeh: this.bokeh?.enabled ?? false,
+      drawn: { ...this.drawn },
+      passes: this.composer?.passes.length ?? 0,
+      output: this.gtao ? (this.gtao.output as number) : null,
+    };
+  }
+
+  /**
+   * How many frames each path has drawn.
+   *
+   * The one number that separates "the pass is faint" from "the pass never
+   * runs", which every other symptom fails to distinguish.
+   */
+  readonly drawn = { moving: 0, still: 0, composed: 0 };
+
+  /** Switches the magenta tint above on or off. */
+  setProbePass(on: boolean): void {
+    if (this.probePass) this.probePass.enabled = on;
+  }
+
+  /** Bloom, grain and vignette together. They are one look, not three knobs. */
+  setFilmLook(on: boolean): void {
+    this.filmEnabled = on;
+    if (this.bloom) this.bloom.enabled = on;
+    if (this.film) this.film.enabled = on;
+  }
+
+  get filmLook(): boolean {
+    return this.filmEnabled;
+  }
+
+  /**
+   * Depth of field, and what it should be focused on.
+   *
+   * `focus` is a distance in metres from the camera, which the caller works out
+   * by asking what is in the middle of the frame. Passing nothing leaves the
+   * focus where it was, so toggling the effect does not also rack the lens.
+   */
+  setDepthOfField(on: boolean, focus?: number): void {
+    this.depthOfField = on;
+    if (this.bokeh) {
+      this.bokeh.enabled = on;
+      if (focus !== undefined && focus > 0) {
+        (this.bokeh.uniforms as Record<string, THREE.IUniform>).focus!.value = focus;
+      }
+    }
+  }
+
+  get depthOfFieldOn(): boolean {
+    return this.depthOfField;
+  }
+
+  /**
+   * Nudges the grain so a redrawn frame is not identical.
+   *
+   * Only the accumulating path calls this. A still frame that is simply redrawn
+   * — because a panel opened, or the window was resized — keeps the same seed,
+   * so the wall does not visibly crawl for one frame.
+   */
+  advanceGrain(index: number): void {
+    if (this.film) this.film.uniforms.seed!.value = (index % 64) * 0.137;
+  }
+
   private configureAo(): void {
     if (!this.gtao) return;
-    this.gtao.updateGtaoMaterial({
-      radius: 0.5,
-      distanceExponent: 1,
-      thickness: 1,
-      scale: 1,
-      samples: 16,
-      distanceFallOff: 1,
-      screenSpaceRadius: false,
-    });
+    this.gtao.updateGtaoMaterial({ ...this.ao });
     // Blending the AO under the colour rather than multiplying it flat keeps
     // lit surfaces from going muddy; only the crease darkens.
     this.gtao.blendIntensity = 1;
@@ -156,6 +368,9 @@ export class RenderPipeline {
 
     this.composer?.setSize(this.width, this.height);
     this.gtao?.setSize(this.width, this.height);
+    this.bloom?.setSize(this.width, this.height);
+    this.bokeh?.setSize(this.width, this.height);
+    if (this.film) this.film.uniforms.aspect!.value = this.width / Math.max(1, this.height);
     this.progressive.setSize(this.width, this.height);
   }
 
@@ -164,6 +379,26 @@ export class RenderPipeline {
     this.quality = quality;
     if (aoChanged) this.buildComposer(camera);
     this.progressive.reset();
+  }
+
+  /**
+   * Shows a stage of the occlusion pass on its own, for diagnosis.
+   *
+   * A post effect that contributes nothing looks exactly like one that is
+   * switched off, and both look exactly like one that is working on a scene
+   * with nothing to occlude. The only way to tell them apart is to look at the
+   * buffer rather than at the composite.
+   */
+  setAoOutput(mode: 'default' | 'ao' | 'denoise' | 'normal' | 'depth'): void {
+    if (!this.gtao) return;
+    const modes = {
+      default: GTAOPass.OUTPUT.Default,
+      ao: GTAOPass.OUTPUT.AO,
+      denoise: GTAOPass.OUTPUT.Denoise,
+      normal: GTAOPass.OUTPUT.Normal,
+      depth: GTAOPass.OUTPUT.Depth,
+    } as const;
+    this.gtao.output = modes[mode];
   }
 
   /** Turns AO off entirely, e.g. for a machine that cannot afford it. */
@@ -176,9 +411,72 @@ export class RenderPipeline {
 
   /** The cheap path: straight to the screen, no post, no accumulation. */
   renderMoving(camera: THREE.PerspectiveCamera): void {
+    this.drawn.moving++;
     clearJitter(camera);
     this.renderer.setRenderTarget(null);
     this.renderer.render(this.scene, camera);
+  }
+
+  /**
+   * The still frame, with ambient occlusion, once.
+   *
+   * -----------------------------------------------------------------------------
+   * THE PATH THAT WAS MISSING, AND WHY IT MATTERED SO MUCH.
+   *
+   * There were two paths: cheap-while-moving, and accumulate-while-still. The
+   * second was switched off by default because it had never been seen working on
+   * real hardware. So in practice EVERY frame this app has ever drawn went down
+   * the cheap path — and the cheap path has no post-processing at all.
+   *
+   * Which meant the ambient occlusion written in session 11 has never once been
+   * on screen. Not because it was broken; because nothing called it.
+   *
+   * That is most of "the rooms look fake". Almost all of the shading information
+   * the eye uses indoors is contact darkening: the line where a wall meets a
+   * floor, the shade under a worktop, the gloom inside a window reveal, the dark
+   * under a sofa. A perfectly lit white wall meeting a perfectly lit white floor
+   * is one continuous white region, and the corner between them is invisible.
+   * Every render before this had exactly that problem in every corner of every
+   * room.
+   *
+   * This path costs one composited frame when the camera stops. It does not
+   * accumulate, so it does not depend on the progressive renderer working, and
+   * it is drawn once and then the loop sleeps.
+   *
+   * -----------------------------------------------------------------------------
+   * AND IT IS NOT ENOUGH ON ITS OWN. MEASURED.
+   *
+   * With the pass running and tuned as well as a parameter sweep could manage,
+   * the whole frame darkens by about 1.3 levels out of 255 — from a mean of 167
+   * to 165.7. Looking at the AO buffer alone confirms it is computing the right
+   * thing in the right places: the wall corner, under a chair, inside the window
+   * reveal. It is simply very faint, `blendIntensity` has no effect on the
+   * composite at all, and raising `scale` past 2 made it lighter rather than
+   * darker.
+   *
+   * So this is kept because it is a real improvement over never running, and
+   * recorded here as NOT the answer to a room looking flat. What remains missing
+   * is bounced light: everything indoors is lit by a sun, a hemisphere and a
+   * static probe, and none of it is lit by the light coming back off its own
+   * floor. That is the difference this pass was being asked to paper over, and
+   * it cannot.
+   */
+  renderStill(camera: THREE.PerspectiveCamera): void {
+    this.drawn.still++;
+    clearJitter(camera);
+
+    if (!this.composer || !this.output) {
+      // No post chain configured — nothing to add, so take the cheap path.
+      this.renderMoving(camera);
+      return;
+    }
+
+    this.drawn.composed++;
+    this.output.enabled = true;
+    this.composer.renderToScreen = true;
+    this.composer.render();
+    this.composer.renderToScreen = false;
+    this.output.enabled = false;
   }
 
   /**

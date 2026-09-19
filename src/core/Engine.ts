@@ -45,8 +45,12 @@ import { stairGeometry } from '@/building/stairs';
 import { activeLevel, elevationOf, floorHoles, levelBelow } from '@/state/levels';
 import { analyseClearance } from '@/clearance/analyze';
 import { MaterialLibrary } from '@/scene/materials/MaterialLibrary';
+import { bakeSkyVisibility, fillUnbaked, useBakedAmbient } from '@/scene/skyBake';
+import { computeWear, fillNoWear, useWear } from '@/scene/wear';
 import { designStore } from '@/state/store';
 import { editorStore } from '@/state/selection';
+import { EnvironmentProbe, wantsReflections, type ProbeResult } from '@/scene/EnvironmentProbe';
+import { TIER_DETAIL, detailLevel, setDetailLevel } from '@/scene/detail';
 import type { DesignDocument, Point2 } from '@/state/types';
 
 /** Reported once per second to the UI's performance readout. */
@@ -142,6 +146,20 @@ export class Engine {
 
   /** The user's own "show roofs" setting, which the cutaway then overrides. */
   private showRoofs = true;
+  private environmentProbe!: EnvironmentProbe;
+
+  /**
+   * Pending sky-visibility bake, and why it is debounced rather than immediate.
+   *
+   * The bake casts forty-eight rays from every vertex of every surface, which
+   * for an ordinary room is around a hundred thousand casts. That is fine once
+   * and ruinous sixty times a second, and dragging a wall corner rebuilds the
+   * geometry on every mouse move. So the rebuild is cheap and unbaked, and the
+   * bake lands shortly after the dragging stops.
+   */
+  private bakeTimer: number | null = null;
+  /** Whether the sky bake runs at all. `__bakeProbe(false)` turns it off. */
+  private bakeEnabled = true;
 
   constructor(container: HTMLElement) {
     this.renderer = new Renderer(container);
@@ -163,6 +181,7 @@ export class Engine {
     this.materials.setMaxAnisotropy(this.renderer.maxAnisotropy);
 
     this.lighting = new Lighting(this.scene, this.renderer.webgl);
+    this.environmentProbe = new EnvironmentProbe(this.renderer.webgl);
     this.scene.add(this.lighting.group);
 
     this.building = new Building(this.materials);
@@ -319,6 +338,21 @@ export class Engine {
     const wantCeilings = doc.showCeilings || this.walkingThrough;
     this.lastCeilings = wantCeilings;
     this.building.update(level.plan, wantCeilings, holes, doc.exterior);
+
+    /*
+     * RE-BAKE, BECAUSE THE MODE CHANGED WHAT THE BUILDING IS.
+     *
+     * Entering the walkthrough switches the ceilings on. An invisible mesh
+     * blocks no rays, so a bake taken in the orbit view describes a room open
+     * to the sky — every wall brightly lit from above and no sense of being
+     * indoors at all, which is the precise opposite of what the walkthrough is
+     * for. Leaving again switches them off and the same argument runs backwards.
+     *
+     * Cheap to miss, because nothing about it looks wrong in isolation: the
+     * bake ran, it reported a healthy spread, and it answered a question about
+     * a different building from the one on screen.
+     */
+    this.scheduleSkyBake();
   }
 
   get walkingThrough(): boolean {
@@ -535,6 +569,8 @@ export class Engine {
           z: +camera.position.z.toFixed(3),
         },
         standing: state ? { y: +state.standing.y.toFixed(3), kind: state.standing.kind } : null,
+        view: this.walk?.walkView ?? null,
+        pose: this.walk?.figurePose ?? null,
         frames: this.frameSummary,
       };
     };
@@ -565,6 +601,10 @@ export class Engine {
           id: item.id,
           kind: item.kind,
           label: item.label,
+          // Where it is in the world, as well as on screen. A check that wants
+          // to photograph one thing needs somewhere to stand, and working that
+          // out from the plan's vertices means reimplementing the wall layout.
+          at: [item.at.x, item.at.y, item.at.z] as [number, number, number],
           // Clipped points come back outside the canvas, which is the honest
           // answer: a door behind the camera has no pixel.
           x: Math.round(((projected.x + 1) / 2) * canvas.clientWidth),
@@ -575,6 +615,227 @@ export class Engine {
     };
 
     scope.__pickProbe = (x: number, y: number) => this.editController.pickAtClient(x, y);
+
+    /*
+     * What the sky bake did, for automated checking.
+     *
+     * The one number that separates a working bake from one that ran and
+     * achieved nothing is the SPREAD: if every vertex came back seeing the same
+     * amount of sky, the result is a uniform tint and the room is as flat as it
+     * was. `mean` and `darkest` together say whether there is a gradient at all.
+     */
+    scope.__bakeProbe = (run?: boolean) => {
+      if (run === false) {
+        this.bakeEnabled = false;
+        return this.lastBake;
+      }
+      if (run) {
+        this.bakeEnabled = true;
+        this.runSkyBake();
+      }
+      return this.lastBake;
+    };
+
+    /*
+     * What the reflections are actually reflecting.
+     *
+     * `captured` false means every shiny surface in the building is still
+     * showing three's stock studio box, which looks entirely plausible and is
+     * somebody else's room.
+     */
+    /*
+     * What the last frame actually cost, straight from the renderer.
+     *
+     * Every item in this realism pass has added geometry — subdivision,
+     * segment counts from the sagitta, chamfers on everything, panelled doors,
+     * sashes. None of it has been measured against a budget, and "it still
+     * feels fine on my machine" is not a measurement when the machine is a
+     * software rasteriser. This is what the paying-for-it work needs to aim at.
+     */
+    scope.__renderStats = () => {
+      const info = this.renderer.webgl.info;
+      let meshes = 0;
+      let instanced = 0;
+      this.scene.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.visible) return;
+        if ((mesh as unknown as THREE.InstancedMesh).isInstancedMesh) instanced++;
+        else meshes++;
+      });
+      return {
+        drawCalls: info.render.calls,
+        triangles: info.render.triangles,
+        geometries: info.memory.geometries,
+        textures: info.memory.textures,
+        meshes,
+        instanced,
+      };
+    };
+
+    scope.__envProbe = (on?: boolean) => {
+      if (on === false) {
+        this.lighting.useCapturedEnvironment(null);
+        this.applyReflections(null);
+        this.invalidate();
+      } else if (on === true) {
+        this.captureEnvironment();
+        this.invalidate();
+      }
+      return {
+        captured: this.lighting.environmentIsCaptured,
+        last: this.lastProbe,
+      };
+    };
+
+    /*
+     * The document itself, readable and replaceable, for automated checking.
+     *
+     * A headless browser can drive the tools, and driving the tools to build a
+     * room with a door and two windows in it takes a hundred clicks whose
+     * coordinates it would have to work out first. This is the seam that lets a
+     * check START from a building instead of constructing one, and it goes
+     * through `replace`, which is the same path Load and Import take — so what
+     * it exercises is the real rebuild, not a shortcut past it.
+     *
+     * Called with nothing it reads instead, which is how a check finds out what
+     * the walls are called before it edits them.
+     */
+    /*
+     * Stand the camera somewhere precise and look at something precise.
+     *
+     * The named viewpoints all frame the whole building, and the walls between
+     * the camera and the interior hide themselves — so the door a check wants
+     * to photograph is reliably on a wall that has just disappeared. This is
+     * the way to photograph one piece of joinery.
+     */
+    scope.__lookFrom = (
+      from: [number, number, number],
+      at: [number, number, number],
+    ) => {
+      this.cameraController.placeAt(from, at);
+      this.invalidate();
+      return { from, at };
+    };
+
+    /*
+     * Draw one composed frame right now, whatever the loop thinks.
+     *
+     * The loop decides when a view has settled enough to deserve the post
+     * chain, and a check has no way to ask it politely. Worse, two sessions
+     * running now have measured "the occlusion does nothing" when what was
+     * actually happening is that the composed path had been drawn once, at
+     * start-up, and never since — which no screenshot could have distinguished
+     * from a pass that runs and is faint.
+     */
+    /*
+     * The film look and the lens, for checking and for a presentation still.
+     *
+     * `depthOfField` focuses on whatever is in the middle of the frame, which
+     * is the only defensible choice without eye tracking — and is why it is
+     * off by default: blurring the part of a room somebody is not looking at is
+     * exactly wrong while they are judging a layout.
+     */
+    scope.__filmProbe = (film?: boolean, dof?: boolean) => {
+      if (film !== undefined) this.pipeline?.setFilmLook(film);
+      if (dof !== undefined) this.pipeline?.setDepthOfField(dof, this.focusDistance());
+      this.invalidate();
+      return this.pipeline?.chain ?? null;
+    };
+
+    scope.__renderStill = () => {
+      this.pipeline?.renderStill(this.cameraController.camera);
+      return this.pipeline?.chain ?? null;
+    };
+
+    scope.__design = (json?: string) => {
+      if (json) designStore.replace(JSON.parse(json) as DesignDocument);
+      return JSON.stringify(designStore.getState());
+    };
+
+    /*
+     * The baked field itself, point by point, and why a summary is not enough.
+     *
+     * `__bakeProbe` reports a mean and a darkest, which together say whether
+     * there is a gradient — and say nothing at all about its SHAPE. The first
+     * picture out of the finished bake had a hard diagonal line across two
+     * walls, and no summary statistic could have distinguished that from the
+     * soft corner darkening it was supposed to be. This hands back every baked
+     * point with its world position so the pattern can be looked at directly.
+     */
+    scope.__bakeField = (name: string) => {
+      const points: { x: number; y: number; z: number; a: number; w: number }[] = [];
+      const seen = new Set<string>();
+
+      this.scene.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.name.startsWith(name)) return;
+        const position = mesh.geometry.getAttribute('position');
+        const baked = mesh.geometry.getAttribute('bakedAmbient');
+        const worn = mesh.geometry.getAttribute('surfaceWear');
+        if (!position || !baked) return;
+
+        mesh.updateMatrixWorld(true);
+        const at = new THREE.Vector3();
+        for (let v = 0; v < position.count; v++) {
+          at.fromBufferAttribute(position, v).applyMatrix4(mesh.matrixWorld);
+          const key = `${Math.round(at.x * 1000)},${Math.round(at.y * 1000)},${Math.round(at.z * 1000)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          points.push({
+            x: Math.round(at.x * 1000) / 1000,
+            y: Math.round(at.y * 1000) / 1000,
+            z: Math.round(at.z * 1000) / 1000,
+            a: Math.round(baked.getX(v) * 1000) / 1000,
+            w: worn ? Math.round(worn.getX(v) * 1000) / 1000 : 0,
+          });
+        }
+      });
+
+      return points;
+    };
+
+    /*
+     * Ambient occlusion on or off, and a viewpoint to judge it from.
+     *
+     * A/B on the same frame is the only honest way to see what a post effect is
+     * contributing. Session 18 nearly shipped an occlusion pass that did
+     * nothing, on the strength of a screenshot that looked plausible.
+     */
+    scope.__aoProbe = (
+      enabled: boolean,
+      viewpoint?: string,
+      mode?: 'default' | 'ao' | 'denoise' | 'normal' | 'depth',
+      params?: Record<string, number | boolean>,
+    ) => {
+      if (viewpoint) this.goToViewpoint(viewpoint as ViewpointId);
+      this.pipeline?.setAmbientOcclusion(enabled, this.cameraController.camera);
+      if (mode) this.pipeline?.setAoOutput(mode);
+      if (params) {
+        if ('probe' in params) this.pipeline?.setProbePass(Boolean(params.probe));
+        this.pipeline?.setAoParams(params as Record<string, number>);
+      }
+      this.invalidate();
+      return {
+        enabled,
+        mode: mode ?? 'default',
+        params: this.pipeline?.aoParams ?? null,
+        chain: this.pipeline?.chain ?? null,
+      };
+    };
+
+    /*
+     * Enters the walkthrough in a given view, for automated checking.
+     *
+     * The panel's own buttons cannot be used from a headless browser: entering
+     * the walkthrough asks for pointer lock, and pointer lock needs a real user
+     * gesture that no automation can produce. This goes through `editorStore`,
+     * which is the same path the buttons take — the engine reacts to the state
+     * rather than to the click, so what this exercises is the real transition.
+     */
+    scope.__walkView = (view: 'first' | 'third') => {
+      editorStore.patch({ walkthrough: true, walkView: view });
+      return { walkthrough: true, view };
+    };
 
     scope.__liveProbe = () => this.liveSummary;
 
@@ -661,6 +922,87 @@ export class Engine {
         })),
       };
     };
+
+    /*
+     * Why the room has the shadows it has, for automated checking.
+     *
+     * Same reasoning as the sound level meter in session 16: the states that
+     * produce no shadow all look identical from outside. A light that is not
+     * casting, a shadow map that was disposed and never reallocated, a frustum
+     * that does not contain the building, a normal bias wider than the gap the
+     * shadow was supposed to fall into, and geometry that simply never set
+     * `castShadow` are five different bugs with one symptom, and no amount of
+     * reading the code distinguishes them. So each is reported separately.
+     */
+    scope.__shadowProbe = () => {
+      let casters = 0;
+      let receivers = 0;
+      let meshes = 0;
+      this.scene.traverse((object) => {
+        if (!(object as THREE.Mesh).isMesh) return;
+        meshes++;
+        if (object.castShadow) casters++;
+        if (object.receiveShadow) receivers++;
+      });
+      return {
+        renderer: {
+          shadowMapEnabled: this.renderer.webgl.shadowMap.enabled,
+          shadowMapType: this.renderer.webgl.shadowMap.type,
+          toneMapping: this.renderer.webgl.toneMapping,
+          exposure: this.renderer.webgl.toneMappingExposure,
+        },
+        sun: this.lighting.report(),
+        shadowMap: this.lighting.sampleShadowMap(this.renderer.webgl),
+        scene: {
+          meshes,
+          casters,
+          receivers,
+          // Named meshes, so a browser check can answer "was it built at all"
+          // instead of inferring it from a picture.
+          named: (() => {
+            const names: Record<string, { count: number; size: string }> = {};
+            this.scene.traverse((object) => {
+              const mesh = object as THREE.Mesh;
+              if (!mesh.isMesh) return;
+              const kind = mesh.name.replace(/_.*$/, '') || 'unnamed';
+              if (!names[kind]) {
+                mesh.geometry.computeBoundingBox();
+                const box = mesh.geometry.boundingBox;
+                names[kind] = {
+                  count: 0,
+                  size: box
+                    ? `${(box.max.x - box.min.x).toFixed(2)}x${(box.max.y - box.min.y).toFixed(3)}x${(box.max.z - box.min.z).toFixed(2)}`
+                    : 'none',
+                };
+              }
+              names[kind]!.count++;
+            });
+            return names;
+          })(),
+        },
+        /*
+         * Whether the compiled shaders can sample a shadow map at all.
+         *
+         * The last place a shadow can be lost. Three decides a material's
+         * shader features when it first compiles it, and `USE_SHADOWMAP` is one
+         * of them — so a material compiled at a moment when nothing was casting
+         * has no `directionalShadowMap` uniform, samples nothing, and goes on
+         * rendering a perfectly lit unshadowed surface forever. Nothing about
+         * the light, the map or the mesh flags shows it.
+         */
+        programs: (this.renderer.webgl.info.programs ?? []).map((program) => {
+          const uniforms = Object.keys(
+            (program.getUniforms() as unknown as { map: Record<string, unknown> }).map,
+          );
+          return {
+            name: program.name,
+            usedTimes: program.usedTimes,
+            canSampleShadows: uniforms.includes('directionalShadowMap'),
+          };
+        }),
+      };
+    };
+
   }
 
   /** Registers a callback for the once-per-second performance report. */
@@ -803,6 +1145,7 @@ export class Engine {
       previous?.exterior !== doc.exterior
     ) {
       this.building.update(level.plan, wantCeilings, holes, doc.exterior);
+      this.scheduleSkyBake();
     }
     if (levelSwitched || !previousLevel || previousLevel.furniture !== level.furniture) {
       this.furnishings.update(level.furniture);
@@ -925,6 +1268,259 @@ export class Engine {
     this.appliedDocument = doc;
   }
 
+  /**
+   * Works out how much sky each surface can see, shortly after things stop moving.
+   *
+   * See `skyBake.ts` for why this exists at all. The short version is that the
+   * sun is occluded by the building and the ambient light never was, so every
+   * interior surface was lit as though it stood in an open field — which is the
+   * whole of "the rooms look flat".
+   */
+  private scheduleSkyBake(): void {
+    /*
+     * THIS WAS SWITCHED OFF FOR A WHOLE COMMIT, AND WHAT TURNED IT BACK ON.
+     *
+     * The bake was correct from the first version — the eight properties in
+     * `skyBake.test.ts` held, gradient near an opening included — and it locked
+     * the page so completely that the canvas never appeared.
+     *
+     * Three costs, found in order. Baking every vertex of non-indexed geometry
+     * did eighteen times the necessary work, because a point where six
+     * triangles meet is stored six times; that is deduplicated. Casting against
+     * the SUBDIVIDED render meshes did four hundred times the necessary work,
+     * because session 18's own subdivision turned each wall from twenty
+     * triangles into several hundred; the coarse geometry is kept alongside and
+     * is what gets cast against. Neither was enough, because neither touched
+     * the shape of the cost: every ray against every triangle.
+     *
+     * `bvh.ts` is what changed it. A tree of boxes built once per edit turns
+     * rays x triangles into rays x log(triangles), and asking only "did
+     * anything block this" — rather than what, and how far — lets a ray pointed
+     * at a nearby wall give up immediately, which indoors is most of them.
+     */
+    if (!this.bakeEnabled) return;
+    if (this.bakeTimer !== null) window.clearTimeout(this.bakeTimer);
+    this.bakeTimer = window.setTimeout(() => {
+      this.bakeTimer = null;
+      this.runSkyBake();
+    }, 180);
+  }
+
+  private runSkyBake(): void {
+    const doc = designStore.getState();
+    const level = activeLevel(doc);
+    const surfaces: THREE.Mesh[] = [];
+    const occluders: THREE.Object3D[] = [];
+
+    /*
+     * Which meshes get the bake, and which merely block rays.
+     *
+     * The building's shell carries it: walls, floors, ceilings and the trim,
+     * because those are the large surfaces a gradient can be seen across. The
+     * furniture only occludes — a sofa should darken the wall behind it without
+     * needing per-vertex shading of its own, and giving every cushion a bake
+     * would multiply the cost for detail too small to see.
+     */
+    this.scene.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.visible) return;
+
+      // Picking proxies are invisible to the eye and must stay invisible to a
+      // ray, or every wall would report itself sealed by its own pick slab.
+      if (mesh.name.includes('Pick')) return;
+
+      // Glazing lets daylight through. See the note where the flag is set.
+      if (mesh.userData.transmissive) return;
+
+      occluders.push(mesh);
+
+      /*
+       * Which meshes RECEIVE the bake, as opposed to merely blocking it.
+       *
+       * The shell, the trim, and the joinery. The joinery was the omission that
+       * showed: a door leaf and a window lining were treated as furniture, so
+       * they occluded everything around them and received nothing themselves —
+       * which left every door in the building flat-lit, brighter than the wall
+       * it sits in, and with no shadow in its own panels. The one surface in
+       * the room a person walks right up to was the only one with no shading.
+       */
+      const shell =
+        mesh.name.startsWith('Wall') ||
+        mesh.name.startsWith('Floor') ||
+        mesh.name.startsWith('Ceiling') ||
+        mesh.name.startsWith('Skirting') ||
+        mesh.name.startsWith('Cornice') ||
+        mesh.name.startsWith('Frames') ||
+        mesh.name.startsWith('LeafPanel');
+      if (shell) surfaces.push(mesh);
+    });
+
+    if (surfaces.length === 0) return;
+
+    /*
+     * The bake is handed the LIVE lights, not the preset.
+     *
+     * The bounce is arithmetic on light: it needs the colour of the sky, the
+     * colour and direction of the sun, and the strength of both. Every one of
+     * those is already decided by `Lighting`, and a bake that decided any of
+     * them separately would paint a different time of day onto the walls from
+     * the one being rendered.
+     */
+    const result = bakeSkyVisibility(surfaces, occluders, this.lighting.bakeLight());
+
+    // Everything else keeps its full ambient rather than reading a missing
+    // attribute as zero and rendering black.
+    for (const object of occluders) {
+      const mesh = object as THREE.Mesh;
+      if (mesh.isMesh) {
+        fillUnbaked(mesh.geometry);
+        fillNoWear(mesh.geometry);
+      }
+      for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+        if (material) {
+          useBakedAmbient(material);
+          useWear(material);
+        }
+      }
+    }
+
+    /*
+     * Wear rides on the bake, because it is computed FROM the bake.
+     *
+     * Grime collects where nothing can reach, and "nothing can reach here" is
+     * exactly the quantity the sky bake has just spent half a second measuring
+     * for a different reason. Running it as its own pass would mean measuring
+     * the same enclosure twice.
+     */
+    const floorY = elevationOf(doc, level.id);
+    for (const mesh of surfaces) {
+      const walked = mesh.name.startsWith('Floor');
+      mesh.updateMatrixWorld(true);
+      const wear = computeWear(mesh.geometry, mesh.matrixWorld, { floorY, walked });
+      if (!wear) continue;
+      mesh.geometry.setAttribute('surfaceWear', new THREE.BufferAttribute(wear, 1));
+    }
+
+    this.lastBake = result;
+
+    /*
+     * The reflection probe rides with the bake, and deliberately so.
+     *
+     * Both answer "what does this building look like from inside itself", both
+     * cost far too much per frame and nothing once, and both are invalidated by
+     * exactly the same events — a wall moved, a window added, the time of day
+     * changed. Scheduling them separately would mean two debounces that drift
+     * out of step, and a reflection describing a plan the bake has already
+     * moved past.
+     */
+    this.captureEnvironment();
+
+    this.invalidate();
+  }
+
+  /**
+   * Photographs the building from inside itself, for everything shiny.
+   *
+   * The point is the centroid of the largest room at standing eye height,
+   * which is where somebody would be. A probe is a single point pretending to
+   * be the whole room, so where that point sits decides whose view of the room
+   * every reflective surface in it shows; the middle of the main space is the
+   * least wrong answer available without one probe per room.
+   */
+  private captureEnvironment(): void {
+    const focus = this.focusPoint();
+    if (!focus) return;
+
+    /*
+     * The pick proxies are hidden for the capture.
+     *
+     * They are invisible to the eye because their material does not write
+     * colour, not because they are absent — and a cube camera renders what is
+     * there. Left in, every shiny surface in the building would reflect six
+     * large grey slabs standing where the doors are.
+     */
+    const hidden: THREE.Object3D[] = [];
+    this.scene.traverse((object) => {
+      if (object.name.includes('Pick')) hidden.push(object);
+    });
+
+    const result = this.environmentProbe.capture(
+      this.scene,
+      { x: focus.x, y: 1.6, z: focus.z },
+      hidden,
+    );
+    this.lighting.useCapturedEnvironment(this.environmentProbe.texture);
+    this.applyReflections(this.environmentProbe.texture);
+    this.lastProbe = result;
+  }
+
+  /**
+   * Puts the captured probe on the materials that actually reflect.
+   *
+   * -----------------------------------------------------------------------------
+   * ROUGHNESS DECIDES, BECAUSE ROUGHNESS IS WHAT REFLECTION MEANS.
+   *
+   * A surface's roughness is precisely how much it scatters what it reflects. A
+   * pane of glass at 0.04 returns a sharp image of the room; plaster at 0.9
+   * returns a smear indistinguishable from ambient light. So the rule is the
+   * physical one — below a quarter, a reflection is a picture of something and
+   * belongs here; above it, nothing would be gained and the double count with
+   * the baked bounce would be paid for nothing.
+   *
+   * In practice that catches the glazing, the tap and handle chrome, and a
+   * polished stone worktop, and leaves every painted and plastered surface in
+   * the building alone. Which is exactly the list.
+   */
+  private applyReflections(texture: THREE.Texture | null): void {
+    const seen = new Set<THREE.Material>();
+
+    this.scene.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh) return;
+
+      for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+        if (!material || seen.has(material)) continue;
+        seen.add(material);
+
+        if (!wantsReflections(material)) continue;
+
+        (material as THREE.MeshStandardMaterial).envMap = texture;
+        material.needsUpdate = true;
+      }
+    });
+  }
+
+  /** What the last environment capture did, for the checking probe. */
+  private lastProbe: ProbeResult | null = null;
+
+  /**
+   * How far away whatever is in the middle of the frame is, in metres.
+   *
+   * What a photographer does when they point the camera and half-press the
+   * shutter. Cast down the view axis, take the first thing hit, and focus
+   * there; with nothing in the way, fall back to a distance that keeps the
+   * whole of an ordinary room sharp rather than focusing on infinity and
+   * blurring everything in it.
+   */
+  private focusDistance(): number {
+    const camera = this.cameraController.camera;
+    const direction = new THREE.Vector3();
+    camera.getWorldDirection(direction);
+
+    const caster = new THREE.Raycaster(camera.position.clone(), direction, 0.05, 60);
+    const hits = caster.intersectObject(this.scene, true);
+    for (const hit of hits) {
+      const mesh = hit.object as THREE.Mesh;
+      // Pick proxies are invisible and would focus the lens on nothing.
+      if (!mesh.visible || mesh.name.includes('Pick')) continue;
+      return hit.distance;
+    }
+    return 6;
+  }
+
+  /** What the last bake did, for the probe. */
+  private lastBake: ReturnType<typeof bakeSkyVisibility> | null = null;
+
   /** Recomputes the clearance report and pushes it to the overlay. */
   private refreshClearance(): void {
     if (!editorStore.getState().showClearance) return;
@@ -995,6 +1591,7 @@ export class Engine {
       this.exitWalkthrough();
     }
     this.applyComfort(state.comfort);
+    this.walk?.setView(state.walkView);
     this.walk?.setSound(state.sound);
 
     this.applySectionCut(state.activeSectionId);
@@ -1179,7 +1776,14 @@ export class Engine {
       if (!this.progressiveEnabled) {
         this.applyPixelRatio(false);
         this.restoreSun();
-        this.pipeline!.renderMoving(camera);
+        /*
+         * `renderStill`, not `renderMoving`. The difference is the ambient
+         * occlusion, and it is the difference between a room and a diagram —
+         * see the long note on that method. It was `renderMoving` here until
+         * session 18, which meant the occlusion written in session 11 had never
+         * once been drawn.
+         */
+        this.pipeline!.renderStill(camera);
         this.reportStats(delta, started);
         return false;
       }
@@ -1256,6 +1860,23 @@ export class Engine {
   private applyQuality(): void {
     const settings = this.quality.settings;
     this.lighting.setShadowMapSize(settings.shadowMapSize);
+
+    /*
+     * The tier now reaches the GEOMETRY, not just the resolution.
+     *
+     * Until this, demotion changed the pixel ratio and the shadow map and left
+     * every curve, every subdivided wall and the whole sky bake exactly as
+     * expensive as before — which is most of what a slow machine is struggling
+     * with. The dial is read at BUILD time, so the tier change has to be
+     * followed by a rebuild to take effect; a demotion is one of the few
+     * moments where paying for a rebuild is obviously worth it.
+     */
+    const wanted = TIER_DETAIL[this.quality.current];
+    if (wanted !== detailLevel()) {
+      setDetailLevel(wanted);
+      this.rebuildForMode();
+      this.scheduleSkyBake();
+    }
     this.pipeline?.setQuality(settings, this.cameraController.camera);
     this.sizePipeline();
   }
@@ -1406,6 +2027,7 @@ export class Engine {
     this.ground.dispose();
     this.furnishings.dispose();
     this.building.dispose();
+    this.environmentProbe.dispose();
     this.lighting.dispose();
     this.materials.dispose();
     this.cameraController.dispose();

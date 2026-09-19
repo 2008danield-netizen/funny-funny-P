@@ -215,6 +215,15 @@ export class DesktopWalk {
         turn: turn / 2.2,
         snap,
         running: this.held.has('ShiftLeft') || this.held.has('ShiftRight'),
+        /*
+         * Ctrl or C to crouch, because between them they cover both hands people
+         * actually use. Ctrl is the shooter convention and C is what everything
+         * with an inventory uses instead, since Ctrl is taken by the browser.
+         */
+        crouching:
+          this.held.has('ControlLeft') ||
+          this.held.has('ControlRight') ||
+          this.held.has('KeyC'),
         teleportTo: null,
       },
       pitch: this.pitch,

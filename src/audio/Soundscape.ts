@@ -52,20 +52,18 @@ import { calculateLoad } from '@/services/manualJ';
 import { selectSystem } from '@/services/manualS';
 import type { SoundSettings } from '@/state/selection';
 import type { Standing } from '@/walk/ground';
+import type { StrideSample } from '@/walk/stride';
 import type { DesignDocument, Point2 } from '@/state/types';
 
-/**
- * How far somebody walks between footfalls, in metres.
+/*
+ * The stride constants used to live here — how far a person walks between
+ * footfalls, and the speed below which they are standing still.
  *
- * An average adult stride is about 750 mm, so a footfall every 750 mm of
- * travel. Running lengthens the stride rather than merely speeding it up,
- * which is why this is scaled by speed rather than left constant — a person
- * hurrying does not take the same steps faster, they take longer ones.
+ * They moved to `@/walk/stride` in session 18, when the walker got a visible
+ * body. The legs and the footsteps are answering the same question and had to
+ * stop answering it separately. Nothing about the rule changed, only where it
+ * lives.
  */
-const STRIDE = 0.75;
-
-/** Below this the walker is standing still and takes no steps. */
-const MOVING_SPEED = 0.15;
 
 /** How far the mechanical beds can be heard from. Beyond this, not worth a node. */
 const MECHANICAL_RANGE = 9;
@@ -79,6 +77,19 @@ export interface WalkSnapshot {
   heading: number;
   speed: number;
   standing: Standing;
+  /**
+   * Where the walker is in their step.
+   *
+   * Computed by the walkthrough and handed down rather than worked out here,
+   * because session 18 gave the walker a visible body and its legs have to swing
+   * on exactly the step this file makes a noise on. Two accumulators that agree
+   * today would drift the first time either was touched, and a heel that lands a
+   * tenth of a second off its own footstep does not read as slightly out — it
+   * reads as broken, the way badly dubbed speech does.
+   *
+   * See `@/walk/stride`.
+   */
+  stride: StrideSample;
 }
 
 /**
@@ -107,11 +118,8 @@ export class Soundscape {
 
   private settings: SoundSettings;
   /** Distance travelled since the last footfall, metres. */
-  private sinceStep = 0;
   /** Where the feet were last frame, to measure how far they actually went. */
-  private lastAt: Point2 | null = null;
   /** Which foot, so the two alternate in pitch rather than being identical. */
-  private foot = 0;
   /** The room key the listener was in, to know when the reverb must change. */
   private roomKey = '';
 
@@ -146,8 +154,6 @@ export class Soundscape {
   /** Everything off, for leaving the walkthrough. */
   stop(): void {
     this.engine.silence();
-    this.sinceStep = 0;
-    this.lastAt = null;
     this.roomKey = '';
   }
 
@@ -326,49 +332,26 @@ export class Soundscape {
 
   private applyFootsteps(doc: DesignDocument, walk: WalkSnapshot): void {
     /*
-     * MEASURED FROM THE POSITION, NOT FROM THE SPEED.
+     * THE STEP IS DECIDED UPSTREAM, AND THAT IS THE POINT.
      *
-     * The first version integrated `speed × delta`, which is the same number
-     * right up until it is not. The walker reports the speed it INTENDED; the
-     * collision solver decides where it actually ended up. Walk into a wall and
-     * the two diverge completely — speed stays at walking pace, the position
-     * does not move, and you hear yourself striding on the spot.
+     * This used to keep its own accumulator, adding up the distance actually
+     * travelled and firing every 0.75 m. The rule it enforced is still the right
+     * one and is still enforced — measured from the POSITION, never from the
+     * speed, because the walker reports the speed it intended while the
+     * collision solver decides where it really ended up, and walking into a wall
+     * makes those two diverge completely.
      *
-     * Taking the difference between this frame's feet and last frame's is both
-     * the honest reading and a simpler one, and it is what "driven by distance"
-     * was always supposed to mean.
+     * But it is no longer enforced here. The walkthrough owns one `Stride` and
+     * both the footsteps and the figure's legs read it, so the foot that lands
+     * on screen is the foot that lands in your ears. See `@/walk/stride`.
+     *
+     * Note the ordering: the stride advances whether or not footsteps are
+     * switched on. That also fixes something small the old code got wrong — with
+     * the sound muted its accumulator stood still, so unmuting mid-walk fired a
+     * step immediately from a stale count.
      */
-    const previous = this.lastAt;
-    this.lastAt = { x: walk.at.x, z: walk.at.z };
-
     if (!this.settings.footsteps) return;
-
-    const travelled = previous
-      ? Math.hypot(walk.at.x - previous.x, walk.at.z - previous.z)
-      : 0;
-
-    if (walk.speed < MOVING_SPEED && travelled < 1e-4) {
-      /*
-       * Reset to most of a stride when standing.
-       *
-       * Not to zero: starting from zero means the first step of every walk
-       * comes three quarters of a metre after setting off, which feels like a
-       * lag. Starting most of the way through means the first footfall lands
-       * almost immediately, which is what happens when a person starts walking.
-       */
-      this.sinceStep = STRIDE * 0.8;
-      return;
-    }
-
-    this.sinceStep += travelled;
-
-    // A longer stride when hurrying, rather than the same stride faster: that
-    // is what people actually do, and the difference is audible.
-    const stride = STRIDE * (1 + Math.max(0, walk.speed - 1.4) * 0.25);
-    if (this.sinceStep < stride) return;
-    this.sinceStep -= stride;
-
-    this.foot = 1 - this.foot;
+    if (!walk.stride.planted) return;
 
     const voiceId = this.footVoice(doc, walk);
     const timbre = footstepTimbre(voiceId.replace('step-', ''));
@@ -381,7 +364,7 @@ export class Soundscape {
      * like a metronome. Keeping it at playback means the rendered buffers stay
      * deterministic and therefore testable.
      */
-    const rate = this.foot === 0 ? 0.97 : 1.04;
+    const rate = walk.stride.planted === 'left' ? 0.97 : 1.04;
     const harder = Math.min(1.3, 0.75 + walk.speed * 0.25);
 
     this.engine.play(

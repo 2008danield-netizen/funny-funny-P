@@ -54,6 +54,43 @@ export const BODY = {
   walkSpeed: 1.4,
   /** And at a hurry, which is what the run modifier gives. */
   runSpeed: 2.6,
+  /**
+   * How hard a body accelerates, in metres per second squared.
+   *
+   * Session 18, and the single biggest thing standing between this walkthrough
+   * and one that feels like a game. Before this, `speed` was simply
+   * `walkSpeed × magnitude`: full pace on the frame the key went down and a dead
+   * stop on the frame it came up. That is not how anything with mass moves, and
+   * the eye reads it instantly — it is most of the difference between walking
+   * through a building and scrubbing a CAD viewport.
+   *
+   * 14 m/s² reaches walking pace in about a tenth of a second, which is roughly
+   * where every game that feels responsive sits. Much slower and the controls
+   * feel like ice; much faster and there is no point having the number at all.
+   */
+  acceleration: 14,
+  /**
+   * And how hard it stops, which is deliberately harder than it starts.
+   *
+   * Real bodies do decelerate faster than they accelerate — you can plant a foot
+   * — but the real reason is control. Momentum that overshoots where you meant
+   * to stop is the thing people describe as "floaty", and in a tool where
+   * somebody is trying to stand in a particular spot to look at a particular
+   * wall, floaty is worse than abrupt.
+   */
+  deceleration: 20,
+  /**
+   * Eye height when crouched.
+   *
+   * Not a game affectation. A seated eye is around 1.2 m and this is the only
+   * way to answer "what do you see from the sofa" — which, in a room-design
+   * tool, is a question people genuinely have.
+   */
+  crouchEyeHeight: 1.15,
+  /** Crouched pace. Slower, as it is. */
+  crouchSpeed: 0.7,
+  /** How fast the eye drops and rises when crouching, metres per second. */
+  crouchEase: 3.5,
   /** Radians per second turning with a stick or the arrow keys. */
   turnSpeed: 2.2,
   /** How far one snap turn goes. 30 degrees is the usual comfortable step. */
@@ -84,6 +121,8 @@ export interface WalkIntent {
   snap: number;
   /** Whether the run modifier is held. */
   running: boolean;
+  /** Whether the crouch modifier is held. */
+  crouching: boolean;
   /** Somewhere to jump to instead of walking, if a teleport was confirmed. */
   teleportTo: Point2 | null;
 }
@@ -94,8 +133,23 @@ export const NO_INTENT: WalkIntent = {
   turn: 0,
   snap: 0,
   running: false,
+  crouching: false,
   teleportTo: null,
 };
+
+/**
+ * Moves a value towards a target by at most `rate`, without overshooting.
+ *
+ * Used for the velocity and for the crouch. A plain lerp would be smoother but
+ * would never quite arrive, so a body asked to stop would coast forever at a
+ * hundredth of a millimetre per second — which sounds harmless and is exactly
+ * what makes the footsteps never quite stop.
+ */
+function easeTowards(current: number, target: number, rate: number): number {
+  const gap = target - current;
+  if (Math.abs(gap) <= rate) return target;
+  return current + Math.sign(gap) * rate;
+}
 
 /* -------------------------------- The state ------------------------------- */
 
@@ -116,6 +170,17 @@ export interface WalkState {
   heading: number;
   /** Speed this frame, for the comfort vignette to read. */
   speed: number;
+  /**
+   * Which way the body is actually travelling, metres per second, in world axes.
+   *
+   * Kept rather than recomputed because it is now the thing that carries
+   * momentum from one frame to the next. It is also genuinely different from
+   * `heading × speed` the moment somebody releases a key and coasts, or walks
+   * into a wall and slides.
+   */
+  velocity: Point2;
+  /** How far through the crouch, 0 standing to 1 fully down. */
+  crouch: number;
   /** True while the walker is somewhere they could not have walked to. */
   stuck: boolean;
 }
@@ -133,8 +198,28 @@ export class Walker {
       eyeY: standing.y + BODY.eyeHeight,
       heading,
       speed: 0,
+      velocity: { x: 0, z: 0 },
+      crouch: 0,
       stuck: false,
     };
+  }
+
+  /**
+   * Points the body a given way, without moving it.
+   *
+   * First person has never needed this: there, the mouse turns the body and
+   * `intent.turn` is the only way heading ever changes. Third person is a
+   * different contract — the mouse orbits the camera and the body turns to face
+   * whichever way you walk — so the caller works out the direction of travel and
+   * tells the body to face it.
+   *
+   * Deliberately a separate method rather than a very large `turn` intent. Those
+   * are different statements: `turn` means "rotate at this rate", and rotating
+   * at whatever rate happens to land on the right heading this frame would
+   * silently depend on the frame time.
+   */
+  face(heading: number): void {
+    this.state = { ...this.state, heading };
   }
 
   get current(): WalkState {
@@ -149,6 +234,10 @@ export class Walker {
       eyeY: standing.y + BODY.eyeHeight,
       heading,
       speed: 0,
+      // Put somewhere new, not carried there: whatever momentum they had
+      // belonged to where they were.
+      velocity: { x: 0, z: 0 },
+      crouch: 0,
       stuck: false,
     };
   }
@@ -204,14 +293,44 @@ export class Walker {
 
     /* ---- Where they are asking to be ---- */
 
-    let desired = this.state.at;
-    let speed = 0;
+    /* ---- How fast they are asking to go ---- */
 
-    if (intent.teleportTo) {
-      desired = intent.teleportTo;
-    } else if (intent.forward !== 0 || intent.strafe !== 0) {
-      const magnitude = Math.min(1, Math.hypot(intent.forward, intent.strafe));
-      speed = (intent.running ? BODY.runSpeed : BODY.walkSpeed) * magnitude;
+    const crouch = easeTowards(
+      this.state.crouch,
+      intent.crouching ? 1 : 0,
+      BODY.crouchEase * step,
+    );
+
+    let target = { x: 0, z: 0 };
+
+    if (intent.forward !== 0 || intent.strafe !== 0) {
+      /*
+       * TWO DIFFERENT NUMBERS, AND CONFLATING THEM MADE DIAGONALS FASTER.
+       *
+       * `raw` is how long the input vector is and is what normalises the
+       * DIRECTION. `magnitude` is how hard the stick is pushed, clamped to one,
+       * and is what scales the SPEED.
+       *
+       * They are equal for a thumbstick and they are not equal for a keyboard:
+       * holding W and D gives (1, 1), whose length is 1.414. Dividing the
+       * direction by the clamped 1 rather than by the real 1.414 left a vector
+       * 41% too long, so walking diagonally was 41% faster than walking
+       * straight — the oldest bug in first-person movement, present here since
+       * session 14 and found by a test written for something else entirely.
+       */
+      const raw = Math.hypot(intent.forward, intent.strafe);
+      const magnitude = Math.min(1, raw);
+
+      /*
+       * Crouching wins over running, because holding both is a real thing
+       * somebody's hands do by accident and creeping is the more specific
+       * request of the two.
+       */
+      const pace = crouch > 0.5
+        ? BODY.crouchSpeed
+        : intent.running
+          ? BODY.runSpeed
+          : BODY.walkSpeed;
 
       // Heading 0 looks towards +z, which is the convention the rest of the
       // app uses for a piece of furniture facing into a room.
@@ -220,14 +339,50 @@ export class Walker {
       const forwardVector = { x: sin, z: cos };
       const rightVector = { x: cos, z: -sin };
 
-      const move = {
-        x: (forwardVector.x * intent.forward + rightVector.x * intent.strafe) / magnitude,
-        z: (forwardVector.z * intent.forward + rightVector.z * intent.strafe) / magnitude,
+      /*
+       * Dividing by the magnitude normalises the DIRECTION, so walking
+       * diagonally is not faster than walking straight — the oldest bug in
+       * first-person movement, and one this already got right.
+       */
+      const wanted = pace * magnitude;
+      target = {
+        x: ((forwardVector.x * intent.forward + rightVector.x * intent.strafe) / raw) * wanted,
+        z: ((forwardVector.z * intent.forward + rightVector.z * intent.strafe) / raw) * wanted,
       };
+    }
 
+    /* ---- Momentum ---- */
+
+    /*
+     * The velocity is moved TOWARDS what was asked for, at a fixed rate, rather
+     * than set to it. That one change is what makes this feel like walking.
+     *
+     * Accelerating and decelerating at different rates is not a flourish: a body
+     * that stops as slowly as it starts overshoots wherever you meant to stand,
+     * and in a tool where the whole point is standing in one spot to look at one
+     * wall, overshooting is worse than being abrupt.
+     */
+    const wantsToMove = target.x !== 0 || target.z !== 0;
+    const rate = (wantsToMove ? BODY.acceleration : BODY.deceleration) * step;
+
+    let velocity = {
+      x: easeTowards(this.state.velocity.x, target.x, rate),
+      z: easeTowards(this.state.velocity.z, target.z, rate),
+    };
+
+    let desired = this.state.at;
+    let speed = Math.hypot(velocity.x, velocity.z);
+
+    if (intent.teleportTo) {
+      desired = intent.teleportTo;
+      // A jump is not a walk. Arriving with the speed you left at would have
+      // you sliding across the room you just landed in.
+      velocity = { x: 0, z: 0 };
+      speed = 0;
+    } else if (speed > 1e-4) {
       desired = {
-        x: this.state.at.x + move.x * speed * step,
-        z: this.state.at.z + move.z * speed * step,
+        x: this.state.at.x + velocity.x * step,
+        z: this.state.at.z + velocity.z * step,
       };
     }
 
@@ -267,19 +422,58 @@ export class Walker {
        * model is never the useful answer, and somebody who walks out of a
        * doorway that leads nowhere wants to be stopped at the threshold.
        */
-      this.state = { ...this.state, heading, speed: 0, stuck: true };
+      this.state = {
+        ...this.state,
+        heading,
+        speed: 0,
+        velocity: { x: 0, z: 0 },
+        crouch,
+        stuck: true,
+      };
       return this.state;
     }
 
     /* ---- The eye catching up ---- */
 
-    const targetEye = standing.y + BODY.eyeHeight;
+    const eyeAbove = BODY.eyeHeight + (BODY.crouchEyeHeight - BODY.eyeHeight) * crouch;
+    const targetEye = standing.y + eyeAbove;
     const gap = targetEye - this.state.eyeY;
     const ease = BODY.stepEase * step;
     const eyeY =
       Math.abs(gap) <= ease ? targetEye : this.state.eyeY + Math.sign(gap) * ease;
 
-    this.state = { at, standing, eyeY, heading, speed, stuck };
+    /*
+     * What actually happened, not what was asked for.
+     *
+     * The solver may have slid the body along a wall or refused the move
+     * outright, so the velocity is re-derived from the distance really covered.
+     * Without this, walking into a wall leaves a full head of steam pointing
+     * into it — and the moment you turn away you shoot off sideways, which is
+     * the single most common way momentum goes wrong.
+     */
+    const jumped = intent.teleportTo !== null;
+    const actual = step > 0 && !jumped
+      ? { x: (at.x - this.state.at.x) / step, z: (at.z - this.state.at.z) / step }
+      : velocity;
+
+    /*
+     * A teleport is excluded above, and a test caught why.
+     *
+     * Re-deriving the velocity from the distance covered is exactly right for
+     * walking and nonsense for a jump: five metres in a sixtieth of a second is
+     * three hundred metres per second, which the vignette, the footsteps and the
+     * figure's legs would all have believed.
+     */
+    this.state = {
+      at,
+      standing,
+      eyeY,
+      heading,
+      speed: Math.hypot(actual.x, actual.z),
+      velocity: actual,
+      crouch,
+      stuck,
+    };
     return this.state;
   }
 }

@@ -255,7 +255,7 @@ export class XrWalk {
     this.useHeld = using;
 
     return {
-      intent: { forward, strafe, turn, snap, running, teleportTo: null },
+      intent: { forward, strafe, turn, snap, running, crouching: false, teleportTo: null },
       aim: aiming ? hand : null,
       hand,
       confirmTeleport,

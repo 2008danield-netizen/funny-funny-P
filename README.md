@@ -1182,6 +1182,28 @@ their valleys across each other.
   machine gets one machine and a warning. And the live section cut leaves the
   cut edges hollow, because capping them properly needs a stencil pass per
   plane — the printed section is where the real construction is drawn.
+- **Session 18 found a four-session-old bug in the movement, and it is worth
+  recording how.** Walking diagonally was 41% faster than walking straight. The
+  input vector for W+D is (1, 1), whose length is 1.414, and the code normalised
+  the direction by the CLAMPED magnitude of 1 rather than by the real 1.414 — so
+  every diagonal came out too long. It shipped in session 14 and survived every
+  walk test written since, because all of them checked where the walker ended up
+  rather than how fast it got there. It was caught by a test written for
+  momentum, which had nothing to do with it.
+
+- **Left over from session 18.** The figure's walk cycle is verified twice and
+  neither check is a picture of it walking. Unit tests exercise the cycle
+  directly — the knee never hyperextends anywhere in it, the legs stay half a
+  cycle apart, the pose settles when standing — and a probe reads the joint
+  angles out of the running app to confirm the rig is actually being driven
+  rather than merely correct. What is missing is the frame in between: the
+  walkthrough renders on demand, so a headless browser that drives a step and
+  then screenshots always catches the pose a frame later, settled back to
+  standing. Somebody needs to watch it walk.
+
+  The figure is also not a collider. You can walk through yourself in third
+  person, which is unobservable, and the camera boom ignores the figure on
+  purpose — but nothing else in the building knows it is there.
 - **Left over from session 16.** Nobody has heard any of this. There are no
   speakers in the environment it was built in, so the *balance* — whether a
   footstep sits right against a running tap — has never been set by ear, only
@@ -1382,6 +1404,42 @@ each entry and settle the trademark position; IKEA runs affiliate and partner
 programmes, which is the ordinary route to using product data properly. The
 `retailer`, `sku` and `url` fields on every entry exist so a licensed feed can
 fill them in later without touching any other code.
+
+---
+
+## Materials, and why there are no image files
+
+Every surface in the building is drawn by arithmetic — the oak, the marble, the
+plaster, the brick — which is why the app ships no textures and a floor preset
+is thirty lines rather than twelve megabytes. That makes every material
+editable, costs nothing to download, and raises no question about who owns the
+pixels.
+
+It also has a real ceiling. Procedural wood gets the plank layout, the grain
+direction and the joint relief right, and it does not get the knot that is not
+periodic, the mineral streak, or the one board that came from a different tree.
+Generated texture is convincingly regular; real material is not regular at all.
+
+`src/scene/materials/photographed.ts` is the seam for changing that, and it
+ships with **nothing registered**, so every material is still generated. It is
+built that way because photographed material is somebody's work, and using it in
+a product meant to be sold is a licensing decision rather than a technical one.
+There are three honest routes and they differ in cost, in attribution
+obligation, and in whether the images may be redistributed inside an app at all:
+
+- a permissive scan library (CC0 or CC-BY);
+- a bought commercial pack, whose terms usually allow use in a product but not
+  redistribution of the raw files;
+- photographing real surfaces, which owns the result outright and is the most
+  work.
+
+`registerPhotographed` **refuses** any texture set that does not carry an SPDX
+licence identifier, a source, an explicit attribution decision and the
+real-world size the scan covers. The refusal is the point: that is how the
+mistake actually happens — not by anybody deciding to take something, but by a
+file arriving in a folder and being forgotten about by the time anyone asks.
+`requiredAttributions()` returns the lines that must be displayed, so a credits
+screen cannot silently fall out of step with what is loaded.
 
 ---
 
