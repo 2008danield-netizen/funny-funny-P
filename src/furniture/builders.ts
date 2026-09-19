@@ -25,6 +25,7 @@
 import * as THREE from 'three';
 
 import { chamferedBox } from '@/scene/millwork';
+import { radialSegments as segmentsFor } from '@/scene/tessellation';
 
 import type { BuildSpec } from './catalog';
 
@@ -105,13 +106,15 @@ function cylinder(
   bottom: number,
   top: number,
   role: MaterialRole,
-  radialSegments = 10,
+  // Defaulted from the radius rather than to a number, so a table leg and a
+  // waste pipe are each exactly as round as their own size calls for.
+  sides = segmentsFor(radius),
 ): FurniturePart {
   const geometry = new THREE.CylinderGeometry(
     radius,
     radius,
     Math.max(1e-4, top - bottom),
-    radialSegments,
+    sides,
   );
   geometry.translate(center[0], (bottom + top) / 2, center[1]);
   return { geometry, role };
@@ -130,7 +133,7 @@ function cone(
     topRadius,
     bottomRadius,
     Math.max(1e-4, top - bottom),
-    18,
+    segmentsFor(Math.max(topRadius, bottomRadius)),
     1,
     true,
   );

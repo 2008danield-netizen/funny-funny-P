@@ -53,6 +53,8 @@
 
 import * as THREE from 'three';
 
+import { cornerSegments, radialSegments, sphereSegments } from './tessellation';
+
 import type { StrideSample } from '@/walk/stride';
 
 /* ------------------------------- Proportions ------------------------------ */
@@ -135,7 +137,13 @@ function segment(
   const group = new THREE.Group();
 
   const shaft = new THREE.Mesh(
-    new THREE.CylinderGeometry(topRadius, bottomRadius, length, 12, 1),
+    new THREE.CylinderGeometry(
+      topRadius,
+      bottomRadius,
+      length,
+      radialSegments(Math.max(topRadius, bottomRadius)),
+      1,
+    ),
     material,
   );
   // Hung from the joint at its top, so rotating the group swings the limb from
@@ -145,7 +153,13 @@ function segment(
   shaft.receiveShadow = true;
   group.add(shaft);
 
-  const ball = new THREE.Mesh(new THREE.SphereGeometry(topRadius, 12, 8), material);
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(
+      topRadius,
+      sphereSegments(topRadius).width,
+      sphereSegments(topRadius).height,
+    ),
+    material,
+  );
   ball.castShadow = true;
   group.add(ball);
 
@@ -197,7 +211,13 @@ export class Figure {
     // and widens again at the chest, which a single cone cannot do — so it is two
     // stacked, meeting at the waist.
     const trunkLower = new THREE.Mesh(
-      new THREE.CylinderGeometry(R.waist * h, R.pelvis * h, (0.66 - P.hip) * h, 14, 1),
+      new THREE.CylinderGeometry(
+        R.waist * h,
+        R.pelvis * h,
+        (0.66 - P.hip) * h,
+        radialSegments(Math.max(R.waist, R.pelvis) * h),
+        1,
+      ),
       m,
     );
     trunkLower.position.y = ((0.66 - P.hip) / 2) * h;
@@ -206,7 +226,13 @@ export class Figure {
     this.torso.add(trunkLower);
 
     const trunkUpper = new THREE.Mesh(
-      new THREE.CylinderGeometry(R.chest * h, R.waist * h, (P.shoulder - 0.66) * h, 14, 1),
+      new THREE.CylinderGeometry(
+        R.chest * h,
+        R.waist * h,
+        (P.shoulder - 0.66) * h,
+        radialSegments(Math.max(R.chest, R.waist) * h),
+        1,
+      ),
       m,
     );
     trunkUpper.position.y = (0.66 - P.hip) * h + ((P.shoulder - 0.66) / 2) * h;
@@ -226,7 +252,12 @@ export class Figure {
      */
     const shoulderRadius = R.chest * h * 0.46;
     const shoulders = new THREE.Mesh(
-      new THREE.CapsuleGeometry(shoulderRadius, P.shoulderSpan * h * 0.74, 4, 10),
+      new THREE.CapsuleGeometry(
+        shoulderRadius,
+        P.shoulderSpan * h * 0.74,
+        cornerSegments(shoulderRadius) * 2,
+        radialSegments(shoulderRadius),
+      ),
       m,
     );
     shoulders.rotation.z = Math.PI / 2;
@@ -249,7 +280,13 @@ export class Figure {
     const headRadius = P.head * h * 0.5;
 
     const neck = new THREE.Mesh(
-      new THREE.CylinderGeometry(R.neck * h, R.neck * h * 1.2, neckLength, 10, 1),
+      new THREE.CylinderGeometry(
+        R.neck * h,
+        R.neck * h * 1.2,
+        neckLength,
+        radialSegments(R.neck * h * 1.2),
+        1,
+      ),
       m,
     );
     neck.position.y = shoulderLine + neckLength * 0.5;
@@ -258,7 +295,13 @@ export class Figure {
 
     // Slightly taller than wide, like a real skull, and set a little forward of
     // the spine where a head actually sits.
-    this.head = new THREE.Mesh(new THREE.SphereGeometry(headRadius, 16, 12), m);
+    this.head = new THREE.Mesh(new THREE.SphereGeometry(
+        headRadius,
+        sphereSegments(headRadius).width,
+        sphereSegments(headRadius).height,
+      ),
+      m,
+    );
     this.head.scale.set(0.86, 1, 0.94);
     this.head.position.set(0, shoulderLine + neckLength + headRadius * 0.82, 0.008 * h);
     this.head.castShadow = true;
@@ -300,7 +343,13 @@ export class Figure {
     // A hand, as a flattened blob. Fingers at this scale are a few pixels and
     // modelling them buys nothing but polygons and a chance to look wrong.
     const hand = new THREE.Group();
-    const palm = new THREE.Mesh(new THREE.SphereGeometry(R.wristR * h * 1.5, 10, 8), m);
+    const palm = new THREE.Mesh(new THREE.SphereGeometry(
+        R.wristR * h * 1.5,
+        sphereSegments(R.wristR * h * 1.5).width,
+        sphereSegments(R.wristR * h * 1.5).height,
+      ),
+      m,
+    );
     palm.scale.set(0.75, 1.5, 0.45);
     palm.position.y = -R.wristR * h * 1.5;
     palm.castShadow = true;

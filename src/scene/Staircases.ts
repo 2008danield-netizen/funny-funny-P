@@ -14,6 +14,7 @@
  */
 
 import * as THREE from 'three';
+import { radialSegments } from './tessellation';
 
 import { stairGeometry, type StairGeometry } from '@/building/stairs';
 import type { DesignDocument, Point2, Stair } from '@/state/types';
@@ -131,7 +132,17 @@ export class Staircases {
     // IRC R311.7.8.1 puts a graspable rail 34-38 in above the nosings; 36 in
     // is the middle of that band and what most stairs are built to.
     const railHeight = 0.9144;
-    const postGeometry = new THREE.CylinderGeometry(0.02, 0.02, railHeight, 6);
+    /*
+     * Six sides was a hexagon you could count from the landing. At 20 mm the
+     * sagitta rule asks for sixteen, which costs twenty triangles a post.
+     */
+    const postRadius = 0.02;
+    const postGeometry = new THREE.CylinderGeometry(
+      postRadius,
+      postRadius,
+      railHeight,
+      radialSegments(postRadius),
+    );
 
     for (const point of geometry.handrailLine) {
       const post = new THREE.Mesh(postGeometry.clone(), this.materials.rail);

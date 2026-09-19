@@ -16,6 +16,7 @@
  */
 
 import * as THREE from 'three';
+import { sphereSegments } from './tessellation';
 
 import { MaterialLibrary } from './materials/MaterialLibrary';
 import {
@@ -721,7 +722,11 @@ export class Building {
       let handle = this.handles.get(vertex.id);
       if (!handle) {
         handle = new THREE.Mesh(
-          new THREE.SphereGeometry(HANDLE_RADIUS, 16, 12),
+          new THREE.SphereGeometry(
+        HANDLE_RADIUS,
+        sphereSegments(HANDLE_RADIUS).width,
+        sphereSegments(HANDLE_RADIUS).height,
+      ),
           this.handleMaterial,
         );
         handle.name = `Handle_${vertex.id}`;

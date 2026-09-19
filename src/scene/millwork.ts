@@ -42,6 +42,9 @@ import * as THREE from 'three';
 // does not, and the corners are the ones nearest the eye.
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
+import { creaseNormals } from './shading';
+import { cornerSegments } from './tessellation';
+
 import type { Point2 } from '@/state/types';
 
 /**
@@ -274,7 +277,23 @@ export function sweepSection(
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-  return geometry;
+
+  /*
+   * THE PROFILE IS A CURVE AND WAS BEING DRAWN AS A STAIRCASE.
+   *
+   * The normals written above are right for each strip and identical across it,
+   * so a cove is shaded as five or six flat bands with a hard step between each
+   * — which is what a 65 mm cornice looked like, and why the mouldings added
+   * last session read as a diagram of moulding rather than as moulding.
+   *
+   * Smoothing here rather than in the loop, because the loop does not know what
+   * comes next: the normal at the top of one strip and the bottom of the one
+   * above it have to agree, and only the finished geometry has both. The crease
+   * angle keeps the square corners square — the back of a skirting turns ninety
+   * degrees into the wall and must stay a corner — and keeps the mitres at the
+   * room's own corners sharp for the same reason.
+   */
+  return creaseNormals(geometry);
 }
 
 /* ------------------------------- Chamfers --------------------------------- */
@@ -318,6 +337,11 @@ export function chamferedBox(
   // triangles are waste.
   if (safe < 0.0001) return new THREE.BoxGeometry(width, height, depth);
 
-  return new RoundedBoxGeometry(width, height, depth, 1, safe);
+  /*
+   * One segment across the round is a flat chamfer, not a fillet — and a flat
+   * cut catches the light as a hard band rather than as the soft highlight a
+   * real eased edge has, which is the whole reason these exist.
+   */
+  return new RoundedBoxGeometry(width, height, depth, cornerSegments(safe), safe);
 }
 
