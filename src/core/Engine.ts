@@ -45,7 +45,7 @@ import { stairGeometry } from '@/building/stairs';
 import { activeLevel, elevationOf, floorHoles, levelBelow } from '@/state/levels';
 import { analyseClearance } from '@/clearance/analyze';
 import { MaterialLibrary } from '@/scene/materials/MaterialLibrary';
-import { bakeSkyVisibility, fillUnbaked, useBakedAmbient } from '@/scene/skyBake';
+import { SkyBake, fillUnbaked, useBakedAmbient, type BakeResult } from '@/scene/skyBake';
 import { computeWear, fillNoWear, useWear } from '@/scene/wear';
 import { designStore } from '@/state/store';
 import { editorStore } from '@/state/selection';
@@ -67,6 +67,20 @@ export interface EngineStats {
 
 /** Cheap frames to render after the camera stops, before starting to converge. */
 const SETTLE_FRAMES = 6;
+
+/**
+ * How long the sky bake may work for in one frame, in milliseconds.
+ *
+ * Eight, which is half a sixty-hertz frame. It leaves the other half for the
+ * render and for whatever the browser wants to do, so a bake that takes a
+ * second in total costs about seventy frames of being slightly busy rather than
+ * one second of the page being dead.
+ *
+ * Larger would finish sooner and start to be felt; smaller would be gentler and
+ * take long enough that somebody could move a wall again before the last one
+ * landed, which just restarts it.
+ */
+const BAKE_SLICE_MS = 8;
 
 /**
  * How long a single accumulation sample may take before convergence gives up.
@@ -158,6 +172,11 @@ export class Engine {
    * bake lands shortly after the dragging stops.
    */
   private bakeTimer: number | null = null;
+  /** The bake being worked on a slice at a time, or null. */
+  private bakeInProgress: SkyBake | null = null;
+  /** What that bake is for, held until it finishes and can be applied. */
+  private bakeSurfaces: THREE.Mesh[] = [];
+  private bakeOccluders: THREE.Object3D[] = [];
   /** Whether the sky bake runs at all. `__bakeProbe(false)` turns it off. */
   private bakeEnabled = true;
 
@@ -1307,8 +1326,6 @@ export class Engine {
   }
 
   private runSkyBake(): void {
-    const doc = designStore.getState();
-    const level = activeLevel(doc);
     const surfaces: THREE.Mesh[] = [];
     const occluders: THREE.Object3D[] = [];
 
@@ -1366,7 +1383,44 @@ export class Engine {
      * them separately would paint a different time of day onto the walls from
      * the one being rendered.
      */
-    const result = bakeSkyVisibility(surfaces, occluders, this.lighting.bakeLight());
+    /*
+     * Started rather than run. The frame loop drives it a slice at a time.
+     *
+     * The bake is a second or so of work on one thread, and doing it in one go
+     * stops the page dead for that second — no scrolling, no typing in a panel,
+     * no cursor — on every edit that settles. `SkyBake` hands out eight
+     * millisecond slices instead; the arithmetic is identical and the app keeps
+     * answering while it happens.
+     */
+    this.bakeInProgress?.step(0);
+    this.bakeInProgress = new SkyBake(surfaces, occluders, this.lighting.bakeLight());
+    this.bakeSurfaces = surfaces;
+    this.bakeOccluders = occluders;
+    this.invalidate();
+  }
+
+  /**
+   * Works on the bake for a slice of this frame, and finishes it if it is done.
+   *
+   * Returns whether there is still work left, which is what keeps the frame
+   * loop awake: without it the loop would sleep after the first slice and the
+   * bake would never resume.
+   */
+  private advanceSkyBake(): boolean {
+    const bake = this.bakeInProgress;
+    if (!bake) return false;
+
+    if (!bake.step(BAKE_SLICE_MS)) return true;
+
+    const result = bake.result!;
+    this.bakeInProgress = null;
+    const surfaces = this.bakeSurfaces;
+    const occluders = this.bakeOccluders;
+    this.bakeSurfaces = [];
+    this.bakeOccluders = [];
+
+    const doc = designStore.getState();
+    const level = activeLevel(doc);
 
     // Everything else keeps its full ambient rather than reading a missing
     // attribute as zero and rendering black.
@@ -1416,6 +1470,7 @@ export class Engine {
     this.captureEnvironment();
 
     this.invalidate();
+    return false;
   }
 
   /**
@@ -1444,14 +1499,33 @@ export class Engine {
       if (object.name.includes('Pick')) hidden.push(object);
     });
 
-    const result = this.environmentProbe.capture(
-      this.scene,
-      { x: focus.x, y: 1.6, z: focus.z },
-      hidden,
-    );
+    /*
+     * Begun rather than done. The frame loop draws one face per frame.
+     *
+     * Six full renders of the scene is six frames' worth of work arriving at
+     * once, and on the software rasteriser it measured about 700 ms — the one
+     * remaining freeze after the sky bake had been spread out. There is no
+     * reason for the faces to share a frame: each is an independent render into
+     * an independent slice of the target.
+     */
+    this.environmentProbe.begin(this.scene, { x: focus.x, y: 1.6, z: focus.z }, hidden);
+  }
+
+  /**
+   * Renders one face of the reflection probe, and binds it when all six are in.
+   *
+   * Returns whether there is more to do, which is what keeps the frame loop
+   * awake — the same contract `advanceSkyBake` has, and for the same reason.
+   */
+  private advanceEnvironment(): boolean {
+    if (!this.environmentProbe.capturing) return false;
+    if (!this.environmentProbe.step()) return true;
+
     this.lighting.useCapturedEnvironment(this.environmentProbe.texture);
     this.applyReflections(this.environmentProbe.texture);
-    this.lastProbe = result;
+    this.lastProbe = this.environmentProbe.result;
+    this.invalidate();
+    return false;
   }
 
   /**
@@ -1519,7 +1593,7 @@ export class Engine {
   }
 
   /** What the last bake did, for the probe. */
-  private lastBake: ReturnType<typeof bakeSkyVisibility> | null = null;
+  private lastBake: BakeResult | null = null;
 
   /** Recomputes the clearance report and pushes it to the overlay. */
   private refreshClearance(): void {
@@ -1744,6 +1818,28 @@ export class Engine {
         this.pipeline!.resetAccumulation();
       }
 
+      /*
+       * A slice of the sky bake, before anything is drawn.
+       *
+       * Before, because the frame that FINISHES the bake should be the frame
+       * that shows it; doing it afterwards would leave the new shading waiting
+       * for one more invalidation, which on a settled view might not come.
+       *
+       * It runs while the camera is moving too. That costs a few milliseconds
+       * of a drag and it is the right trade: the alternative is that a bake
+       * started by an edit never advances while somebody is still looking
+       * around, which is exactly when they are waiting for it.
+       */
+      /*
+       * The bake first, then the reflection probe — never both in one frame.
+       *
+       * They are the two expensive things that happen when a plan settles, and
+       * the probe cannot start until the bake has finished anyway: it
+       * photographs a room that the bake has just lit. Running them in series
+       * also keeps each frame's extra work to one slice rather than two.
+       */
+      const baking = this.advanceSkyBake() || this.advanceEnvironment();
+
       if (moving || this.settleFrames > 0) {
         /* ---- Cheap path ---- */
         if (!moving) this.settleFrames -= 1;
@@ -1754,6 +1850,28 @@ export class Engine {
 
         this.reportStats(delta, started);
         // Keep going: either still moving, or settling before convergence.
+        return true;
+      }
+
+      /*
+       * Work still running keeps the loop awake — and draws NOTHING.
+       *
+       * Without the wake-up the loop sleeps the moment the view settles and a
+       * bake handed one slice never gets a second. Without the "draws nothing",
+       * the cure is far worse than the disease, and it was: the first version
+       * rendered a full composed still frame after every slice. Measured on the
+       * software rasteriser that is about 600 ms of rendering chasing 8 ms of
+       * baking, so the whole thing went from a one-second freeze to sixteen
+       * frames in nine seconds and a bake that never finished at all.
+       *
+       * There is nothing to draw. The bake writes nothing until it is done and
+       * the probe binds nothing until all six faces are in, so every
+       * intermediate frame is identical to the one before it. Returning true
+       * without rendering asks for another frame and spends all of it on the
+       * work.
+       */
+      if (baking) {
+        this.reportStats(delta, started);
         return true;
       }
 
