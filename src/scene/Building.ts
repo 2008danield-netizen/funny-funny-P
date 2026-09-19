@@ -516,7 +516,13 @@ export class Building {
         pivot.quaternion.setFromRotationMatrix(matrix);
 
         const mesh = new THREE.Mesh(part.geometry, this.frameMaterial);
+        // Named, so the sky bake can find it. An unnamed mesh was treated as
+        // furniture: it blocked light for everything else and received none
+        // itself, which left every door flat-lit and brighter than the wall it
+        // sits in — the one surface in the room with no shading on it at all.
+        mesh.name = `LeafPanel_${opening.id}`;
         mesh.castShadow = true;
+        mesh.receiveShadow = true;
         mesh.userData = { pickKind: 'opening', pickId: opening.id };
         pivot.add(mesh);
 

@@ -26,6 +26,27 @@ export interface OpeningPreset {
   glazed: boolean;
   /** Number of vertical glazing bars. Zero for a single pane. */
   mullions: number;
+  /**
+   * Horizontal glazing bars. Zero for a single light per mullion bay.
+   *
+   * Separate from `mullions` because they are not the same thing to look at: a
+   * pair of vertical bars reads as a wide window divided into three, and adding
+   * one horizontal turns the same window into six small panes and a cottage.
+   */
+  transoms: number;
+  /**
+   * How a door leaf is made up.
+   *
+   * `flush` is a plain slab, which is what every leaf in this building used to
+   * be and what a modern internal door often is. `shaker` sets flat panels back
+   * inside a frame of stiles and rails; `fielded` raises the middle of each
+   * panel again with a bevel round it. The step at a panel's edge is the whole
+   * effect — ten millimetres of depth at eye height, which reads from across a
+   * room where texture does not.
+   */
+  panels: 'flush' | 'shaker' | 'fielded';
+  /** How many panels tall a panelled leaf is. Ignored when flush. */
+  panelRows: number;
 }
 
 export const OPENING_PRESETS: readonly OpeningPreset[] = [
@@ -40,6 +61,9 @@ export const OPENING_PRESETS: readonly OpeningPreset[] = [
     leaf: 'single',
     glazed: false,
     mullions: 0,
+    transoms: 0,
+    panels: 'shaker',
+    panelRows: 2,
   },
   {
     id: 'door-double',
@@ -52,6 +76,9 @@ export const OPENING_PRESETS: readonly OpeningPreset[] = [
     leaf: 'double',
     glazed: false,
     mullions: 0,
+    transoms: 0,
+    panels: 'fielded',
+    panelRows: 3,
   },
   {
     id: 'door-sliding',
@@ -64,6 +91,9 @@ export const OPENING_PRESETS: readonly OpeningPreset[] = [
     leaf: 'sliding',
     glazed: true,
     mullions: 1,
+    transoms: 0,
+    panels: 'flush',
+    panelRows: 1,
   },
   {
     id: 'door-opening',
@@ -76,6 +106,9 @@ export const OPENING_PRESETS: readonly OpeningPreset[] = [
     leaf: 'none',
     glazed: false,
     mullions: 0,
+    transoms: 0,
+    panels: 'flush',
+    panelRows: 1,
   },
   {
     id: 'window-casement',
@@ -88,6 +121,9 @@ export const OPENING_PRESETS: readonly OpeningPreset[] = [
     leaf: 'none',
     glazed: true,
     mullions: 1,
+    transoms: 1,
+    panels: 'flush',
+    panelRows: 1,
   },
   {
     id: 'window-picture',
@@ -100,6 +136,9 @@ export const OPENING_PRESETS: readonly OpeningPreset[] = [
     leaf: 'none',
     glazed: true,
     mullions: 0,
+    transoms: 0,
+    panels: 'flush',
+    panelRows: 1,
   },
   {
     id: 'window-tall',
@@ -112,6 +151,9 @@ export const OPENING_PRESETS: readonly OpeningPreset[] = [
     leaf: 'none',
     glazed: true,
     mullions: 1,
+    transoms: 1,
+    panels: 'flush',
+    panelRows: 1,
   },
   {
     id: 'window-clerestory',
@@ -124,6 +166,9 @@ export const OPENING_PRESETS: readonly OpeningPreset[] = [
     leaf: 'none',
     glazed: true,
     mullions: 2,
+    transoms: 0,
+    panels: 'flush',
+    panelRows: 1,
   },
 ];
 

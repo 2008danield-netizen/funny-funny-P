@@ -596,6 +596,10 @@ export class Engine {
           id: item.id,
           kind: item.kind,
           label: item.label,
+          // Where it is in the world, as well as on screen. A check that wants
+          // to photograph one thing needs somewhere to stand, and working that
+          // out from the plan's vertices means reimplementing the wall layout.
+          at: [item.at.x, item.at.y, item.at.z] as [number, number, number],
           // Clipped points come back outside the canvas, which is the honest
           // answer: a door behind the camera has no pixel.
           x: Math.round(((projected.x + 1) / 2) * canvas.clientWidth),
@@ -625,6 +629,41 @@ export class Engine {
         this.runSkyBake();
       }
       return this.lastBake;
+    };
+
+    /*
+     * The document itself, readable and replaceable, for automated checking.
+     *
+     * A headless browser can drive the tools, and driving the tools to build a
+     * room with a door and two windows in it takes a hundred clicks whose
+     * coordinates it would have to work out first. This is the seam that lets a
+     * check START from a building instead of constructing one, and it goes
+     * through `replace`, which is the same path Load and Import take — so what
+     * it exercises is the real rebuild, not a shortcut past it.
+     *
+     * Called with nothing it reads instead, which is how a check finds out what
+     * the walls are called before it edits them.
+     */
+    /*
+     * Stand the camera somewhere precise and look at something precise.
+     *
+     * The named viewpoints all frame the whole building, and the walls between
+     * the camera and the interior hide themselves — so the door a check wants
+     * to photograph is reliably on a wall that has just disappeared. This is
+     * the way to photograph one piece of joinery.
+     */
+    scope.__lookFrom = (
+      from: [number, number, number],
+      at: [number, number, number],
+    ) => {
+      this.cameraController.placeAt(from, at);
+      this.invalidate();
+      return { from, at };
+    };
+
+    scope.__design = (json?: string) => {
+      if (json) designStore.replace(JSON.parse(json) as DesignDocument);
+      return JSON.stringify(designStore.getState());
     };
 
     /*
@@ -1194,12 +1233,24 @@ export class Engine {
 
       occluders.push(mesh);
 
+      /*
+       * Which meshes RECEIVE the bake, as opposed to merely blocking it.
+       *
+       * The shell, the trim, and the joinery. The joinery was the omission that
+       * showed: a door leaf and a window lining were treated as furniture, so
+       * they occluded everything around them and received nothing themselves —
+       * which left every door in the building flat-lit, brighter than the wall
+       * it sits in, and with no shadow in its own panels. The one surface in
+       * the room a person walks right up to was the only one with no shading.
+       */
       const shell =
         mesh.name.startsWith('Wall') ||
         mesh.name.startsWith('Floor') ||
         mesh.name.startsWith('Ceiling') ||
         mesh.name.startsWith('Skirting') ||
-        mesh.name.startsWith('Cornice');
+        mesh.name.startsWith('Cornice') ||
+        mesh.name.startsWith('Frames') ||
+        mesh.name.startsWith('LeafPanel');
       if (shell) surfaces.push(mesh);
     });
 
