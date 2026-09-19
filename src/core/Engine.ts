@@ -1269,6 +1269,9 @@ export class Engine {
       // ray, or every wall would report itself sealed by its own pick slab.
       if (mesh.name.includes('Pick')) return;
 
+      // Glazing lets daylight through. See the note where the flag is set.
+      if (mesh.userData.transmissive) return;
+
       occluders.push(mesh);
 
       /*

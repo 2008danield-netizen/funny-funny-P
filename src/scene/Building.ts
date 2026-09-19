@@ -562,6 +562,27 @@ export class Building {
 
     entry.frames = this.addMergedMesh(frames, this.frameMaterial, matrix, `Frames_${segment.wall.id}`, true);
     entry.glass = this.addMergedMesh(glass, this.glassMaterial, matrix, `Glass_${segment.wall.id}`, false);
+    if (entry.glass) {
+      /*
+       * GLASS IS NOT A WALL, AND THE SKY BAKE THOUGHT IT WAS.
+       *
+       * The bake casts a ray from every point and counts the ones that escape
+       * the building. It tested against every visible mesh, glazing included,
+       * so a picture window was as solid as the wall around it and a room with
+       * a whole glass gable baked exactly as dark as a cellar. The sun came
+       * through — `castShadow` is already false here — but nothing else did,
+       * which is the precise combination that makes a bright day outside a
+       * window look painted on.
+       *
+       * Marking it here rather than matching on the name in the bake, because
+       * this is the file that knows what the mesh IS. Real glazing passes
+       * about eighty per cent; treating it as a hundred is much nearer the
+       * truth than treating it as zero, and a partial count would need the
+       * bake's any-hit rays to report what they touched, which is most of what
+       * makes them cheap.
+       */
+      entry.glass.userData.transmissive = true;
+    }
 
   }
 

@@ -120,6 +120,28 @@ const OFFSET = 0.002;
 const SMOOTH_PASSES = 2;
 
 /**
+ * How many times the BOUNCE is averaged, which is far more.
+ *
+ * -----------------------------------------------------------------------------
+ * THE FIRST DAYLIT ROOM CAME OUT BLOTCHY.
+ *
+ * Grey smears across a wall, twenty or thirty centimetres across. It looked
+ * like occlusion noise and it was not: the screen-space pass was innocent, and
+ * doubling its samples changed nothing. The smears were at exactly the spacing
+ * of the mesh's own vertices, which is what gives it away — the bounce is
+ * gathered at twelve rays a point, and twelve rays is about thirty per cent
+ * noise on a value that then gets stretched across a quarter of a metre.
+ *
+ * The fix is not more rays. The bounce is a LOW-FREQUENCY term by design: the
+ * whole reason it is sampled coarsely is that bounced colour changes over
+ * metres, so anything varying from one vertex to the next is noise by
+ * definition and can be averaged away without losing a thing. Five passes
+ * removes it; the sky visibility keeps two, because its variation over a
+ * quarter-metre is the corner darkening and is real.
+ */
+const BOUNCE_SMOOTH_PASSES = 5;
+
+/**
  * The light the building is standing in, in linear working colour space.
  *
  * Built by `Lighting.bakeLight()` off the live lights, not off a preset, so the
@@ -512,11 +534,30 @@ export function bakeSkyVisibility(
       continue;
     }
 
-    // A stand-in carrying the same transform, so a hit lands in the same place.
+    /*
+     * A stand-in carrying the same transform — written to `matrix`, NOT to
+     * `matrixWorld`, and the difference was a real bug that hid for two
+     * commits.
+     *
+     * Copying the world matrix looks like the direct thing to do and is
+     * undone immediately. `Bvh.fromMeshes` calls `updateMatrixWorld(true)` on
+     * everything it is given, as it must, and for an object with no parent
+     * that recomputes `matrixWorld` FROM `matrix` — which was still the
+     * identity. Every proxy in the building therefore collapsed to the origin
+     * in its own local coordinates.
+     *
+     * The symptom was not an obviously broken picture. It was a sealed room
+     * whose floor reported seeing 64% of the sky, because the ceiling that
+     * should have blocked it was somewhere else entirely; and that in turn is
+     * why adding a window to a room changed nothing. Found by measuring the
+     * floor and the ceiling separately instead of trusting one mean over
+     * everything.
+     */
     const proxy = new THREE.Mesh(coarse);
     mesh.updateMatrixWorld(true);
-    proxy.matrixWorld.copy(mesh.matrixWorld);
+    proxy.matrix.copy(mesh.matrixWorld);
     proxy.matrixAutoUpdate = false;
+    proxy.matrixWorldNeedsUpdate = true;
     proxies.push(proxy);
   }
 
@@ -779,7 +820,7 @@ export function bakeSkyVisibility(
     }
 
     smoothAlongEdges(geometry, groupOf, values, SMOOTH_PASSES);
-    smoothChannels(geometry, groupOf, bounced, SMOOTH_PASSES);
+    smoothChannels(geometry, groupOf, bounced, BOUNCE_SMOOTH_PASSES);
 
     for (let v = 0; v < position.count; v++) {
       const g = groupOf[v]!;

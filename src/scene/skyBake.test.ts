@@ -446,3 +446,88 @@ describe('the bounce', () => {
     }
   });
 });
+
+describe('the coarse proxies', () => {
+  /**
+   * A lid placed by its TRANSFORM rather than baked into its geometry, and
+   * carrying a coarse stand-in — which is how every wall, floor and ceiling in
+   * the real building arrives.
+   */
+  function movedLid(size: number, height: number): THREE.Mesh {
+    const geometry = new THREE.PlaneGeometry(size, size, 1, 1);
+    geometry.rotateX(Math.PI / 2);
+    // The coarse stand-in the bake is supposed to cast against.
+    geometry.userData.coarse = geometry.clone();
+
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial());
+    mesh.position.y = height;
+    mesh.updateMatrixWorld(true);
+    return mesh;
+  }
+
+  it('casts against the proxy where the mesh actually is', () => {
+    /*
+     * A bug that hid for two commits and produced no obviously broken picture.
+     *
+     * The proxy was given the mesh's world matrix by writing to `matrixWorld`,
+     * which `Bvh.fromMeshes` then overwrites: it calls `updateMatrixWorld(true)`
+     * on everything, as it must, and for a parentless object that recomputes
+     * the world matrix FROM `matrix` — still the identity. Every proxy in the
+     * building collapsed to the origin.
+     *
+     * The symptom was a sealed room whose floor reported seeing 64% of the sky,
+     * and a window that changed nothing when added to a room. The check is a
+     * lid one metre up: with the transform carried it seals the floor below,
+     * and with it lost it lies in the floor's own plane and seals nothing.
+     */
+    const moved = bakeSkyVisibility([floor(4, 6)], [floor(4, 6), movedLid(4, 0.5)]);
+
+    /*
+     * The same lid with its height baked into the geometry instead, so the
+     * transform has nothing to carry. The two must agree exactly; they did not,
+     * because the transformed one was being tested at the origin.
+     */
+    const baked = (() => {
+      const geometry = new THREE.PlaneGeometry(4, 4, 1, 1);
+      geometry.rotateX(Math.PI / 2);
+      geometry.translate(0, 0.5, 0);
+      geometry.userData.coarse = geometry.clone();
+      const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial());
+      mesh.updateMatrixWorld(true);
+      return bakeSkyVisibility([floor(4, 6)], [floor(4, 6), mesh]);
+    })();
+
+    expect(moved.mean).toBeCloseTo(baked.mean, 3);
+    // And both must be a real occlusion rather than two matching no-ops.
+    expect(moved.mean).toBeLessThan(0.45);
+  });
+
+  it('leaves a point in the open alone even when a proxy exists elsewhere', () => {
+    // The other direction: a proxy correctly placed well away must not darken
+    // anything, which a collapsed one sitting at the origin certainly would.
+    const ground = floor(4, 6);
+    const lid = movedLid(4, 40);
+
+    const result = bakeSkyVisibility([ground], [ground, lid]);
+    expect(result.mean).toBeGreaterThan(0.9);
+  });
+
+  it('treats a mesh marked transmissive as if it were not there', () => {
+    /*
+     * Glazing. The bake used to test against every visible mesh, so a picture
+     * window was as solid as the wall around it and a room with a glass gable
+     * baked as dark as a cellar.
+     */
+    const ground = floor(4, 6);
+
+    const glazed = movedLid(4, 1);
+    glazed.userData.transmissive = true;
+
+    const sealed = bakeSkyVisibility([floor(4, 6)], [ground, movedLid(4, 1)]);
+    const open = bakeSkyVisibility([ground], [ground, glazed].filter(
+      (mesh) => !mesh.userData.transmissive,
+    ));
+
+    expect(open.mean).toBeGreaterThan(sealed.mean + 0.3);
+  });
+});
