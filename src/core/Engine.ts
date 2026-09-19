@@ -46,6 +46,7 @@ import { activeLevel, elevationOf, floorHoles, levelBelow } from '@/state/levels
 import { analyseClearance } from '@/clearance/analyze';
 import { MaterialLibrary } from '@/scene/materials/MaterialLibrary';
 import { bakeSkyVisibility, fillUnbaked, useBakedAmbient } from '@/scene/skyBake';
+import { computeWear, fillNoWear, useWear } from '@/scene/wear';
 import { designStore } from '@/state/store';
 import { editorStore } from '@/state/selection';
 import { EnvironmentProbe, wantsReflections, type ProbeResult } from '@/scene/EnvironmentProbe';
@@ -762,7 +763,7 @@ export class Engine {
      * point with its world position so the pattern can be looked at directly.
      */
     scope.__bakeField = (name: string) => {
-      const points: { x: number; y: number; z: number; a: number }[] = [];
+      const points: { x: number; y: number; z: number; a: number; w: number }[] = [];
       const seen = new Set<string>();
 
       this.scene.traverse((object) => {
@@ -770,6 +771,7 @@ export class Engine {
         if (!mesh.isMesh || !mesh.name.startsWith(name)) return;
         const position = mesh.geometry.getAttribute('position');
         const baked = mesh.geometry.getAttribute('bakedAmbient');
+        const worn = mesh.geometry.getAttribute('surfaceWear');
         if (!position || !baked) return;
 
         mesh.updateMatrixWorld(true);
@@ -784,6 +786,7 @@ export class Engine {
             y: Math.round(at.y * 1000) / 1000,
             z: Math.round(at.z * 1000) / 1000,
             a: Math.round(baked.getX(v) * 1000) / 1000,
+            w: worn ? Math.round(worn.getX(v) * 1000) / 1000 : 0,
           });
         }
       });
@@ -1304,6 +1307,8 @@ export class Engine {
   }
 
   private runSkyBake(): void {
+    const doc = designStore.getState();
+    const level = activeLevel(doc);
     const surfaces: THREE.Mesh[] = [];
     const occluders: THREE.Object3D[] = [];
 
@@ -1367,10 +1372,33 @@ export class Engine {
     // attribute as zero and rendering black.
     for (const object of occluders) {
       const mesh = object as THREE.Mesh;
-      if (mesh.isMesh) fillUnbaked(mesh.geometry);
-      for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
-        if (material) useBakedAmbient(material);
+      if (mesh.isMesh) {
+        fillUnbaked(mesh.geometry);
+        fillNoWear(mesh.geometry);
       }
+      for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+        if (material) {
+          useBakedAmbient(material);
+          useWear(material);
+        }
+      }
+    }
+
+    /*
+     * Wear rides on the bake, because it is computed FROM the bake.
+     *
+     * Grime collects where nothing can reach, and "nothing can reach here" is
+     * exactly the quantity the sky bake has just spent half a second measuring
+     * for a different reason. Running it as its own pass would mean measuring
+     * the same enclosure twice.
+     */
+    const floorY = elevationOf(doc, level.id);
+    for (const mesh of surfaces) {
+      const walked = mesh.name.startsWith('Floor');
+      mesh.updateMatrixWorld(true);
+      const wear = computeWear(mesh.geometry, mesh.matrixWorld, { floorY, walked });
+      if (!wear) continue;
+      mesh.geometry.setAttribute('surfaceWear', new THREE.BufferAttribute(wear, 1));
     }
 
     this.lastBake = result;
