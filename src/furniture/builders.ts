@@ -30,7 +30,23 @@ import { cornerSegments, radialSegments as segmentsFor } from '@/scene/tessellat
 import type { BuildSpec } from './catalog';
 
 /** Which material a part is drawn with. */
-export type MaterialRole = 'frame' | 'soft' | 'accent' | 'glass' | 'shade';
+/**
+ * What a part is made of, as far as the renderer is concerned.
+ *
+ * `clutter` and `foliage` belong to the things left ON furniture rather than to
+ * the furniture itself, and they are separate roles for a reason that is not
+ * cosmetic: a mug must not take the sofa's colourway. Changing an armchair from
+ * grey to teal should not turn the book on the table teal as well, and it would
+ * if clutter borrowed any of the four roles a piece's colourway drives.
+ */
+export type MaterialRole =
+  | 'frame'
+  | 'soft'
+  | 'accent'
+  | 'glass'
+  | 'shade'
+  | 'clutter'
+  | 'foliage';
 
 export interface FurniturePart {
   geometry: THREE.BufferGeometry;
