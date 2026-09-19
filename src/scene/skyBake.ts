@@ -93,17 +93,6 @@ const REACH = 12;
  */
 const OFFSET = 0.002;
 
-/**
- * The darkest the ambient is ever allowed to go, 0 to 1.
- *
- * A point deep inside a cupboard genuinely sees no sky and its honest answer is
- * zero. Rendering that as pure black is wrong for a different reason: the light
- * that actually reaches such a place in reality is BOUNCED, arriving after two
- * or three reflections, and none of that is simulated here. So this floor is
- * standing in for the bounce until S3 computes it properly, and it is deliberate
- * rather than a fudge to make the picture nicer.
- */
-const FLOOR = 0.12;
 
 /**
  * How many times the baked field is averaged with itself before it is used.
@@ -130,6 +119,69 @@ const FLOOR = 0.12;
  */
 const SMOOTH_PASSES = 2;
 
+/**
+ * The light the building is standing in, in linear working colour space.
+ *
+ * Built by `Lighting.bakeLight()` off the live lights, not off a preset, so the
+ * bake and the render are never describing different times of day.
+ */
+export interface BakeLight {
+  /** Sky colour times the hemisphere light's intensity. */
+  sky: THREE.Color;
+  /** What the ground throws back up, times the same intensity. */
+  ground: THREE.Color;
+  /** Direction TOWARDS the sun, normalised. */
+  sun: THREE.Vector3;
+  /** Sun colour times its intensity. */
+  sunColour: THREE.Color;
+}
+
+/** A white sky with no sun, for a bake that was given no lighting to stand in. */
+const PLAIN_LIGHT: BakeLight = {
+  sky: new THREE.Color(1, 1, 1),
+  ground: new THREE.Color(0.35, 0.33, 0.3),
+  sun: new THREE.Vector3(0, 1, 0),
+  sunColour: new THREE.Color(0, 0, 0),
+};
+
+/**
+ * How many rays each surface a bounce comes OFF casts to find its own light.
+ *
+ * Far fewer than a point gets, and for a reason that is not thrift. This number
+ * decides how brightly one patch of floor glows, and a patch of floor is a
+ * whole triangle of the coarse geometry — the result is already averaged over
+ * something the size of a doorway. Sampling it finely would be measuring a
+ * quantity that has been thrown away before it is used.
+ */
+const SOURCE_SAMPLES = 6;
+
+/**
+ * How many rays each point casts to gather colour from its surroundings.
+ *
+ * A quarter of what the sky visibility gets, deliberately, because the two
+ * measure different things. Sky visibility carries the CORNER — a gradient that
+ * changes over centimetres and is the whole reason for the bake — and needs the
+ * rays. Bounced colour changes over metres: the wall near a wood floor is
+ * warmer than the wall near a window, and twelve rays resolve that perfectly
+ * well. Spending forty-eight on it would roughly double the bake for detail
+ * that is not there to find.
+ */
+const BOUNCE_SAMPLES = 12;
+
+/**
+ * How dark the bounce may leave a place that sees no sky at all, 0 to 1.
+ *
+ * This is what `FLOOR` used to be for, and it is now a tenth of what it was.
+ *
+ * The old floor of 0.12 was a stand-in: a point deep inside a cupboard sees no
+ * sky, its honest sky visibility is zero, and rendering that as black is wrong
+ * because the light that really reaches such a place arrives bounced. With the
+ * bounce actually computed, that stand-in is doing the bounce's job badly and
+ * mostly needs to get out of the way — but not entirely, because this is ONE
+ * bounce, and a real cupboard is lit by the third and fourth.
+ */
+const FLOOR = 0.012;
+
 export interface BakeResult {
   /** Vertices visited. */
   vertices: number;
@@ -143,6 +195,10 @@ export interface BakeResult {
   darkest: number;
   /** Rays per point actually afforded, which a large building reduces. */
   samples: number;
+  /** Mean bounce added on top of the sky, as a fraction of open daylight. */
+  bounce: number;
+  /** How far the bounce's colour departs from grey, 0 to 1. See `chroma`. */
+  chroma: number;
 }
 
 /**
@@ -279,16 +335,158 @@ export function smoothAlongEdges(
 }
 
 /**
- * Bakes sky visibility into a `bakedAmbient` attribute on each mesh.
+ * How far a colour departs from grey, 0 to 1.
+ *
+ * Reported by the bake because "the bounce carries colour" is a claim that can
+ * be checked, and the number that checks it is not the mean brightness. A
+ * bounce that is exactly grey everywhere would raise `bounce` handsomely and
+ * would have failed at the one thing this pass is for. This is the spread
+ * between the strongest and weakest channel, relative to the strongest.
+ */
+function chroma(r: number, g: number, b: number): number {
+  const high = Math.max(r, g, b);
+  if (high <= 1e-6) return 0;
+  return (high - Math.min(r, g, b)) / high;
+}
+
+/**
+ * `smoothAlongEdges`, applied to each channel of an interleaved RGB field.
+ *
+ * The bounce needs the same treatment as the sky visibility and for the same
+ * reason — a per-vertex value on an unevenly tessellated mesh draws the mesh —
+ * and in fact needs it more, being gathered at a quarter of the rays.
+ */
+function smoothChannels(
+  geometry: THREE.BufferGeometry,
+  groupOf: Int32Array,
+  values: Float32Array,
+  passes: number,
+): void {
+  const count = values.length / 3;
+  const channel = new Float32Array(count);
+
+  for (let c = 0; c < 3; c++) {
+    for (let g = 0; g < count; g++) channel[g] = values[g * 3 + c]!;
+    smoothAlongEdges(geometry, groupOf, channel, passes);
+    for (let g = 0; g < count; g++) values[g * 3 + c] = channel[g]!;
+  }
+}
+
+/**
+ * What every triangle in the building gives off, per side, in linear RGB.
+ *
+ * -----------------------------------------------------------------------------
+ * WHY EVERY TRIANGLE IS TWO SURFACES.
+ *
+ * A wall has an inside and an outside, and they are lit completely differently
+ * — the point of the whole exercise. The same is true of a ceiling, a worktop,
+ * a door. So each triangle is measured twice, once along its normal and once
+ * against it, and a bounce ray picks the side it arrived on.
+ *
+ * Getting that wrong is not a small error. Take the colour of the sunlit
+ * OUTSIDE of a wall and paint it on the inside, and every room in the house
+ * glows as though the walls were made of paper.
+ *
+ * -----------------------------------------------------------------------------
+ * WHAT LANDS ON A SURFACE, AND WHAT LEAVES IT.
+ *
+ * What lands is the sky it can see, plus the sun if the sun can see it. What
+ * leaves is that, times how much the surface reflects — its albedo, which the
+ * tree carries per triangle.
+ *
+ * The result is six floats per triangle: three for the front, three for the
+ * back. Flat arrays rather than objects, because this is read once per bounce
+ * ray and a few hundred thousand property lookups are not free.
+ */
+function gatherSourceRadiance(bvh: Bvh, light: BakeLight): Float32Array {
+  const out = new Float32Array(bvh.triangleCount * 6);
+  if (bvh.triangleCount === 0) return out;
+
+  const directions = hemisphereDirections(SOURCE_SAMPLES);
+
+  const normal = new THREE.Vector3();
+  const centre = new THREE.Vector3();
+  const tangent = new THREE.Vector3();
+  const bitangent = new THREE.Vector3();
+  const direction = new THREE.Vector3();
+  const origin = new THREE.Vector3();
+  const facing = new THREE.Vector3();
+
+  for (let t = 0; t < bvh.triangleCount; t++) {
+    bvh.normalOf(t, normal);
+    bvh.centroidOf(t, centre);
+
+    const albedoR = bvh.albedo ? bvh.albedo[t * 3]! : 0.5;
+    const albedoG = bvh.albedo ? bvh.albedo[t * 3 + 1]! : 0.5;
+    const albedoB = bvh.albedo ? bvh.albedo[t * 3 + 2]! : 0.5;
+
+    for (const sign of [1, -1]) {
+      facing.copy(normal).multiplyScalar(sign);
+
+      if (Math.abs(facing.y) < 0.99) tangent.set(0, 1, 0).cross(facing).normalize();
+      else tangent.set(1, 0, 0).cross(facing).normalize();
+      bitangent.crossVectors(facing, tangent);
+
+      origin.copy(centre).addScaledVector(facing, OFFSET);
+
+      let open = 0;
+      for (const sample of directions) {
+        direction
+          .copy(tangent)
+          .multiplyScalar(sample.x)
+          .addScaledVector(facing, sample.y)
+          .addScaledVector(bitangent, sample.z)
+          .normalize();
+
+        if (!bvh.anyHit(origin.x, origin.y, origin.z, direction.x, direction.y, direction.z, REACH)) {
+          open++;
+        }
+      }
+      const sky = open / SOURCE_SAMPLES;
+
+      /*
+       * The sun, which on a sunlit floor is most of the bounce.
+       *
+       * Lambert's cosine law, then one shadow ray. A surface turned away from
+       * the sun gets nothing without a ray being cast at all, which is most of
+       * the triangles in a building and so is worth the branch.
+       */
+      let sun = 0;
+      const cosine = facing.dot(light.sun);
+      if (cosine > 0) {
+        if (!bvh.anyHit(origin.x, origin.y, origin.z, light.sun.x, light.sun.y, light.sun.z, REACH)) {
+          sun = cosine;
+        }
+      }
+
+      const base = t * 6 + (sign === 1 ? 0 : 3);
+      out[base] = albedoR * (light.sky.r * sky + light.sunColour.r * sun);
+      out[base + 1] = albedoG * (light.sky.g * sky + light.sunColour.g * sun);
+      out[base + 2] = albedoB * (light.sky.b * sky + light.sunColour.b * sun);
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Bakes sky visibility and one bounce of coloured light into each mesh.
  *
  * `surfaces` are the meshes that receive the bake; `occluders` are everything
  * that can block a ray, which is normally the surfaces plus the furniture. The
  * two lists differ because a sofa should darken the wall behind it without
  * itself needing per-vertex shading.
+ *
+ * Two attributes come out, and they are separate on purpose. `bakedAmbient` is
+ * a single float: how much open sky this point can see, sampled finely because
+ * it carries the corner darkening. `bakedBounce` is an RGB: the light that
+ * arrived here off other surfaces, sampled coarsely because it changes over
+ * metres rather than centimetres. The shader adds them.
  */
 export function bakeSkyVisibility(
   surfaces: readonly THREE.Mesh[],
   occluders: readonly THREE.Object3D[],
+  light: BakeLight = PLAIN_LIGHT,
 ): BakeResult {
   const started = Date.now();
 
@@ -334,6 +532,21 @@ export function bakeSkyVisibility(
   const bvh = Bvh.fromMeshes(proxies);
 
   /*
+   * WHAT EVERY SURFACE IN THE BUILDING IS GIVING OFF, WORKED OUT ONCE.
+   *
+   * A bounce needs a source, and the source is every other surface: a floor in
+   * sun throws warm light up the wall opposite, a lawn outside throws green
+   * onto the reveal of a window, a white ceiling throws the sky back down.
+   *
+   * Computing that per bounce ray would mean asking "how much light lands on
+   * this patch of floor" a hundred thousand times over for the same few
+   * thousand patches. Doing it once per triangle instead costs a few tens of
+   * thousands of rays — about a twentieth of the bake — and the answer it
+   * produces is the same one.
+   */
+  const radiance = gatherSourceRadiance(bvh, light);
+
+  /*
    * A hard ceiling on the work, kept even now the tree makes each ray cheap.
    *
    * The tree removed the triangle count from the cost; it did not remove the
@@ -356,17 +569,49 @@ export function bakeSkyVisibility(
   const distinct = countDistinct(surfaces);
   const samples = Math.max(
     8,
-    Math.min(SAMPLES, Math.floor(budget / Math.max(1, distinct))),
+    // The bounce's twelve come out of the same budget. Leaving them out of the
+    // sum meant the ceiling was quietly a fifth higher than it claimed.
+    Math.min(SAMPLES, Math.floor(budget / Math.max(1, distinct)) - BOUNCE_SAMPLES),
   );
   const directions = samples === SAMPLES ? DIRECTIONS : hemisphereDirections(samples);
+
+  /*
+   * A separate, coarser set for the bounce, and never a subset of the above.
+   *
+   * Taking every fourth of the forty-eight would leave a spiral with a gap in
+   * it — the golden-angle sequence is even only when taken whole — and the gap
+   * would sit in the same place on every point in the building, which is how a
+   * sampling artefact stops looking like noise and starts looking like a mark
+   * on the wall.
+   */
+  const bounceDirections = hemisphereDirections(BOUNCE_SAMPLES);
+
+  /*
+   * What the arriving light is measured AGAINST.
+   *
+   * The attribute multiplies the renderer's own indirect term, so both parts
+   * have to be expressed as a fraction of standing in the open — the sky
+   * visibility already is, being a count of rays that escaped. Dividing the
+   * bounce by the sky colour puts it in the same units, and doing it per
+   * channel is what lets the bounce be a different colour from the sky, which
+   * is the entire point of this pass.
+   */
+  const reference = [
+    Math.max(1e-4, light.sky.r),
+    Math.max(1e-4, light.sky.g),
+    Math.max(1e-4, light.sky.b),
+  ] as const;
 
   let vertices = 0;
   let rays = 0;
   let total = 0;
   let darkest = 1;
+  let bounceTotal = 0;
+  let chromaTotal = 0;
 
   const point = new THREE.Vector3();
   const normal = new THREE.Vector3();
+  const facing = new THREE.Vector3();
   const direction = new THREE.Vector3();
   const tangent = new THREE.Vector3();
   const bitangent = new THREE.Vector3();
@@ -425,6 +670,9 @@ export function bakeSkyVisibility(
     }
 
     const values = new Float32Array(groups.length);
+    // Three per group: the bounced light arriving here, as a fraction of open
+    // daylight, per channel.
+    const bounced = new Float32Array(groups.length * 3);
 
     for (let g = 0; g < groups.length; g++) {
       const shared = groups[g]!;
@@ -473,10 +721,65 @@ export function bakeSkyVisibility(
       }
 
       values[g] = FLOOR + (1 - FLOOR) * (escaped / samples);
+
+      /*
+       * THE BOUNCE: WHAT THE ROOM ITSELF IS THROWING AT THIS POINT.
+       *
+       * A second, coarser gather with a different question. The pass above
+       * asked only whether each ray got out; this one asks, of the rays that
+       * did NOT, what colour the thing they hit is giving off — which is the
+       * table computed once at the top.
+       *
+       * Rays that escape contribute nothing here. They are already counted, in
+       * full, by the sky visibility above, and adding them again would double
+       * the daylight on every surface that can see out of a window.
+       */
+      let bounceR = 0;
+      let bounceG = 0;
+      let bounceB = 0;
+
+      for (const sample of bounceDirections) {
+        direction
+          .copy(tangent)
+          .multiplyScalar(sample.x)
+          .addScaledVector(normal, sample.y)
+          .addScaledVector(bitangent, sample.z)
+          .normalize();
+
+        rays++;
+        const hit = bvh.closestHit(
+          origin.x, origin.y, origin.z,
+          direction.x, direction.y, direction.z,
+          REACH,
+        );
+        if (!hit) continue;
+
+        /*
+         * Which side of that triangle the light is coming off.
+         *
+         * The ray arrives on the face turned towards it, so the side whose
+         * normal OPPOSES the ray. Reading the wrong one paints the sunlit
+         * outside of a wall onto its inside and every room glows.
+         */
+        const triangle = hit.triangle;
+        bvh.normalOf(triangle, facing);
+        const front = facing.dot(direction) < 0;
+        const base = triangle * 6 + (front ? 0 : 3);
+
+        bounceR += radiance[base]!;
+        bounceG += radiance[base + 1]!;
+        bounceB += radiance[base + 2]!;
+      }
+
+      bounced[g * 3] = bounceR / BOUNCE_SAMPLES / reference[0];
+      bounced[g * 3 + 1] = bounceG / BOUNCE_SAMPLES / reference[1];
+      bounced[g * 3 + 2] = bounceB / BOUNCE_SAMPLES / reference[2];
+
       vertices++;
     }
 
     smoothAlongEdges(geometry, groupOf, values, SMOOTH_PASSES);
+    smoothChannels(geometry, groupOf, bounced, SMOOTH_PASSES);
 
     for (let v = 0; v < position.count; v++) {
       const g = groupOf[v]!;
@@ -485,12 +788,30 @@ export function bakeSkyVisibility(
       visibility[v] = g >= 0 ? values[g]! : 1;
     }
 
+    const bounce = new Float32Array(position.count * 3);
+    for (let v = 0; v < position.count; v++) {
+      const g = groupOf[v]!;
+      if (g < 0) continue;
+      bounce[v * 3] = bounced[g * 3]!;
+      bounce[v * 3 + 1] = bounced[g * 3 + 1]!;
+      bounce[v * 3 + 2] = bounced[g * 3 + 2]!;
+    }
+
     for (const value of values) {
       total += value;
       if (value < darkest) darkest = value;
     }
 
+    for (let g = 0; g < groups.length; g++) {
+      const r = bounced[g * 3]!;
+      const gr = bounced[g * 3 + 1]!;
+      const b = bounced[g * 3 + 2]!;
+      bounceTotal += (r + gr + b) / 3;
+      chromaTotal += chroma(r, gr, b);
+    }
+
     geometry.setAttribute('bakedAmbient', new THREE.BufferAttribute(visibility, 1));
+    geometry.setAttribute('bakedBounce', new THREE.BufferAttribute(bounce, 3));
   }
 
   return {
@@ -500,6 +821,8 @@ export function bakeSkyVisibility(
     mean: vertices > 0 ? total / vertices : 0,
     darkest,
     samples,
+    bounce: vertices > 0 ? bounceTotal / vertices : 0,
+    chroma: vertices > 0 ? chromaTotal / vertices : 0,
   };
 }
 
@@ -532,25 +855,45 @@ export function useBakedAmbient(material: THREE.Material): void {
         '#include <common>',
         `#include <common>
         attribute float bakedAmbient;
-        varying float vBakedAmbient;`,
+        attribute vec3 bakedBounce;
+        varying float vBakedAmbient;
+        varying vec3 vBakedBounce;`,
       )
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
-        vBakedAmbient = bakedAmbient;`,
+        vBakedAmbient = bakedAmbient;
+        vBakedBounce = bakedBounce;`,
       );
 
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
         `#include <common>
-        varying float vBakedAmbient;`,
+        varying float vBakedAmbient;
+        varying vec3 vBakedBounce;`,
       )
       .replace(
         '#include <aomap_fragment>',
         `#include <aomap_fragment>
-        reflectedLight.indirectDiffuse *= vBakedAmbient;
-        reflectedLight.indirectSpecular *= vBakedAmbient;`,
+        /*
+         * Sky plus bounce. The sky term is one number because open sky is one
+         * colour; the bounce is three because a wood floor and a lawn are not.
+         *
+         * They ADD rather than multiply: they are two separate lots of light
+         * arriving at the same place, and a point that sees no sky at all is
+         * lit entirely by the second — which is the whole reason a room with
+         * the door shut is not pitch black.
+         *
+         * The specular takes the mean rather than the colour. Tinting a
+         * reflection by the bounce would be double-counting: what a shiny floor
+         * reflects is decided by what is in front of it, not by what happens to
+         * be lighting it.
+         */
+        vec3 bakedIndirect = vec3(vBakedAmbient) + vBakedBounce;
+        reflectedLight.indirectDiffuse *= bakedIndirect;
+        reflectedLight.indirectSpecular *=
+          vBakedAmbient + (vBakedBounce.r + vBakedBounce.g + vBakedBounce.b) / 3.0;`,
       );
   };
 
@@ -570,9 +913,25 @@ export function useBakedAmbient(material: THREE.Material): void {
  * the right thing to fall back to.
  */
 export function fillUnbaked(geometry: THREE.BufferGeometry): void {
-  if (geometry.getAttribute('bakedAmbient')) return;
   const position = geometry.getAttribute('position');
   if (!position) return;
-  const ones = new Float32Array(position.count).fill(1);
-  geometry.setAttribute('bakedAmbient', new THREE.BufferAttribute(ones, 1));
+
+  if (!geometry.getAttribute('bakedAmbient')) {
+    const ones = new Float32Array(position.count).fill(1);
+    geometry.setAttribute('bakedAmbient', new THREE.BufferAttribute(ones, 1));
+  }
+
+  /*
+   * The bounce defaults to ZERO, not to ones, and the asymmetry is the point.
+   *
+   * Sky visibility of one means "sees the whole sky", which is the behaviour
+   * from before the bake existed and so the right thing to fall back to. A
+   * bounce of one would mean "as much light again arriving off the walls",
+   * which nothing has measured and which would double the ambient on every
+   * surface that was never baked — every stick of furniture in the building.
+   */
+  if (!geometry.getAttribute('bakedBounce')) {
+    const zeros = new Float32Array(position.count * 3);
+    geometry.setAttribute('bakedBounce', new THREE.BufferAttribute(zeros, 3));
+  }
 }

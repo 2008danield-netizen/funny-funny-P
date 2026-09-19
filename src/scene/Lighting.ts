@@ -58,6 +58,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 
 import type { LightingPresetId, LightingSpec, PlanModel } from '@/state/types';
 import { Sky, type SkyColours } from './Sky';
+import type { BakeLight } from './skyBake';
 
 /** World up, and a fallback for when the sun is directly overhead. */
 const UP = new THREE.Vector3(0, 1, 0);
@@ -291,6 +292,33 @@ export class Lighting {
      */
     const sunDirection = this.sun.position.clone().sub(this.sun.target.position).normalize();
     this.sky.apply(this.scene, preset.sky, sunDirection);
+  }
+
+  /**
+   * The light the sky bake is standing in, described in its own terms.
+   *
+   * -----------------------------------------------------------------------------
+   * ONE QUESTION, ASKED IN ONE PLACE.
+   *
+   * The bake needs to know what colour the sky is, what colour the ground
+   * throws back, where the sun is and how strong it is. Every one of those is
+   * already decided here, by the preset and by `positionLights`, and every one
+   * of them would be a silent mistake if the bake decided it separately: a
+   * bounce computed against a daylight sky while the scene is rendered at dusk
+   * is not subtly wrong, it is a different time of day baked into the walls.
+   *
+   * The colours come off the LIVE lights rather than off the preset, so the
+   * overall gain and any later adjustment are already in them — and they are in
+   * the renderer's working (linear) colour space, which is what arithmetic on
+   * light requires.
+   */
+  bakeLight(): BakeLight {
+    return {
+      sky: this.hemisphere.color.clone().multiplyScalar(this.hemisphere.intensity),
+      ground: this.hemisphere.groundColor.clone().multiplyScalar(this.hemisphere.intensity),
+      sun: this.sun.position.clone().sub(this.sun.target.position).normalize(),
+      sunColour: this.sun.color.clone().multiplyScalar(this.sun.intensity),
+    };
   }
 
   /**

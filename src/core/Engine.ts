@@ -1205,7 +1205,16 @@ export class Engine {
 
     if (surfaces.length === 0) return;
 
-    const result = bakeSkyVisibility(surfaces, occluders);
+    /*
+     * The bake is handed the LIVE lights, not the preset.
+     *
+     * The bounce is arithmetic on light: it needs the colour of the sky, the
+     * colour and direction of the sun, and the strength of both. Every one of
+     * those is already decided by `Lighting`, and a bake that decided any of
+     * them separately would paint a different time of day onto the walls from
+     * the one being rendered.
+     */
+    const result = bakeSkyVisibility(surfaces, occluders, this.lighting.bakeLight());
 
     // Everything else keeps its full ambient rather than reading a missing
     // attribute as zero and rendering black.

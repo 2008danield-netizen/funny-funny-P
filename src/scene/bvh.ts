@@ -52,6 +52,14 @@ interface Node {
   right: Node | null;
 }
 
+/** What a closest-hit query found. Reused between calls, never retained. */
+export interface Hit {
+  /** Index of the triangle hit, for looking up whatever is stored per triangle. */
+  triangle: number;
+  /** Distance along the ray. */
+  distance: number;
+}
+
 export class Bvh {
   /** Nine floats per triangle: three corners, world space. */
   private readonly tris: Float32Array;
@@ -60,6 +68,17 @@ export class Bvh {
   private readonly root: Node | null;
 
   readonly triangleCount: number;
+
+  /**
+   * Three floats per triangle: the linear RGB the surface reflects.
+   *
+   * Carried by the tree rather than looked up afterwards because the only
+   * identity a hit has is a triangle number, and walking back from that to a
+   * mesh and its material would mean keeping a parallel index of ranges — one
+   * more thing to keep in step with the build for no gain. A bounce needs the
+   * colour and nothing else about the surface.
+   */
+  albedo: Float32Array | null = null;
 
   constructor(triangles: Float32Array) {
     this.tris = triangles;
@@ -80,9 +99,11 @@ export class Bvh {
    */
   static fromMeshes(meshes: readonly THREE.Mesh[]): Bvh {
     const chunks: number[] = [];
+    const colours: number[] = [];
     const a = new THREE.Vector3();
     const b = new THREE.Vector3();
     const c = new THREE.Vector3();
+    const tint = new THREE.Color();
 
     for (const mesh of meshes) {
       const geometry = mesh.geometry;
@@ -94,6 +115,31 @@ export class Bvh {
       const index = geometry.index;
       const count = index ? index.count : position.count;
 
+      /*
+       * One colour for the whole mesh, taken before the loop.
+       *
+       * A multi-material mesh reflects more than one colour and this takes the
+       * first, which is wrong in a way worth stating plainly: a wall whose two
+       * faces are papered differently bounces the same light off both. The
+       * alternative is resolving the material group each triangle falls in, and
+       * the bounce is a low-frequency term gathered at twelve rays a point —
+       * far too coarse for that distinction to survive into the picture.
+       *
+       * The colour is copied and NOT converted, which is easy to get wrong in
+       * both directions. A bounce is arithmetic on light and so must be linear:
+       * mid-grey reflects about 0.22 of what lands on it, not 0.5, and using
+       * the sRGB byte would make every bounce roughly twice as strong as it
+       * should be. But `THREE.Color` already holds the working colour space —
+       * `set(0x808080)` did that conversion when the material was made — so
+       * converting again here gives 0.038, which is a fifth of the truth. A
+       * test in `bvh.test.ts` pins the number precisely because both mistakes
+       * produce a plausible-looking picture.
+       */
+      const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      const source = (material as THREE.MeshStandardMaterial | undefined)?.color;
+      if (source) tint.copy(source);
+      else tint.setRGB(0.5, 0.5, 0.5);
+
       for (let i = 0; i < count; i += 3) {
         const i0 = index ? index.getX(i) : i;
         const i1 = index ? index.getX(i + 1) : i + 1;
@@ -104,10 +150,18 @@ export class Bvh {
         c.fromBufferAttribute(position, i2).applyMatrix4(matrix);
 
         chunks.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+        colours.push(tint.r, tint.g, tint.b);
       }
     }
 
-    return new Bvh(new Float32Array(chunks));
+    const bvh = new Bvh(new Float32Array(chunks));
+    /*
+     * Written in BUILD order, not source order. The build permutes `order`, not
+     * the triangles themselves, so triangle N is still the Nth one pushed here
+     * and the colours line up without being permuted too.
+     */
+    bvh.albedo = new Float32Array(colours);
+    return bvh;
   }
 
   /* -------------------------------- Building ------------------------------ */
@@ -230,6 +284,108 @@ export class Bvh {
     return false;
   }
 
+  /**
+   * The nearest thing this ray hits, or null.
+   *
+   * Strictly more expensive than `anyHit` and used for a different question.
+   * `anyHit` answers "did the light get out", where the first blocker will do;
+   * this answers "what is the light that arrives from over there", where only
+   * the nearest surface contributes and picking a farther one would fetch the
+   * colour of the grass through a wall.
+   *
+   * The traversal cannot stop early — there may always be a nearer hit in a box
+   * still on the stack — but it does shrink `maxDistance` as it goes, which
+   * prunes almost as well in practice.
+   *
+   * The result object is REUSED between calls. Read what is needed and do not
+   * keep it; allocating one per call is a hundred thousand short-lived objects
+   * per bake, which is a measurable share of the whole.
+   */
+  closestHit(
+    originX: number, originY: number, originZ: number,
+    dirX: number, dirY: number, dirZ: number,
+    maxDistance: number,
+  ): Hit | null {
+    if (!this.root) return null;
+
+    const invX = 1 / dirX;
+    const invY = 1 / dirY;
+    const invZ = 1 / dirZ;
+
+    let nearest = maxDistance;
+    let found = -1;
+
+    const stack: Node[] = [this.root];
+
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+
+      if (!this.hitsBox(node, originX, originY, originZ, invX, invY, invZ, nearest)) continue;
+
+      if (node.left) {
+        stack.push(node.left);
+        if (node.right) stack.push(node.right);
+        continue;
+      }
+
+      for (let i = node.start; i < node.start + node.count; i++) {
+        const triangle = this.order[i]!;
+        const distance = this.hitDistance(
+          triangle,
+          originX, originY, originZ,
+          dirX, dirY, dirZ,
+          nearest,
+        );
+        if (distance > 0) {
+          nearest = distance;
+          found = triangle;
+        }
+      }
+    }
+
+    if (found < 0) return null;
+    this.hit.triangle = found;
+    this.hit.distance = nearest;
+    return this.hit;
+  }
+
+  private readonly hit: Hit = { triangle: -1, distance: 0 };
+
+  /**
+   * The geometric normal of one triangle, written into `into`.
+   *
+   * Geometric rather than interpolated, on purpose: this is used to decide
+   * which SIDE of a surface a bounce came off, and a smoothed normal near a
+   * crease can point the wrong way for that.
+   */
+  normalOf(triangle: number, into: THREE.Vector3): THREE.Vector3 {
+    const base = triangle * 9;
+    const e1x = this.tris[base + 3]! - this.tris[base]!;
+    const e1y = this.tris[base + 4]! - this.tris[base + 1]!;
+    const e1z = this.tris[base + 5]! - this.tris[base + 2]!;
+    const e2x = this.tris[base + 6]! - this.tris[base]!;
+    const e2y = this.tris[base + 7]! - this.tris[base + 1]!;
+    const e2z = this.tris[base + 8]! - this.tris[base + 2]!;
+
+    return into
+      .set(
+        e1y * e2z - e1z * e2y,
+        e1z * e2x - e1x * e2z,
+        e1x * e2y - e1y * e2x,
+      )
+      .normalize();
+  }
+
+  /** The centre of one triangle, written into `into`. */
+  centroidOf(triangle: number, into: THREE.Vector3): THREE.Vector3 {
+    const base = triangle * 9;
+    return into.set(
+      (this.tris[base]! + this.tris[base + 3]! + this.tris[base + 6]!) / 3,
+      (this.tris[base + 1]! + this.tris[base + 4]! + this.tris[base + 7]!) / 3,
+      (this.tris[base + 2]! + this.tris[base + 5]! + this.tris[base + 8]!) / 3,
+    );
+  }
+
   /** The slab test: does the ray's interval overlap the box on all three axes? */
   private hitsBox(
     node: Node,
@@ -278,6 +434,16 @@ export class Bvh {
     dx: number, dy: number, dz: number,
     maxDistance: number,
   ): boolean {
+    return this.hitDistance(triangle, ox, oy, oz, dx, dy, dz, maxDistance) > 0;
+  }
+
+  /** The same test, reporting how far along the ray the hit is, or 0 for none. */
+  private hitDistance(
+    triangle: number,
+    ox: number, oy: number, oz: number,
+    dx: number, dy: number, dz: number,
+    maxDistance: number,
+  ): number {
     const base = triangle * 9;
     const ax = this.tris[base]!, ay = this.tris[base + 1]!, az = this.tris[base + 2]!;
     const bx = this.tris[base + 3]!, by = this.tris[base + 4]!, bz = this.tris[base + 5]!;
@@ -292,22 +458,24 @@ export class Bvh {
 
     const determinant = e1x * px + e1y * py + e1z * pz;
     // Parallel to the triangle's plane, or a degenerate triangle.
-    if (determinant > -1e-9 && determinant < 1e-9) return false;
+    if (determinant > -1e-9 && determinant < 1e-9) return 0;
 
     const inverse = 1 / determinant;
     const tx = ox - ax, ty = oy - ay, tz = oz - az;
 
     const u = (tx * px + ty * py + tz * pz) * inverse;
-    if (u < 0 || u > 1) return false;
+    if (u < 0 || u > 1) return 0;
 
     const qx = ty * e1z - tz * e1y;
     const qy = tz * e1x - tx * e1z;
     const qz = tx * e1y - ty * e1x;
 
     const v = (dx * qx + dy * qy + dz * qz) * inverse;
-    if (v < 0 || u + v > 1) return false;
+    if (v < 0 || u + v > 1) return 0;
 
     const distance = (e2x * qx + e2y * qy + e2z * qz) * inverse;
-    return distance > 1e-6 && distance < maxDistance;
+    // Zero means "no hit", which is safe because a hit at exactly zero distance
+    // is the self-intersection the ray offset exists to exclude anyway.
+    return distance > 1e-6 && distance < maxDistance ? distance : 0;
   }
 }

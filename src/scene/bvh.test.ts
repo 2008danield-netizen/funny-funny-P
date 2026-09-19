@@ -208,4 +208,130 @@ describe('Bvh', () => {
     // seconds. Anything under half a second means the tree is pruning.
     expect(elapsed).toBeLessThan(500);
   });
+
+  it('finds the NEAREST hit, not just any of them', () => {
+    // Three walls in a line; a ray down the line must report the first.
+    const parts: number[] = [];
+    for (const x of [2, 6, 10]) {
+      for (const value of boxTriangles(0.2, 4, 4, { x, y: 0, z: 0 })) parts.push(value);
+    }
+    const bvh = new Bvh(new Float32Array(parts));
+
+    const hit = bvh.closestHit(0, 0, 0, 1, 0, 0, 100);
+    expect(hit).not.toBeNull();
+    // The first box's near face is at x = 1.9.
+    expect(hit!.distance).toBeCloseTo(1.9, 4);
+  });
+
+  it('returns null when a closest-hit query finds nothing', () => {
+    const bvh = new Bvh(boxTriangles(2, 2, 2));
+    expect(bvh.closestHit(0, 20, 0, 0, 1, 0, 100)).toBeNull();
+  });
+
+  it('agrees with three.js about which triangle and how far', () => {
+    const random = randoms(414243);
+
+    const parts: number[] = [];
+    for (let i = 0; i < 25; i++) {
+      const box = boxTriangles(1 + random(), 1 + random(), 1 + random(), {
+        x: (random() - 0.5) * 16,
+        y: (random() - 0.5) * 6,
+        z: (random() - 0.5) * 16,
+      });
+      for (const value of box) parts.push(value);
+    }
+    const triangles = new Float32Array(parts);
+    const bvh = new Bvh(triangles);
+
+    const origin = new THREE.Vector3();
+    const direction = new THREE.Vector3();
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    const at = new THREE.Vector3();
+
+    let compared = 0;
+
+    for (let i = 0; i < 300; i++) {
+      origin.set((random() - 0.5) * 20, (random() - 0.5) * 8, (random() - 0.5) * 20);
+      direction.set(random() - 0.5, random() - 0.5, random() - 0.5).normalize();
+
+      const ray = new THREE.Ray(origin.clone(), direction.clone());
+      let slowest = Infinity;
+      for (let t = 0; t < triangles.length; t += 9) {
+        a.set(triangles[t]!, triangles[t + 1]!, triangles[t + 2]!);
+        b.set(triangles[t + 3]!, triangles[t + 4]!, triangles[t + 5]!);
+        c.set(triangles[t + 6]!, triangles[t + 7]!, triangles[t + 8]!);
+        if (!ray.intersectTriangle(a, b, c, false, at)) continue;
+        const distance = at.distanceTo(origin);
+        if (distance > 1e-6 && distance < slowest) slowest = distance;
+      }
+
+      const hit = bvh.closestHit(
+        origin.x, origin.y, origin.z,
+        direction.x, direction.y, direction.z,
+        40,
+      );
+
+      if (slowest === Infinity || slowest >= 40) {
+        expect(hit).toBeNull();
+      } else {
+        expect(hit).not.toBeNull();
+        expect(hit!.distance).toBeCloseTo(slowest, 3);
+        compared++;
+      }
+    }
+
+    expect(compared).toBeGreaterThan(30);
+  });
+
+  it('carries one linear albedo per triangle, in build order', () => {
+    const red = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: 0xff0000 }),
+    );
+    red.position.set(-4, 0, 0);
+    const white = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: 0xffffff }),
+    );
+    white.position.set(4, 0, 0);
+
+    const bvh = Bvh.fromMeshes([red, white]);
+    expect(bvh.albedo).not.toBeNull();
+    expect(bvh.albedo!.length).toBe(bvh.triangleCount * 3);
+
+    // The hit object is REUSED between calls, so the first result has to be
+    // read before the second query is made. Holding both at once silently
+    // gives the same answer twice, which is worth a line of test on its own.
+    const left = bvh.closestHit(-8, 0, 0, 1, 0, 0, 100)!.triangle;
+    const right = bvh.closestHit(8, 0, 0, -1, 0, 0, 100)!.triangle;
+
+    expect(bvh.albedo![left * 3]!).toBeCloseTo(1, 3);
+    expect(bvh.albedo![left * 3 + 1]!).toBeCloseTo(0, 3);
+    expect(bvh.albedo![right * 3 + 1]!).toBeCloseTo(1, 3);
+  });
+
+  it('converts sRGB material colours to linear, or every bounce is twice as bright', () => {
+    const grey = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: 0x808080 }),
+    );
+    const bvh = Bvh.fromMeshes([grey]);
+
+    // Mid-grey reflects about 0.22 of the light that lands on it, not 0.5.
+    expect(bvh.albedo![0]!).toBeGreaterThan(0.18);
+    expect(bvh.albedo![0]!).toBeLessThan(0.28);
+  });
+
+  it('reports a triangle normal and centroid it can be asked about', () => {
+    // One triangle in the xz plane, wound so its normal points up.
+    const bvh = new Bvh(new Float32Array([0, 0, 0, 0, 0, 3, 3, 0, 0]));
+    const normal = bvh.normalOf(0, new THREE.Vector3());
+    expect(Math.abs(normal.y)).toBeCloseTo(1, 5);
+
+    const centre = bvh.centroidOf(0, new THREE.Vector3());
+    expect(centre.x).toBeCloseTo(1, 5);
+    expect(centre.z).toBeCloseTo(1, 5);
+  });
 });

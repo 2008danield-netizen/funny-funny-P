@@ -18,7 +18,12 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 
-import { bakeSkyVisibility, fillUnbaked, smoothAlongEdges } from './skyBake';
+import {
+  bakeSkyVisibility,
+  fillUnbaked,
+  smoothAlongEdges,
+  type BakeLight,
+} from './skyBake';
 
 /** The mean of the baked attribute on a mesh. */
 function meanOf(mesh: THREE.Mesh): number {
@@ -113,17 +118,22 @@ describe('sky visibility', () => {
     expect(openTotal / openCount).toBeGreaterThan(shutTotal / shutCount + 0.1);
   });
 
-  it('never goes fully black, because bounced light is not simulated', () => {
+  it('never goes fully black, because the third bounce is still not simulated', () => {
     /*
-     * A point sealed inside a box genuinely sees no sky and its honest answer is
-     * zero. Rendering it as pure black would be wrong for a different reason:
-     * in reality such a place is lit by light that has bounced two or three
-     * times, and none of that is computed here yet.
+     * A point sealed inside a box genuinely sees no sky and its honest answer
+     * is zero, and pure black is still the wrong thing to render.
+     *
+     * The floor that prevents it used to be 0.12 and is now a tenth of that,
+     * which is the change S3 earned: the light reaching such a place arrives
+     * bounced, and the bounce is now computed rather than guessed at. What is
+     * left over is the SECOND and third bounce, which are not — so the floor
+     * still exists, and is small.
      */
     const ground = floor(4);
     const roof = lid(4, 0.1);
     const result = bakeSkyVisibility([ground], [ground, roof]);
-    expect(result.darkest).toBeGreaterThan(0.05);
+    expect(result.darkest).toBeGreaterThan(0.005);
+    expect(result.darkest).toBeLessThan(0.05);
   });
 
   it('does not speckle from rays hitting the surface they left', () => {
@@ -149,7 +159,8 @@ describe('sky visibility', () => {
     const ground = floor(4, 4);
     const result = bakeSkyVisibility([ground], [ground]);
     expect(result.vertices).toBe(25);
-    expect(result.rays).toBe(25 * 48);
+    // Forty-eight rays for the sky visibility and twelve for the bounce.
+    expect(result.rays).toBe(25 * 60);
     expect(result.mean).toBeGreaterThan(0);
   });
 
@@ -273,5 +284,165 @@ describe('smoothAlongEdges', () => {
     smoothAlongEdges(indexed.geometry, indexed.groupOf, b, 2);
 
     for (let g = 0; g < a.length; g++) expect(b[g]!).toBeCloseTo(a[g]!, 6);
+  });
+});
+
+describe('the bounce', () => {
+  /** A plain white sky with no sun, so only the bounce can colour anything. */
+  function sunless(): BakeLight {
+    return {
+      sky: new THREE.Color(1, 1, 1),
+      ground: new THREE.Color(0.3, 0.3, 0.3),
+      sun: new THREE.Vector3(0, 1, 0),
+      sunColour: new THREE.Color(0, 0, 0),
+    };
+  }
+
+  /** A wall standing beside the floor, of a given colour, facing it. */
+  function wall(colour: number, at: number): THREE.Mesh {
+    const geometry = new THREE.PlaneGeometry(6, 3, 4, 4);
+    geometry.rotateY(at > 0 ? -Math.PI / 2 : Math.PI / 2);
+    geometry.translate(at, 1.5, 0);
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({ color: colour }),
+    );
+    mesh.updateMatrixWorld(true);
+    return mesh;
+  }
+
+  /** The mean bounce on a mesh, per channel. */
+  function bounceOf(mesh: THREE.Mesh): [number, number, number] {
+    const attribute = mesh.geometry.getAttribute('bakedBounce');
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    for (let i = 0; i < attribute.count; i++) {
+      r += attribute.getX(i);
+      g += attribute.getY(i);
+      b += attribute.getZ(i);
+    }
+    return [r / attribute.count, g / attribute.count, b / attribute.count];
+  }
+
+  it('is zero in the open, where there is nothing to bounce off', () => {
+    const ground = floor(6);
+    const result = bakeSkyVisibility([ground], [ground], sunless());
+    // Every ray escapes, so nothing was hit and nothing can have bounced.
+    expect(result.bounce).toBeLessThan(0.02);
+  });
+
+  it('takes its colour from the surface it came off', () => {
+    /*
+     * The claim S3 is making, and the one thing no brightness figure can
+     * check: put a red wall next to a floor and the floor must go red, not
+     * merely darker or brighter.
+     */
+    const ground = floor(6, 8);
+    const red = wall(0xff0000, 2.5);
+    const result = bakeSkyVisibility([ground], [ground, red], sunless());
+
+    const [r, g, b] = bounceOf(ground);
+    expect(r).toBeGreaterThan(0.01);
+    expect(r).toBeGreaterThan(g * 3);
+    expect(r).toBeGreaterThan(b * 3);
+    // And the bake must say so, so a check elsewhere can tell colour from grey.
+    expect(result.chroma).toBeGreaterThan(0.5);
+  });
+
+  it('stays grey off a white surface, so chroma means something', () => {
+    const ground = floor(6, 8);
+    const white = wall(0xffffff, 2.5);
+    const result = bakeSkyVisibility([ground], [ground, white], sunless());
+
+    expect(result.bounce).toBeGreaterThan(0.01);
+    expect(result.chroma).toBeLessThan(0.1);
+  });
+
+  it('is stronger near the wall than far from it', () => {
+    /*
+     * Bounced light falls off with distance, and a bake that applied one flat
+     * value per room would pass every other test here.
+     */
+    const ground = floor(8, 10);
+    const red = wall(0xff0000, 3.5);
+    bakeSkyVisibility([ground], [ground, red], sunless());
+
+    const position = ground.geometry.getAttribute('position');
+    const bounce = ground.geometry.getAttribute('bakedBounce');
+
+    let near = 0;
+    let nearCount = 0;
+    let far = 0;
+    let farCount = 0;
+
+    for (let i = 0; i < position.count; i++) {
+      const x = position.getX(i);
+      if (x > 2.5) {
+        near += bounce.getX(i);
+        nearCount++;
+      } else if (x < -2.5) {
+        far += bounce.getX(i);
+        farCount++;
+      }
+    }
+
+    expect(nearCount).toBeGreaterThan(0);
+    expect(farCount).toBeGreaterThan(0);
+    expect(near / nearCount).toBeGreaterThan((far / farCount) * 1.5);
+  });
+
+  it('reads the side of a surface the light actually came off', () => {
+    /*
+     * The mistake that would be hardest to spot. A wall has a sunlit outside
+     * and a shaded inside; take the wrong one and every room in the house glows
+     * as though the walls were paper.
+     *
+     * Two opposed lids over a floor: the upper one is in daylight, the lower
+     * one sees only the upper. The floor must bounce off the LOWER one's
+     * underside, which is dark, and not off the upper one's top, which is not.
+     */
+    const ground = floor(4, 6);
+    const under = lid(4, 1.2);
+    const over = lid(4, 1.4);
+
+    const result = bakeSkyVisibility([ground], [ground, under, over], sunless());
+
+    // The floor sees almost no sky and the ceiling above it is itself unlit,
+    // so what arrives has to be very little.
+    expect(result.bounce).toBeLessThan(0.15);
+  });
+
+  it('lets a sunlit surface throw its own light around', () => {
+    const ground = floor(6, 8);
+    const red = wall(0xff0000, 2.5);
+
+    const dim = bakeSkyVisibility([ground], [ground, red], sunless());
+    const dimBounce = bounceOf(ground)[0];
+
+    const sunlit: BakeLight = {
+      ...sunless(),
+      // Low in the west, straight onto the wall's inward face.
+      sun: new THREE.Vector3(1, 0.3, 0).normalize(),
+      sunColour: new THREE.Color(3, 3, 3),
+    };
+    bakeSkyVisibility([ground], [ground, red], sunlit);
+    const sunBounce = bounceOf(ground)[0];
+
+    expect(dim.bounce).toBeGreaterThan(0);
+    expect(sunBounce).toBeGreaterThan(dimBounce * 1.5);
+  });
+
+  it('gives unbaked geometry no bounce rather than a free doubling of light', () => {
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    fillUnbaked(geometry);
+
+    const bounce = geometry.getAttribute('bakedBounce');
+    expect(bounce.itemSize).toBe(3);
+    for (let i = 0; i < bounce.count; i++) {
+      expect(bounce.getX(i)).toBe(0);
+      expect(bounce.getY(i)).toBe(0);
+      expect(bounce.getZ(i)).toBe(0);
+    }
   });
 });
