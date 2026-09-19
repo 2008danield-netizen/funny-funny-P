@@ -154,8 +154,8 @@ export class Engine {
    * bake lands shortly after the dragging stops.
    */
   private bakeTimer: number | null = null;
-  /** Whether the sky bake runs at all. Off until it is fast enough — see below. */
-  private bakeEnabled = false;
+  /** Whether the sky bake runs at all. `__bakeProbe(false)` turns it off. */
+  private bakeEnabled = true;
 
   constructor(container: HTMLElement) {
     this.renderer = new Renderer(container);
@@ -333,6 +333,21 @@ export class Engine {
     const wantCeilings = doc.showCeilings || this.walkingThrough;
     this.lastCeilings = wantCeilings;
     this.building.update(level.plan, wantCeilings, holes, doc.exterior);
+
+    /*
+     * RE-BAKE, BECAUSE THE MODE CHANGED WHAT THE BUILDING IS.
+     *
+     * Entering the walkthrough switches the ceilings on. An invisible mesh
+     * blocks no rays, so a bake taken in the orbit view describes a room open
+     * to the sky — every wall brightly lit from above and no sense of being
+     * indoors at all, which is the precise opposite of what the walkthrough is
+     * for. Leaving again switches them off and the same argument runs backwards.
+     *
+     * Cheap to miss, because nothing about it looks wrong in isolation: the
+     * bake ran, it reported a healthy spread, and it answered a question about
+     * a different building from the one on screen.
+     */
+    this.scheduleSkyBake();
   }
 
   get walkingThrough(): boolean {
@@ -601,11 +616,55 @@ export class Engine {
      * was. `mean` and `darkest` together say whether there is a gradient at all.
      */
     scope.__bakeProbe = (run?: boolean) => {
+      if (run === false) {
+        this.bakeEnabled = false;
+        return this.lastBake;
+      }
       if (run) {
         this.bakeEnabled = true;
         this.runSkyBake();
       }
       return this.lastBake;
+    };
+
+    /*
+     * The baked field itself, point by point, and why a summary is not enough.
+     *
+     * `__bakeProbe` reports a mean and a darkest, which together say whether
+     * there is a gradient — and say nothing at all about its SHAPE. The first
+     * picture out of the finished bake had a hard diagonal line across two
+     * walls, and no summary statistic could have distinguished that from the
+     * soft corner darkening it was supposed to be. This hands back every baked
+     * point with its world position so the pattern can be looked at directly.
+     */
+    scope.__bakeField = (name: string) => {
+      const points: { x: number; y: number; z: number; a: number }[] = [];
+      const seen = new Set<string>();
+
+      this.scene.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.name.startsWith(name)) return;
+        const position = mesh.geometry.getAttribute('position');
+        const baked = mesh.geometry.getAttribute('bakedAmbient');
+        if (!position || !baked) return;
+
+        mesh.updateMatrixWorld(true);
+        const at = new THREE.Vector3();
+        for (let v = 0; v < position.count; v++) {
+          at.fromBufferAttribute(position, v).applyMatrix4(mesh.matrixWorld);
+          const key = `${Math.round(at.x * 1000)},${Math.round(at.y * 1000)},${Math.round(at.z * 1000)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          points.push({
+            x: Math.round(at.x * 1000) / 1000,
+            y: Math.round(at.y * 1000) / 1000,
+            z: Math.round(at.z * 1000) / 1000,
+            a: Math.round(baked.getX(v) * 1000) / 1000,
+          });
+        }
+      });
+
+      return points;
     };
 
     /*
@@ -1084,29 +1143,25 @@ export class Engine {
    */
   private scheduleSkyBake(): void {
     /*
-     * OFF BY DEFAULT, AND THIS IS NOT A PLACEHOLDER — IT IS AN HONEST STOP.
+     * THIS WAS SWITCHED OFF FOR A WHOLE COMMIT, AND WHAT TURNED IT BACK ON.
      *
-     * The bake is correct: eight tests in `skyBake.test.ts` hold the properties
-     * that matter, including the gradient near an opening, which is the whole
-     * point of it. What it is not is fast enough to run in a browser.
+     * The bake was correct from the first version — the eight properties in
+     * `skyBake.test.ts` held, gradient near an opening included — and it locked
+     * the page so completely that the canvas never appeared.
      *
-     * Two costs were found and fixed, and a third was not. Baking every vertex
-     * of non-indexed geometry did eighteen times the necessary work, because a
-     * point where six triangles meet appears six times; that is deduplicated
-     * now. Casting rays against the SUBDIVIDED render meshes did four hundred
-     * times the necessary work, because session 18's own subdivision turned each
-     * wall from twenty triangles into several hundred; the coarse geometry is
-     * kept alongside for this and is what gets cast against now.
+     * Three costs, found in order. Baking every vertex of non-indexed geometry
+     * did eighteen times the necessary work, because a point where six
+     * triangles meet is stored six times; that is deduplicated. Casting against
+     * the SUBDIVIDED render meshes did four hundred times the necessary work,
+     * because session 18's own subdivision turned each wall from twenty
+     * triangles into several hundred; the coarse geometry is kept alongside and
+     * is what gets cast against. Neither was enough, because neither touched
+     * the shape of the cost: every ray against every triangle.
      *
-     * With both fixed it still locks the page. The remaining cost is that there
-     * is no spatial index at all: every ray is tested against every triangle of
-     * every occluder, and a few hundred thousand rays against a house is a
-     * quantity of work that only a bounding-volume hierarchy makes reasonable.
-     * That is the next piece of work and it is a real one, not a tweak.
-     *
-     * So it is switched off rather than shipped slow. `__bakeProbe(true)` runs
-     * it on demand, which is how the next session can measure a BVH against
-     * something.
+     * `bvh.ts` is what changed it. A tree of boxes built once per edit turns
+     * rays x triangles into rays x log(triangles), and asking only "did
+     * anything block this" — rather than what, and how far — lets a ray pointed
+     * at a nearby wall give up immediately, which indoors is most of them.
      */
     if (!this.bakeEnabled) return;
     if (this.bakeTimer !== null) window.clearTimeout(this.bakeTimer);

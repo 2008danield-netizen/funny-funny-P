@@ -56,6 +56,8 @@
 
 import * as THREE from 'three';
 
+import { Bvh } from './bvh';
+
 /** How many rays each vertex casts over its hemisphere. */
 const SAMPLES = 48;
 
@@ -102,6 +104,31 @@ const OFFSET = 0.002;
  * rather than a fudge to make the picture nicer.
  */
 const FLOOR = 0.12;
+
+/**
+ * How many times the baked field is averaged with itself before it is used.
+ *
+ * -----------------------------------------------------------------------------
+ * THE FIRST PICTURE OUT OF THE WORKING BAKE HAD TRIANGLES IN IT.
+ *
+ * Visibly: a sawtooth of light and dark running down a wall near a corner, in
+ * exactly the zigzag the tessellator's triangles make. It is not noise and more
+ * rays would not have removed it.
+ *
+ * The cause is that a per-vertex bake can only represent detail as fine as the
+ * vertices are spaced, and the tessellator does not space them evenly — it
+ * splits along the longest edge, so some vertices land where visibility is
+ * changing quickly and their neighbours do not. Linear interpolation across the
+ * triangles between them then draws the mesh rather than the light.
+ *
+ * Averaging each value with its neighbours along the mesh's own edges removes
+ * exactly the variation that is one triangle wide — which is precisely the
+ * variation the mesh cannot honestly represent — and leaves the metre-scale
+ * gradient, which is what the bake is for, almost untouched. Two passes: one is
+ * not quite enough on a bad corner, and past three the corner darkening itself
+ * starts to wash out.
+ */
+const SMOOTH_PASSES = 2;
 
 export interface BakeResult {
   /** Vertices visited. */
@@ -169,6 +196,89 @@ function countDistinct(surfaces: readonly THREE.Mesh[]): number {
 }
 
 /**
+ * Averages a per-group value with its neighbours along the mesh's own edges.
+ *
+ * Exported because it is the one piece of the bake whose correctness is not
+ * obvious from the picture: a smoothing pass that averaged the wrong things
+ * would still produce a smooth result, just the wrong one.
+ *
+ * `groupOf` maps each vertex to the group holding its value, which is how
+ * vertices at the same position — of which non-indexed geometry has many — are
+ * treated as one point rather than as separate, unconnected islands.
+ *
+ * The weighting is half the point's own value and half the mean of its
+ * neighbours. Full replacement by the neighbour mean would drift the field
+ * across several passes; half is the standard Laplacian smoothing weight and
+ * converges on the local average without moving it.
+ */
+export function smoothAlongEdges(
+  geometry: THREE.BufferGeometry,
+  groupOf: Int32Array,
+  values: Float32Array,
+  passes: number,
+): void {
+  if (passes <= 0 || values.length === 0) return;
+
+  const index = geometry.index;
+  const position = geometry.getAttribute('position');
+  if (!position) return;
+  const corners = index ? index.count : position.count;
+  if (corners < 3) return;
+
+  /*
+   * Neighbours as one flat pair list rather than an array of arrays.
+   *
+   * Each triangle contributes its three edges, both ways round, and duplicates
+   * are left in deliberately: an edge shared by two triangles counts twice,
+   * which weights a neighbour by how much of the surface it actually shares —
+   * the same reason area weighting is used for smooth normals.
+   */
+  const from: number[] = [];
+  const to: number[] = [];
+
+  const link = (a: number, b: number): void => {
+    const ga = groupOf[a] ?? -1;
+    const gb = groupOf[b] ?? -1;
+    if (ga < 0 || gb < 0 || ga === gb) return;
+    from.push(ga);
+    to.push(gb);
+    from.push(gb);
+    to.push(ga);
+  };
+
+  for (let i = 0; i + 2 < corners; i += 3) {
+    const a = index ? index.getX(i) : i;
+    const b = index ? index.getX(i + 1) : i + 1;
+    const c = index ? index.getX(i + 2) : i + 2;
+    link(a, b);
+    link(b, c);
+    link(c, a);
+  }
+
+  const sums = new Float32Array(values.length);
+  const counts = new Float32Array(values.length);
+
+  for (let pass = 0; pass < passes; pass++) {
+    sums.fill(0);
+    counts.fill(0);
+
+    for (let e = 0; e < from.length; e++) {
+      const a = from[e]!;
+      sums[a] = sums[a]! + values[to[e]!]!;
+      counts[a] = counts[a]! + 1;
+    }
+
+    for (let g = 0; g < values.length; g++) {
+      const count = counts[g]!;
+      // A point with no neighbours — a stray vertex, or a mesh of one triangle
+      // — keeps what it measured. Averaging it with nothing would be zero.
+      if (count === 0) continue;
+      values[g] = values[g]! * 0.5 + (sums[g]! / count) * 0.5;
+    }
+  }
+}
+
+/**
  * Bakes sky visibility into a `bakedAmbient` attribute on each mesh.
  *
  * `surfaces` are the meshes that receive the bake; `occluders` are everything
@@ -182,33 +292,16 @@ export function bakeSkyVisibility(
 ): BakeResult {
   const started = Date.now();
 
-  const raycaster = new THREE.Raycaster();
-  raycaster.far = REACH;
-  /*
-   * Only meshes, and only the first hit.
-   *
-   * `layers` filtering is cheaper than letting the raycaster walk sprites and
-   * lines on every one of several hundred thousand casts. The first-hit
-   * shortcut that three-mesh-bvh provides is not available on the stock
-   * raycaster, so the loop below stops at the first intersection itself rather
-   * than asking for a sorted list it will throw away.
-   */
-
   /*
    * Rays are cast against the COARSE geometry, not against what is drawn.
    *
    * Session 18's subdivision gave every wall several hundred triangles so that
-   * light could vary across it. Every one of those triangles is then tested by
-   * every ray, and there is no spatial index here, so the same change that made
-   * this bake possible also made it four hundred times slower — slow enough that
-   * the first version never finished and the canvas never appeared.
-   *
-   * The coarse geometry describes exactly the same surface with about twenty
-   * triangles, holes for the windows included, which is all an intersection
-   * test needs. `subdivide.ts` keeps it for this.
+   * light could vary across it. The bake does not need any of them: the coarse
+   * geometry describes exactly the same surface — window holes included — with
+   * about twenty triangles, which is all an intersection test looks at.
+   * `subdivide.ts` keeps it for this.
    */
-  const targets: THREE.Object3D[] = [];
-  const temporary: THREE.BufferGeometry[] = [];
+  const proxies: THREE.Mesh[] = [];
 
   for (const object of occluders) {
     if (!object.visible) continue;
@@ -217,7 +310,7 @@ export function bakeSkyVisibility(
 
     const coarse = mesh.geometry.userData.coarse as THREE.BufferGeometry | undefined;
     if (!coarse) {
-      targets.push(mesh);
+      proxies.push(mesh);
       continue;
     }
 
@@ -226,19 +319,28 @@ export function bakeSkyVisibility(
     mesh.updateMatrixWorld(true);
     proxy.matrixWorld.copy(mesh.matrixWorld);
     proxy.matrixAutoUpdate = false;
-    targets.push(proxy);
+    proxies.push(proxy);
   }
 
   /*
-   * A hard ceiling on the work, and it exists because the first version had
-   * none and hung the tab so completely that the canvas never appeared.
+   * ONE TREE, BUILT ONCE, QUERIED A FEW HUNDRED THOUSAND TIMES.
    *
-   * Every ray is tested against every triangle of every occluder — there is no
-   * spatial index here — so the cost is vertices x rays x triangles and all
-   * three grow with the size of the building. A budget measured in RAYS is the
-   * honest unit: it is what actually takes the time, and it lets a small house
-   * get a fine bake while a large one degrades to a coarse one instead of
-   * freezing.
+   * `THREE.Raycaster` walks every triangle of every object on every cast and
+   * then sorts the hits by distance. At this ray count that is not a constant
+   * factor to shave — it is the difference between a bake that finishes and one
+   * that never gives the page back, which is exactly what the first version of
+   * this did. `bvh.ts` explains the arithmetic.
+   */
+  const bvh = Bvh.fromMeshes(proxies);
+
+  /*
+   * A hard ceiling on the work, kept even now the tree makes each ray cheap.
+   *
+   * The tree removed the triangle count from the cost; it did not remove the
+   * vertex count, and that still grows with the size of the building. A budget
+   * measured in RAYS is the honest unit — it is what actually takes the time —
+   * and it lets a small house get a fine bake while a large one degrades to a
+   * coarser one rather than to a frozen tab.
    */
   const budget = MAX_RAYS;
 
@@ -312,7 +414,20 @@ export function bakeSkyVisibility(
       else unique.set(key, [v]);
     }
 
-    for (const shared of unique.values()) {
+    /*
+     * The groups, in a fixed order, so the smoothing pass below can address
+     * them by number rather than by string key.
+     */
+    const groups = [...unique.values()];
+    const groupOf = new Int32Array(position.count).fill(-1);
+    for (let g = 0; g < groups.length; g++) {
+      for (const index of groups[g]!) groupOf[index] = g;
+    }
+
+    const values = new Float32Array(groups.length);
+
+    for (let g = 0; g < groups.length; g++) {
+      const shared = groups[g]!;
       const v = shared[0]!;
       point.fromBufferAttribute(position, v).applyMatrix4(toWorld);
       normal.fromBufferAttribute(normals, v).applyMatrix3(normalMatrix).normalize();
@@ -339,31 +454,44 @@ export function bakeSkyVisibility(
           .addScaledVector(bitangent, sample.z)
           .normalize();
 
-        raycaster.set(origin, direction);
         rays++;
         /*
-         * `intersectObjects` sorts every hit by distance before returning. All
-         * this needs to know is whether there was one at all, and at a quarter
-         * of a million casts that sort is most of the bake's cost — so the
-         * result array is only ever tested for emptiness, never read.
+         * An any-hit query: it stops at the first triangle it touches and never
+         * works out which, or how far. Inside a room most rays are pointed at a
+         * wall a metre away and fail almost immediately, which is worth as much
+         * as the tree itself.
          */
-        if (raycaster.intersectObjects(targets, true).length === 0) escaped++;
+        if (
+          !bvh.anyHit(
+            origin.x, origin.y, origin.z,
+            direction.x, direction.y, direction.z,
+            REACH,
+          )
+        ) {
+          escaped++;
+        }
       }
 
-      const value = FLOOR + (1 - FLOOR) * (escaped / samples);
-      // Written to every vertex that shares this position, so the surface stays
-      // continuous rather than showing the seams between triangles.
-      for (const index of shared) visibility[index] = value;
+      values[g] = FLOOR + (1 - FLOOR) * (escaped / samples);
+      vertices++;
+    }
 
+    smoothAlongEdges(geometry, groupOf, values, SMOOTH_PASSES);
+
+    for (let v = 0; v < position.count; v++) {
+      const g = groupOf[v]!;
+      // Every vertex sharing a position gets the same value, so the surface
+      // stays continuous rather than showing the seams between triangles.
+      visibility[v] = g >= 0 ? values[g]! : 1;
+    }
+
+    for (const value of values) {
       total += value;
       if (value < darkest) darkest = value;
-      vertices++;
     }
 
     geometry.setAttribute('bakedAmbient', new THREE.BufferAttribute(visibility, 1));
   }
-
-  for (const geometry of temporary) geometry.dispose();
 
   return {
     vertices,

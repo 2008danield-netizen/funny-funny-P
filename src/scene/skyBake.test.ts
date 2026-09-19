@@ -18,7 +18,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 
-import { bakeSkyVisibility, fillUnbaked } from './skyBake';
+import { bakeSkyVisibility, fillUnbaked, smoothAlongEdges } from './skyBake';
 
 /** The mean of the baked attribute on a mesh. */
 function meanOf(mesh: THREE.Mesh): number {
@@ -164,5 +164,114 @@ describe('sky visibility', () => {
     const baked = geometry.getAttribute('bakedAmbient');
     expect(baked).toBeTruthy();
     for (let i = 0; i < baked.count; i++) expect(baked.getX(i)).toBe(1);
+  });
+});
+
+describe('smoothAlongEdges', () => {
+  /** A strip of triangles, so neighbours are known by hand. */
+  function strip(points: number): { geometry: THREE.BufferGeometry; groupOf: Int32Array } {
+    const positions: number[] = [];
+    const groups: number[] = [];
+
+    // Two rows of vertices, one metre apart, zig-zagged into triangles.
+    for (let i = 0; i + 1 < points; i++) {
+      positions.push(i, 0, 0, i + 1, 0, 0, i, 0, 1);
+      groups.push(i, i + 1, i);
+      positions.push(i + 1, 0, 0, i + 1, 0, 1, i, 0, 1);
+      groups.push(i + 1, i + 1, i);
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    return { geometry, groupOf: Int32Array.from(groups) };
+  }
+
+  it('leaves a field that is already flat exactly where it was', () => {
+    const { geometry, groupOf } = strip(6);
+    const values = new Float32Array(6).fill(0.4);
+    smoothAlongEdges(geometry, groupOf, values, 2);
+    for (const value of values) expect(value).toBeCloseTo(0.4, 6);
+  });
+
+  it('removes a single-vertex spike, which is what it is for', () => {
+    const { geometry, groupOf } = strip(6);
+    const values = new Float32Array(6).fill(0.4);
+    values[3] = 1;
+
+    smoothAlongEdges(geometry, groupOf, values, 2);
+
+    // The spike has to come down a long way, and must not vanish entirely —
+    // that would mean the pass is erasing the field rather than smoothing it.
+    expect(values[3]!).toBeLessThan(0.75);
+    expect(values[3]!).toBeGreaterThan(0.4);
+    // And its neighbours have to have taken some of it up.
+    expect(values[2]!).toBeGreaterThan(0.4);
+  });
+
+  it('keeps a broad gradient, which is the thing the bake is measuring', () => {
+    const { geometry, groupOf } = strip(9);
+    const values = Float32Array.from([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]);
+
+    smoothAlongEdges(geometry, groupOf, values, 2);
+
+    // A linear ramp is its own local average, so the interior must not move.
+    for (let g = 2; g < 7; g++) expect(values[g]!).toBeCloseTo(0.1 + g * 0.1, 3);
+    // The span is allowed to pull in at the ends and must stay a gradient.
+    expect(values[8]! - values[0]!).toBeGreaterThan(0.5);
+  });
+
+  it('never moves the field outside the range it started in', () => {
+    const { geometry, groupOf } = strip(8);
+    const values = Float32Array.from([0.2, 0.9, 0.3, 0.8, 0.2, 0.7, 0.4, 0.6]);
+
+    smoothAlongEdges(geometry, groupOf, values, 4);
+
+    for (const value of values) {
+      expect(value).toBeGreaterThanOrEqual(0.2 - 1e-6);
+      expect(value).toBeLessThanOrEqual(0.9 + 1e-6);
+    }
+  });
+
+  it('does nothing when asked for no passes', () => {
+    const { geometry, groupOf } = strip(5);
+    const values = Float32Array.from([0.1, 0.9, 0.1, 0.9, 0.1]);
+    smoothAlongEdges(geometry, groupOf, values, 0);
+    const wanted = [0.1, 0.9, 0.1, 0.9, 0.1];
+    for (let g = 0; g < wanted.length; g++) expect(values[g]!).toBeCloseTo(wanted[g]!, 6);
+  });
+
+  it('leaves a point with no neighbours alone rather than zeroing it', () => {
+    const geometry = new THREE.BufferGeometry();
+    // One degenerate triangle, all three corners in the same group.
+    geometry.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 0, 1], 3),
+    );
+    const groupOf = Int32Array.from([0, 0, 0]);
+    const values = Float32Array.from([0.33, 0.77]);
+
+    smoothAlongEdges(geometry, groupOf, values, 3);
+
+    expect(values[0]!).toBeCloseTo(0.33, 6);
+    // Group 1 appears in no triangle at all and must survive untouched.
+    expect(values[1]!).toBeCloseTo(0.77, 6);
+  });
+
+  it('reads an indexed mesh as well as a loose one', () => {
+    const loose = strip(5);
+    const indexed = {
+      geometry: loose.geometry.clone(),
+      groupOf: loose.groupOf.slice(),
+    };
+    // Same triangles, addressed through an index buffer instead.
+    indexed.geometry.setIndex([...Array(loose.groupOf.length).keys()]);
+
+    const a = Float32Array.from([0.2, 0.9, 0.2, 0.9, 0.2]);
+    const b = Float32Array.from([0.2, 0.9, 0.2, 0.9, 0.2]);
+
+    smoothAlongEdges(loose.geometry, loose.groupOf, a, 2);
+    smoothAlongEdges(indexed.geometry, indexed.groupOf, b, 2);
+
+    for (let g = 0; g < a.length; g++) expect(b[g]!).toBeCloseTo(a[g]!, 6);
   });
 });
