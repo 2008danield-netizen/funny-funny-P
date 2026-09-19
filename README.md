@@ -1407,6 +1407,42 @@ fill them in later without touching any other code.
 
 ---
 
+## Materials, and why there are no image files
+
+Every surface in the building is drawn by arithmetic — the oak, the marble, the
+plaster, the brick — which is why the app ships no textures and a floor preset
+is thirty lines rather than twelve megabytes. That makes every material
+editable, costs nothing to download, and raises no question about who owns the
+pixels.
+
+It also has a real ceiling. Procedural wood gets the plank layout, the grain
+direction and the joint relief right, and it does not get the knot that is not
+periodic, the mineral streak, or the one board that came from a different tree.
+Generated texture is convincingly regular; real material is not regular at all.
+
+`src/scene/materials/photographed.ts` is the seam for changing that, and it
+ships with **nothing registered**, so every material is still generated. It is
+built that way because photographed material is somebody's work, and using it in
+a product meant to be sold is a licensing decision rather than a technical one.
+There are three honest routes and they differ in cost, in attribution
+obligation, and in whether the images may be redistributed inside an app at all:
+
+- a permissive scan library (CC0 or CC-BY);
+- a bought commercial pack, whose terms usually allow use in a product but not
+  redistribution of the raw files;
+- photographing real surfaces, which owns the result outright and is the most
+  work.
+
+`registerPhotographed` **refuses** any texture set that does not carry an SPDX
+licence identifier, a source, an explicit attribution decision and the
+real-world size the scan covers. The refusal is the point: that is how the
+mistake actually happens — not by anybody deciding to take something, but by a
+file arriving in a folder and being forgotten about by the time anyone asks.
+`requiredAttributions()` returns the lines that must be displayed, so a credits
+screen cannot silently fall out of step with what is loaded.
+
+---
+
 ## Licence
 
 Private project. All rights reserved.
