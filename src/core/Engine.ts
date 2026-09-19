@@ -661,6 +661,36 @@ export class Engine {
       return { from, at };
     };
 
+    /*
+     * Draw one composed frame right now, whatever the loop thinks.
+     *
+     * The loop decides when a view has settled enough to deserve the post
+     * chain, and a check has no way to ask it politely. Worse, two sessions
+     * running now have measured "the occlusion does nothing" when what was
+     * actually happening is that the composed path had been drawn once, at
+     * start-up, and never since — which no screenshot could have distinguished
+     * from a pass that runs and is faint.
+     */
+    /*
+     * The film look and the lens, for checking and for a presentation still.
+     *
+     * `depthOfField` focuses on whatever is in the middle of the frame, which
+     * is the only defensible choice without eye tracking — and is why it is
+     * off by default: blurring the part of a room somebody is not looking at is
+     * exactly wrong while they are judging a layout.
+     */
+    scope.__filmProbe = (film?: boolean, dof?: boolean) => {
+      if (film !== undefined) this.pipeline?.setFilmLook(film);
+      if (dof !== undefined) this.pipeline?.setDepthOfField(dof, this.focusDistance());
+      this.invalidate();
+      return this.pipeline?.chain ?? null;
+    };
+
+    scope.__renderStill = () => {
+      this.pipeline?.renderStill(this.cameraController.camera);
+      return this.pipeline?.chain ?? null;
+    };
+
     scope.__design = (json?: string) => {
       if (json) designStore.replace(JSON.parse(json) as DesignDocument);
       return JSON.stringify(designStore.getState());
@@ -722,9 +752,17 @@ export class Engine {
       if (viewpoint) this.goToViewpoint(viewpoint as ViewpointId);
       this.pipeline?.setAmbientOcclusion(enabled, this.cameraController.camera);
       if (mode) this.pipeline?.setAoOutput(mode);
-      if (params) this.pipeline?.setAoParams(params);
+      if (params) {
+        if ('probe' in params) this.pipeline?.setProbePass(Boolean(params.probe));
+        this.pipeline?.setAoParams(params as Record<string, number>);
+      }
       this.invalidate();
-      return { enabled, mode: mode ?? 'default', params: this.pipeline?.aoParams ?? null };
+      return {
+        enabled,
+        mode: mode ?? 'default',
+        params: this.pipeline?.aoParams ?? null,
+        chain: this.pipeline?.chain ?? null,
+      };
     };
 
     /*
@@ -1279,6 +1317,31 @@ export class Engine {
 
     this.lastBake = result;
     this.invalidate();
+  }
+
+  /**
+   * How far away whatever is in the middle of the frame is, in metres.
+   *
+   * What a photographer does when they point the camera and half-press the
+   * shutter. Cast down the view axis, take the first thing hit, and focus
+   * there; with nothing in the way, fall back to a distance that keeps the
+   * whole of an ordinary room sharp rather than focusing on infinity and
+   * blurring everything in it.
+   */
+  private focusDistance(): number {
+    const camera = this.cameraController.camera;
+    const direction = new THREE.Vector3();
+    camera.getWorldDirection(direction);
+
+    const caster = new THREE.Raycaster(camera.position.clone(), direction, 0.05, 60);
+    const hits = caster.intersectObject(this.scene, true);
+    for (const hit of hits) {
+      const mesh = hit.object as THREE.Mesh;
+      // Pick proxies are invisible and would focus the lens on nothing.
+      if (!mesh.visible || mesh.name.includes('Pick')) continue;
+      return hit.distance;
+    }
+    return 6;
   }
 
   /** What the last bake did, for the probe. */

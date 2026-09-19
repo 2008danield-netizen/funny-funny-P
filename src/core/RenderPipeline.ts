@@ -39,6 +39,16 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
+
+import {
+  BLOOM_RADIUS,
+  BLOOM_STRENGTH,
+  BLOOM_THRESHOLD,
+  FilmLookShader,
+} from './FilmLook';
 
 import { Progressive } from './Progressive';
 import type { QualitySettings } from './FrameLoop';
@@ -59,6 +69,12 @@ export class RenderPipeline {
    * results is a different number, and a visibly flatter one.
    */
   private output: OutputPass | null = null;
+  private probePass: ShaderPass | null = null;
+  private bloom: UnrealBloomPass | null = null;
+  private bokeh: BokehPass | null = null;
+  private film: ShaderPass | null = null;
+  private filmEnabled = true;
+  private depthOfField = false;
 
   readonly progressive: Progressive;
 
@@ -133,6 +149,68 @@ export class RenderPipeline {
       this.composer.addPass(this.gtao);
     }
 
+    /*
+     * Bloom, before the film pass and after the occlusion.
+     *
+     * Order matters and this is the only one that does. Bloom has to see the
+     * scene's own bright values, so it must come before anything that shapes
+     * them; and it must come AFTER the occlusion, or a corner that the
+     * occlusion is about to darken will already have bled light into its
+     * neighbours.
+     */
+    this.bloom = new UnrealBloomPass(
+      new THREE.Vector2(this.width, this.height),
+      BLOOM_STRENGTH,
+      BLOOM_RADIUS,
+      BLOOM_THRESHOLD,
+    );
+    this.bloom.enabled = this.filmEnabled;
+    this.composer.addPass(this.bloom);
+
+    /*
+     * Depth of field, off unless asked for.
+     *
+     * A real lens has it and an architectural tool mostly should not: blurring
+     * the part of the room somebody is not looking at is exactly wrong when
+     * they are trying to judge a layout, and there is no eye tracking here to
+     * know where that is. So it exists, it is wired to focus on whatever is at
+     * the middle of the frame, and it is opt-in for the moments — a presentation
+     * still, a photograph of a finished design — when the picture matters more
+     * than the plan.
+     */
+    this.bokeh = new BokehPass(this.scene, camera, {
+      focus: 4,
+      aperture: 0.0002,
+      maxblur: 0.006,
+    });
+    this.bokeh.enabled = this.depthOfField;
+    this.composer.addPass(this.bokeh);
+
+    /* Grain and vignette, last before the output. */
+    this.film = new ShaderPass(FilmLookShader);
+    this.film.enabled = this.filmEnabled;
+    this.film.uniforms.aspect!.value = this.width / Math.max(1, this.height);
+    this.composer.addPass(this.film);
+
+    /*
+     * A deliberately unmissable pass, off by default.
+     *
+     * "The occlusion is very faint" and "the pass never runs" look identical
+     * from outside, and two sessions have now been spent on the first
+     * explanation. This tints the whole frame magenta when switched on, so the
+     * question can be settled in one frame instead of by inference.
+     */
+    this.probePass = new ShaderPass({
+      uniforms: { tDiffuse: { value: null } },
+      vertexShader:
+        'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+      fragmentShader:
+        'uniform sampler2D tDiffuse; varying vec2 vUv;' +
+        'void main(){ vec4 c = texture2D(tDiffuse, vUv); gl_FragColor = vec4(c.r, c.g * 0.2, c.b, c.a); }',
+    });
+    this.probePass.enabled = false;
+    this.composer.addPass(this.probePass);
+
     // Last in the chain, and switched on only for the straight-to-screen path.
     this.output = new OutputPass();
     this.output.enabled = false;
@@ -152,20 +230,27 @@ export class RenderPipeline {
   /**
    * The occlusion settings actually in use, so a probe can sweep them.
    *
-   * These are the best of a measured sweep rather than a guess: the AO buffer
-   * was captured on its own at each setting and the darkest fifth of it read
-   * off, which is where a corner lives. `radius` went from 0.5 m to 1.2 and
-   * `scale` from 1 to 2, and together they took the darkest fifth from 214 to
-   * 187 out of 255.
+   * These are the best of a measured sweep, and the sweep was only possible
+   * once a mistake in HOW it was measured was found. Session 18 read the canvas
+   * a couple of seconds after changing a setting; under a software rasteriser
+   * the view had not finished settling, so what it read was a cheap moving
+   * frame with no post chain in it at all. Every conclusion drawn from that —
+   * "blendIntensity does nothing", "scale past 2 makes it lighter" — was about
+   * an image the pass had never touched. Rendering and reading inside a single
+   * call fixed it.
    *
-   * That is an honest improvement and it is still not much. See the note on
-   * `renderStill` for what this pass is and is not doing.
+   * With that fixed, `scale` turned out to be the whole lever. Measured on the
+   * AO buffer alone, where 255 is no occlusion: scale 1 gave a darkest-5% of
+   * 220, scale 4 gave 195, scale 8 gave 147 and scale 16 gave 54. Sixteen is
+   * far too much — the corner goes black and smears half a metre up the wall —
+   * and a radius over a metre smears with it. Six at 0.6 m is a corner that
+   * reads as a corner, which is the whole ask.
    */
   private ao = {
-    radius: 1.2,
+    radius: 0.6,
     distanceExponent: 1,
     thickness: 1,
-    scale: 2,
+    scale: 6,
     samples: 16,
     distanceFallOff: 1,
     screenSpaceRadius: false,
@@ -182,6 +267,93 @@ export class RenderPipeline {
     return this.ao;
   }
 
+  /**
+   * What the post chain actually consists of right now.
+   *
+   * Reported because "the occlusion is very faint" and "there is no post chain
+   * at all" look identical from outside, and session 18 spent a long time on
+   * the first explanation before establishing the second.
+   */
+  get chain(): {
+    composer: boolean;
+    gtao: boolean;
+    gtaoEnabled: boolean;
+    film: boolean;
+    bloom: boolean;
+    bokeh: boolean;
+    drawn: { moving: number; still: number; composed: number };
+    passes: number;
+    output: number | null;
+  } {
+    return {
+      composer: this.composer !== null,
+      gtao: this.gtao !== null,
+      gtaoEnabled: this.gtao?.enabled ?? false,
+      film: this.film?.enabled ?? false,
+      bloom: this.bloom?.enabled ?? false,
+      bokeh: this.bokeh?.enabled ?? false,
+      drawn: { ...this.drawn },
+      passes: this.composer?.passes.length ?? 0,
+      output: this.gtao ? (this.gtao.output as number) : null,
+    };
+  }
+
+  /**
+   * How many frames each path has drawn.
+   *
+   * The one number that separates "the pass is faint" from "the pass never
+   * runs", which every other symptom fails to distinguish.
+   */
+  readonly drawn = { moving: 0, still: 0, composed: 0 };
+
+  /** Switches the magenta tint above on or off. */
+  setProbePass(on: boolean): void {
+    if (this.probePass) this.probePass.enabled = on;
+  }
+
+  /** Bloom, grain and vignette together. They are one look, not three knobs. */
+  setFilmLook(on: boolean): void {
+    this.filmEnabled = on;
+    if (this.bloom) this.bloom.enabled = on;
+    if (this.film) this.film.enabled = on;
+  }
+
+  get filmLook(): boolean {
+    return this.filmEnabled;
+  }
+
+  /**
+   * Depth of field, and what it should be focused on.
+   *
+   * `focus` is a distance in metres from the camera, which the caller works out
+   * by asking what is in the middle of the frame. Passing nothing leaves the
+   * focus where it was, so toggling the effect does not also rack the lens.
+   */
+  setDepthOfField(on: boolean, focus?: number): void {
+    this.depthOfField = on;
+    if (this.bokeh) {
+      this.bokeh.enabled = on;
+      if (focus !== undefined && focus > 0) {
+        (this.bokeh.uniforms as Record<string, THREE.IUniform>).focus!.value = focus;
+      }
+    }
+  }
+
+  get depthOfFieldOn(): boolean {
+    return this.depthOfField;
+  }
+
+  /**
+   * Nudges the grain so a redrawn frame is not identical.
+   *
+   * Only the accumulating path calls this. A still frame that is simply redrawn
+   * — because a panel opened, or the window was resized — keeps the same seed,
+   * so the wall does not visibly crawl for one frame.
+   */
+  advanceGrain(index: number): void {
+    if (this.film) this.film.uniforms.seed!.value = (index % 64) * 0.137;
+  }
+
   private configureAo(): void {
     if (!this.gtao) return;
     this.gtao.updateGtaoMaterial({ ...this.ao });
@@ -196,6 +368,9 @@ export class RenderPipeline {
 
     this.composer?.setSize(this.width, this.height);
     this.gtao?.setSize(this.width, this.height);
+    this.bloom?.setSize(this.width, this.height);
+    this.bokeh?.setSize(this.width, this.height);
+    if (this.film) this.film.uniforms.aspect!.value = this.width / Math.max(1, this.height);
     this.progressive.setSize(this.width, this.height);
   }
 
@@ -236,6 +411,7 @@ export class RenderPipeline {
 
   /** The cheap path: straight to the screen, no post, no accumulation. */
   renderMoving(camera: THREE.PerspectiveCamera): void {
+    this.drawn.moving++;
     clearJitter(camera);
     this.renderer.setRenderTarget(null);
     this.renderer.render(this.scene, camera);
@@ -286,6 +462,7 @@ export class RenderPipeline {
    * it cannot.
    */
   renderStill(camera: THREE.PerspectiveCamera): void {
+    this.drawn.still++;
     clearJitter(camera);
 
     if (!this.composer || !this.output) {
@@ -294,6 +471,7 @@ export class RenderPipeline {
       return;
     }
 
+    this.drawn.composed++;
     this.output.enabled = true;
     this.composer.renderToScreen = true;
     this.composer.render();
