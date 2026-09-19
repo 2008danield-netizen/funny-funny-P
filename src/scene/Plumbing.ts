@@ -32,6 +32,7 @@
  */
 
 import * as THREE from 'three';
+import { radialSegments, sphereSegments } from './tessellation';
 
 import { elevationOf } from '@/state/levels';
 import { sizeAllDrainage, sizeAllSupply } from '@/services/plumbingSize';
@@ -255,7 +256,13 @@ export class Plumbing {
     const key = `c${radius.toFixed(3)}:${length.toFixed(2)}`;
     let geometry = this.geometries.get(key);
     if (!geometry) {
-      geometry = new THREE.CylinderGeometry(radius, radius, length, 10, 1);
+      geometry = new THREE.CylinderGeometry(
+        radius,
+        radius,
+        length,
+        radialSegments(radius),
+        1,
+      );
       this.geometries.set(key, geometry);
     }
     return geometry;
@@ -266,7 +273,8 @@ export class Plumbing {
     const key = `s${radius.toFixed(3)}`;
     let geometry = this.geometries.get(key);
     if (!geometry) {
-      geometry = new THREE.SphereGeometry(radius, 8, 6);
+      const ball = sphereSegments(radius);
+      geometry = new THREE.SphereGeometry(radius, ball.width, ball.height);
       this.geometries.set(key, geometry);
     }
     return geometry;

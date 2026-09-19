@@ -14,6 +14,7 @@
  */
 
 import * as THREE from 'three';
+import { radialSegments } from './tessellation';
 
 import { stairGeometry, type StairGeometry } from '@/building/stairs';
 import type { DesignDocument, Point2, Stair } from '@/state/types';
@@ -127,23 +128,54 @@ export class Staircases {
    * posts read correctly and cost almost nothing.
    */
   private buildHandrails(stair: Stair, geometry: StairGeometry): THREE.Mesh[] {
-    const meshes: THREE.Mesh[] = [];
+    const points = geometry.handrailLine;
+    if (points.length === 0) return [];
+
     // IRC R311.7.8.1 puts a graspable rail 34-38 in above the nosings; 36 in
     // is the middle of that band and what most stairs are built to.
     const railHeight = 0.9144;
-    const postGeometry = new THREE.CylinderGeometry(0.02, 0.02, railHeight, 6);
+    /*
+     * Six sides was a hexagon you could count from the landing. At 20 mm the
+     * sagitta rule asks for sixteen, which costs twenty triangles a post.
+     */
+    const postRadius = 0.02;
+    const postGeometry = new THREE.CylinderGeometry(
+      postRadius,
+      postRadius,
+      railHeight,
+      radialSegments(postRadius),
+    );
 
-    for (const point of geometry.handrailLine) {
-      const post = new THREE.Mesh(postGeometry.clone(), this.materials.rail);
-      post.position.set(point.at.x, point.height + railHeight / 2, point.at.z);
-      post.castShadow = true;
-      post.name = `StairRail_${stair.id}`;
-      post.raycast = () => {};
-      meshes.push(post);
-    }
+    /*
+     * ONE DRAW CALL PER FLIGHT, NOT ONE PER POST.
+     *
+     * This is the clearest case of repetition in the whole building and it was
+     * being drawn the expensive way: a cloned geometry and a separate mesh for
+     * every baluster, fifteen or so per flight. A house with three flights
+     * spent more draw calls on its handrails than on everything else put
+     * together — a room with four openings measured 35.
+     *
+     * Instancing is the right answer here and is NOT the right answer
+     * everywhere, which is why it is not applied everywhere. An instanced mesh
+     * is one object as far as picking, per-object visibility and the sky bake
+     * are concerned, so it suits things nothing needs to address individually.
+     * Balusters qualify exactly: they already had `raycast` disabled, because
+     * nobody has ever wanted to click one.
+     */
+    const posts = new THREE.InstancedMesh(postGeometry, this.materials.rail, points.length);
+    posts.castShadow = true;
+    posts.name = `StairRail_${stair.id}`;
+    posts.raycast = () => {};
 
-    postGeometry.dispose();
-    return meshes;
+    const at = new THREE.Matrix4();
+    points.forEach((point, index) => {
+      at.makeTranslation(point.at.x, point.height + railHeight / 2, point.at.z);
+      posts.setMatrixAt(index, at);
+    });
+    posts.instanceMatrix.needsUpdate = true;
+    posts.computeBoundingSphere();
+
+    return [posts];
   }
 
   private clear(): void {

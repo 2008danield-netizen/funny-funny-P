@@ -17,7 +17,10 @@
 
 import * as THREE from 'three';
 
+import { chamferedBox } from './millwork';
+
 import { buildFurniture, type FurniturePart, type MaterialRole } from '@/furniture/builders';
+import { clutterFor } from '@/furniture/clutter';
 import {
   getCatalogEntry,
   resolveColorway,
@@ -94,7 +97,20 @@ export class Furnishings {
     for (const item of furniture) {
       const entry = getCatalogEntry(item.catalogId);
       const dimensions = itemDimensions(item);
-      const shapeKey = `${item.catalogId}|${dimensions.width.toFixed(3)}|${dimensions.depth.toFixed(3)}|${dimensions.height.toFixed(3)}`;
+      /*
+       * The item's own id is part of the key, and it costs the shape cache.
+       *
+       * The cache exists so that ten identical dining chairs share one merged
+       * geometry, and clutter seeded per item breaks that — two bookcases with
+       * the same books on the same shelves would be a catalogue photograph, so
+       * the variety is worth having. It costs less than it looks: clutter goes
+       * only on tables, desks, shelving, cabinets and beds, and nobody has ten
+       * identical chests of drawers. The pieces there are genuinely ten of —
+       * chairs — carry nothing and still share.
+       */
+      const shapeKey =
+        `${item.catalogId}|${dimensions.width.toFixed(3)}|` +
+        `${dimensions.depth.toFixed(3)}|${dimensions.height.toFixed(3)}|${item.id}`;
 
       let existing = this.items.get(item.id);
 
@@ -160,7 +176,7 @@ export class Furnishings {
      * user is actually pointing at.
      */
     const pick = new THREE.Mesh(
-      new THREE.BoxGeometry(dimensions.width, dimensions.height, dimensions.depth),
+      chamferedBox(dimensions.width, dimensions.height, dimensions.depth),
       this.pickMaterial,
     );
     pick.position.set(item.x, item.y + dimensions.height / 2, item.z);
@@ -182,7 +198,18 @@ export class Furnishings {
     const cached = this.shapes.get(key);
     if (cached) return cached;
 
-    const parts = buildFurniture(entry.build, dimensions);
+    /*
+     * The clutter is merged in with the piece rather than added beside it.
+     *
+     * Everything downstream — the role materials, the colourway, the sky bake,
+     * the single pick box — already works on a list of parts, so a mug that
+     * arrives as one more part needs no new plumbing at all. Adding it as a
+     * separate object would have meant teaching four other things it exists.
+     */
+    const parts = [
+      ...buildFurniture(entry.build, dimensions),
+      ...clutterFor(entry.build, dimensions, key),
+    ];
     const byRole = mergeByRole(parts);
     const shape: ShapeGeometry = { byRole };
     this.shapes.set(key, shape);
@@ -284,6 +311,24 @@ function createRoleMaterial(role: MaterialRole): THREE.Material {
         emissive: 0xffe9c4,
         emissiveIntensity: 0.25,
       });
+    case 'clutter':
+      /*
+       * Paper, ceramic and glazed pottery. A single warm off-white for all of
+       * it, which is the honest limitation here: every book in the building is
+       * the same colour, because the merge carries no per-part colour. Vertex
+       * colours through `concatenate` are the obvious next step and would give
+       * a shelf the variety a real one has.
+       */
+      return new THREE.MeshStandardMaterial({ color: 0xcfc4b4, roughness: 0.72, metalness: 0 });
+    case 'foliage':
+      // Leaves, and a little translucency so a leaf with light behind it is not
+      // a black shape — which is most of what separates a plant from a prop.
+      return new THREE.MeshStandardMaterial({
+        color: 0x5d7c4c,
+        roughness: 0.78,
+        metalness: 0,
+        side: THREE.DoubleSide,
+      });
     case 'frame':
     default:
       return new THREE.MeshStandardMaterial({ color: 0xc49a63, roughness: 0.55, metalness: 0 });
@@ -300,6 +345,12 @@ function colorForRole(role: MaterialRole, colorway: Colorway): string {
       return '#d6e6f0';
     case 'shade':
       return '#f2ede2';
+    case 'clutter':
+      // Deliberately NOT from the colourway: recolouring a sofa must not
+      // recolour the book somebody left on the table beside it.
+      return '#cfc4b4';
+    case 'foliage':
+      return '#5d7c4c';
     case 'frame':
     default:
       return colorway.frame;

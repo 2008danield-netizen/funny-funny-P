@@ -75,6 +75,25 @@ export class CameraController {
     this.controls.target.set(0, 1.2, 0);
   }
 
+  /**
+   * Puts the camera exactly here, looking exactly there, with no easing.
+   *
+   * For automated checking. The four named viewpoints are chosen to be useful
+   * to a person and are therefore useless for looking at one particular thing:
+   * every one of them frames the building as a whole, and the walls that stand
+   * between the camera and the interior hide themselves — which means the door
+   * a check wants to photograph is on one of the walls that just vanished.
+   *
+   * Immediate rather than eased, because a check that has to wait for a flight
+   * to finish either sleeps too long or photographs the middle of it.
+   */
+  placeAt(from: readonly [number, number, number], at: readonly [number, number, number]): void {
+    this.flight = null;
+    this.camera.position.set(from[0], from[1], from[2]);
+    this.controls.target.set(at[0], at[1], at[2]);
+    this.controls.update();
+  }
+
   /** Adapts distance limits and target height to the plan's size. */
   configureForPlan(plan: PlanModel): void {
     const bounds = planBounds(plan);

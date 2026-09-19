@@ -23,7 +23,10 @@
 
 import * as THREE from 'three';
 
+import { subdivideForLight } from './subdivide';
+
 import type { WallSegment } from './planGraph';
+import { panelledLeaf, sashFrame } from './openings/joinery';
 import { getOpeningPreset, type OpeningPreset } from './openings/presets';
 import type { Opening } from '@/state/types';
 
@@ -170,7 +173,7 @@ export function buildWallGeometry(segment: WallSegment): THREE.BufferGeometry {
   const thickness = segment.wall.thickness;
   const shape = buildElevation(segment, segment.wall.openings);
 
-  const geometry = new THREE.ExtrudeGeometry(shape, {
+  const extruded = new THREE.ExtrudeGeometry(shape, {
     depth: thickness,
     bevelEnabled: false,
     // The outline is made of straight lines only, so no curve subdivision is
@@ -178,6 +181,27 @@ export function buildWallGeometry(segment: WallSegment): THREE.BufferGeometry {
     curveSegments: 1,
     steps: 1,
   });
+
+  /*
+   * Cut into pieces small enough to carry a gradient, BEFORE the material
+   * groups are worked out.
+   *
+   * A wall came out of the extruder as two triangles a side, which is the fewest
+   * a rectangle can be and leaves nowhere for light to vary across it. See
+   * `subdivide.ts` for why that matters and why the limit is a length rather
+   * than a count.
+   *
+   * The ordering is the part worth not getting wrong. `assignMaterialGroups`
+   * classifies each triangle by reading its vertices' z — at the back face, at
+   * the front face, or somewhere between — and writes index ranges. Subdividing
+   * afterwards would renumber every triangle and leave those ranges pointing at
+   * the wrong ones, so a wall would wear its inside paint on its outside face.
+   * Subdividing first is safe precisely because the classification is positional:
+   * splitting a triangle that lies flat on the front face gives two triangles
+   * that also lie flat on the front face.
+   */
+  const geometry = subdivideForLight(extruded);
+  if (geometry !== extruded) extruded.dispose();
 
   assignMaterialGroups(geometry, thickness);
   geometry.computeVertexNormals();
@@ -231,10 +255,47 @@ export interface LeafPart {
   slide: number;
 }
 
-/** Frame section depth, as a fraction of wall thickness. */
-const FRAME_DEPTH_RATIO = 0.75;
+/**
+ * How much of the wall's thickness the lining runs through.
+ *
+ * -----------------------------------------------------------------------------
+ * IT WAS 0.75, AND IT IS THE REASON WINDOWS LOOKED PASTED ON.
+ *
+ * A band of frame floating in the middle of the wall leaves the opening raw at
+ * both faces, so from inside a room you saw the painted wall, then a hard edge,
+ * then the frame set back in shadow with nothing joining the two. Real joinery
+ * does not do that. A door or window is lined right through the wall, and the
+ * line where the lining meets the plaster is the thing your eye reads as
+ * "there is a hole in something thick here".
+ *
+ * A hundredth short of the full thickness so the lining never fights the wall's
+ * own face for the same pixels, which is what z-fighting is and what it looks
+ * like: a flickering line round every opening.
+ */
+const LINING_INSET = 0.005;
 /** Width of the visible frame lining, in metres. */
 const FRAME_WIDTH = 0.05;
+
+/**
+ * How far a window board projects past the face of the wall, in metres.
+ *
+ * Thirty-five millimetres, which is an ordinary window board with a small nose
+ * on it. It matters more than its size suggests: it is the one part of a window
+ * that sticks OUT into the room, so it is the part that casts a shadow down the
+ * wall below and the part a low sun lands on.
+ */
+const SILL_PROJECTION = 0.035;
+/** Thickness of that board. */
+const SILL_THICKNESS = 0.028;
+
+/**
+ * The smallest sill height that gets a window board rather than a threshold.
+ *
+ * A door has no sill and a floor-to-ceiling window effectively has none either;
+ * putting a projecting board across the bottom of either is a trip hazard drawn
+ * in 3D.
+ */
+const SILL_MIN_HEIGHT = 0.25;
 
 /** Builds a box in local wall space from min/max corners. */
 function boxBetween(
@@ -274,11 +335,16 @@ export function buildOpeningFurniture(
   const bottom = opening.sillHeight;
   const top = opening.sillHeight + opening.height;
 
-  const frameDepth = thickness * FRAME_DEPTH_RATIO;
-  const frameZMin = (thickness - frameDepth) / 2;
-  const frameZMax = frameZMin + frameDepth;
+  /*
+   * THE REVEAL: THE LINING RUNS THE WHOLE DEPTH OF THE WALL.
+   *
+   * See LINING_INSET. This is the single change that makes an opening read as a
+   * hole in something thick rather than as a rectangle drawn on a flat surface,
+   * and it costs four boxes.
+   */
+  const frameZMin = LINING_INSET;
+  const frameZMax = thickness - LINING_INSET;
 
-  /* ---- Frame lining: a band around the inside of the hole ---- */
   const framePieces: THREE.BufferGeometry[] = [
     // Head.
     boxBetween([left, top - FRAME_WIDTH, frameZMin], [right, top, frameZMax]),
@@ -287,37 +353,64 @@ export function buildOpeningFurniture(
     boxBetween([right - FRAME_WIDTH, bottom, frameZMin], [right, top, frameZMax]),
   ];
 
-  // A window gets a sill; a door gets a threshold only if it has a raised sill.
+  const hasSill = bottom > SILL_MIN_HEIGHT;
+
   if (bottom > 0.01) {
+    // The bottom of the lining, which on a window is what the board sits on.
     framePieces.push(
       boxBetween([left, bottom, frameZMin], [right, bottom + FRAME_WIDTH, frameZMax]),
     );
   }
 
-  // Vertical glazing bars, evenly spaced across the opening.
-  if (preset.glazed && preset.mullions > 0) {
-    const inner = right - left - FRAME_WIDTH * 2;
-    const spacing = inner / (preset.mullions + 1);
-    for (let i = 1; i <= preset.mullions; i++) {
-      const centre = left + FRAME_WIDTH + spacing * i;
-      framePieces.push(
-        boxBetween(
-          [centre - 0.018, bottom + FRAME_WIDTH, frameZMin],
-          [centre + 0.018, top - FRAME_WIDTH, frameZMax],
-        ),
-      );
-    }
+  /*
+   * The window board, projecting into the room.
+   *
+   * On the b face only, which is a simplification with a defensible reason: a
+   * board is an internal fitting and the outside of a window gets a weathered
+   * cill that slopes the other way. Drawing the internal board on both faces
+   * would be wrong in a way that shows from the garden.
+   */
+  if (hasSill) {
+    const boardTop = bottom + FRAME_WIDTH;
+    framePieces.push(
+      boxBetween(
+        [left - SILL_PROJECTION, boardTop - SILL_THICKNESS, thickness],
+        [right + SILL_PROJECTION, boardTop, thickness + SILL_PROJECTION],
+      ),
+    );
+  }
+
+  /* ---- The sash: the frame that actually holds the glass ---- */
+  const glassZ = thickness / 2;
+
+  if (preset.glazed) {
+    /*
+     * The sash sits in the middle of the reveal, not flush with either face.
+     *
+     * That is where a window actually is, and it is what gives the reveal its
+     * depth on BOTH sides — a recess from the room and a recess from outside,
+     * which is what you see when you look along the wall of any real building.
+     */
+    const sash = sashFrame(
+      left + FRAME_WIDTH,
+      bottom + FRAME_WIDTH,
+      right - FRAME_WIDTH,
+      top - FRAME_WIDTH,
+      glassZ - 0.028,
+      glassZ + 0.028,
+      { mullions: preset.mullions, transoms: preset.transoms },
+    );
+    if (sash) framePieces.push(sash);
   }
 
   const frame = mergeGeometries(framePieces);
 
-  /* ---- Glazing: one thin pane filling the frame ---- */
+  /* ---- Glazing: one thin pane behind the sash ---- */
   let glass: THREE.BufferGeometry | null = null;
   if (preset.glazed) {
-    const paneZ = thickness / 2;
     glass = boxBetween(
-      [left + FRAME_WIDTH, bottom + FRAME_WIDTH, paneZ - 0.004],
-      [right - FRAME_WIDTH, top - FRAME_WIDTH, paneZ + 0.004],
+      [left + FRAME_WIDTH, bottom + FRAME_WIDTH, glassZ - 0.004],
+      [right - FRAME_WIDTH, top - FRAME_WIDTH, glassZ + 0.004],
     );
   }
 
@@ -328,6 +421,8 @@ export function buildOpeningFurniture(
     bottom,
     top,
     thickness,
+    panels: preset.panels,
+    panelRows: preset.panelRows,
   });
 
   return { frame, glass, leaves };
@@ -339,6 +434,10 @@ interface LeafBounds {
   bottom: number;
   top: number;
   thickness: number;
+  /** How the leaf is made up. See `joinery.ts`. */
+  panels: OpeningPreset['panels'];
+  /** How many panels tall, when it is panelled at all. */
+  panelRows: number;
 }
 
 /**
@@ -363,7 +462,7 @@ function buildLeaves(
 ): LeafPart[] {
   if (style === 'none') return [];
 
-  const { left, right, bottom, top, thickness } = bounds;
+  const { left, right, bottom, top, thickness, panels, panelRows } = bounds;
   const leafThickness = 0.04;
   const height = top - bottom - 0.01;
   const zCentre = thickness / 2;
@@ -372,7 +471,10 @@ function buildLeaves(
   if (style === 'sliding') {
     // A sliding leaf covers half the aperture and slides the other half.
     const width = (right - left) / 2 - 0.02;
-    const geometry = new THREE.BoxGeometry(width, height, leafThickness);
+    const geometry = panelledLeaf(width, height, leafThickness, {
+      style: panels,
+      rows: panelRows,
+    });
     // Built extending in +X from its own left edge, so sliding is a translation
     // along X and nothing else.
     geometry.translate(width / 2, 0, 0);
@@ -396,7 +498,10 @@ function buildLeaves(
     /** +1 when the leaf extends in +X from its hinge. */
     directionSign: number,
   ): LeafPart => {
-    const geometry = new THREE.BoxGeometry(leafWidth, height, leafThickness);
+    const geometry = panelledLeaf(leafWidth, height, leafThickness, {
+      style: panels,
+      rows: panelRows,
+    });
     geometry.translate((directionSign * leafWidth) / 2, 0, 0);
 
     return {

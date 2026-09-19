@@ -24,10 +24,29 @@
 
 import * as THREE from 'three';
 
+import { chamferedBox } from '@/scene/millwork';
+import { cornerSegments, radialSegments as segmentsFor } from '@/scene/tessellation';
+
 import type { BuildSpec } from './catalog';
 
 /** Which material a part is drawn with. */
-export type MaterialRole = 'frame' | 'soft' | 'accent' | 'glass' | 'shade';
+/**
+ * What a part is made of, as far as the renderer is concerned.
+ *
+ * `clutter` and `foliage` belong to the things left ON furniture rather than to
+ * the furniture itself, and they are separate roles for a reason that is not
+ * cosmetic: a mug must not take the sofa's colourway. Changing an armchair from
+ * grey to teal should not turn the book on the table teal as well, and it would
+ * if clutter borrowed any of the four roles a piece's colourway drives.
+ */
+export type MaterialRole =
+  | 'frame'
+  | 'soft'
+  | 'accent'
+  | 'glass'
+  | 'shade'
+  | 'clutter'
+  | 'foliage';
 
 export interface FurniturePart {
   geometry: THREE.BufferGeometry;
@@ -54,12 +73,37 @@ function box(
     Math.max(1e-4, max[1] - min[1]),
     Math.max(1e-4, max[2] - min[2]),
   ];
-  const geometry = new THREE.BoxGeometry(size[0], size[1], size[2]);
+  const geometry = chamferedBox(size[0], size[1], size[2]);
   geometry.translate(min[0] + size[0] / 2, min[1] + size[1] / 2, min[2] + size[2] / 2);
   return { geometry, role };
 }
 
-/** A box with softened edges — used for cushions and upholstered forms. */
+/**
+ * An upholstered form: a cushion, an arm, a padded back.
+ *
+ * -----------------------------------------------------------------------------
+ * ROUNDED IN ONE PLANE IS NOT ROUNDED.
+ *
+ * The first version of this extruded a rounded rectangle straight through the
+ * depth with no bevel, which softens four edges out of twelve and leaves the
+ * front and back faces meeting their sides at a right angle. Seen from the
+ * front — which is how a sofa is almost always seen — that is a crate with
+ * rounded ends, and the silhouette against the wall behind it is a hard
+ * rectangle.
+ *
+ * `bevelEnabled` rounds the other eight. It is the same mechanism the fielded
+ * door panel uses, and the same caution applies: `bevelSize` EXPANDS the middle
+ * of the extrusion outward rather than insetting the ends, so the profile has
+ * to be drawn smaller by the bevel and swells back to the size asked for.
+ *
+ * -----------------------------------------------------------------------------
+ * AND A CUSHION IS NOT A ROUNDED BOX EITHER.
+ *
+ * A filled cushion is fatter in the middle than at its edges, because that is
+ * where the filling has room to go. The barrel here is slight — a few per cent
+ * — and it is the difference between upholstery and a mattress-shaped solid.
+ * Overdo it and it reads as a balloon, which is worse than a box.
+ */
 function cushion(
   min: [number, number, number],
   max: [number, number, number],
@@ -71,28 +115,181 @@ function cushion(
     Math.max(1e-4, max[1] - min[1]),
     Math.max(1e-4, max[2] - min[2]),
   ];
-  // A rounded profile extruded through the cushion's depth. Cheaper and more
-  // controllable than a subdivided box, and the softened silhouette is most of
-  // what separates "upholstery" from "crate" at a glance.
-  const r = Math.min(radius, size[0] / 2.2, size[1] / 2.2);
+
+  /*
+   * The round, clamped so a thin cushion does not become a cylinder.
+   *
+   * A seat cushion is 120 mm thick and a 30 mm round on a 120 mm dimension is
+   * already a quarter of it; anything past a third leaves no flat at all and
+   * the form stops reading as a panel with soft edges.
+   */
+  const r = Math.min(radius, size[0] / 2.2, size[1] / 2.2, size[2] / 2.2);
+  const depth = Math.max(1e-4, size[2] - r * 2);
+
+  /*
+   * The profile is drawn inset by the bevel and swells back out to `size`.
+   *
+   * Corners of the rounded rectangle are drawn at `r` again, so the finished
+   * form has the same round in every direction — which is what stops one axis
+   * looking deliberately different from the others.
+   */
+  const halfX = size[0] / 2 - r;
+  const halfY = size[1] / 2 - r;
   const shape = new THREE.Shape();
-  shape.moveTo(-size[0] / 2 + r, -size[1] / 2);
-  shape.lineTo(size[0] / 2 - r, -size[1] / 2);
-  shape.quadraticCurveTo(size[0] / 2, -size[1] / 2, size[0] / 2, -size[1] / 2 + r);
-  shape.lineTo(size[0] / 2, size[1] / 2 - r);
-  shape.quadraticCurveTo(size[0] / 2, size[1] / 2, size[0] / 2 - r, size[1] / 2);
-  shape.lineTo(-size[0] / 2 + r, size[1] / 2);
-  shape.quadraticCurveTo(-size[0] / 2, size[1] / 2, -size[0] / 2, size[1] / 2 - r);
-  shape.lineTo(-size[0] / 2, -size[1] / 2 + r);
-  shape.quadraticCurveTo(-size[0] / 2, -size[1] / 2, -size[0] / 2 + r, -size[1] / 2);
+  shape.moveTo(-halfX + r, -halfY);
+  shape.lineTo(halfX - r, -halfY);
+  shape.quadraticCurveTo(halfX, -halfY, halfX, -halfY + r);
+  shape.lineTo(halfX, halfY - r);
+  shape.quadraticCurveTo(halfX, halfY, halfX - r, halfY);
+  shape.lineTo(-halfX + r, halfY);
+  shape.quadraticCurveTo(-halfX, halfY, -halfX, halfY - r);
+  shape.lineTo(-halfX, -halfY + r);
+  shape.quadraticCurveTo(-halfX, -halfY, -halfX + r, -halfY);
 
   const geometry = new THREE.ExtrudeGeometry(shape, {
-    depth: size[2],
-    bevelEnabled: false,
-    curveSegments: 3,
+    depth,
+    bevelEnabled: true,
+    bevelThickness: r,
+    bevelSize: r,
+    bevelOffset: 0,
+    bevelSegments: cornerSegments(r),
+    curveSegments: cornerSegments(r) + 1,
     steps: 1,
   });
-  geometry.translate(min[0] + size[0] / 2, min[1] + size[1] / 2, min[2]);
+
+  /*
+   * The barrel: three per cent fatter across the middle of the depth.
+   *
+   * Applied to the finished vertices rather than to the profile, because the
+   * bevel has already decided where the middle is. The weight is a raised
+   * cosine, so the swell is smooth and dies to nothing exactly at the two ends
+   * where the cushion is held by its seams.
+   */
+  const position = geometry.getAttribute('position');
+  for (let v = 0; v < position.count; v++) {
+    const along = (position.getZ(v) + r) / Math.max(1e-6, depth + r * 2);
+    const swell = 1 + 0.03 * Math.sin(Math.PI * Math.min(1, Math.max(0, along)));
+    position.setX(v, position.getX(v) * swell);
+    position.setY(v, position.getY(v) * swell);
+  }
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
+
+  geometry.translate(min[0] + size[0] / 2, min[1] + size[1] / 2, min[2] + r);
+  return { geometry, role };
+}
+
+/**
+ * The piping round a cushion: the cord sewn into its seam.
+ *
+ * -----------------------------------------------------------------------------
+ * THE ONE DETAIL THAT SAYS "UPHOLSTERY" RATHER THAN "SOFT SHAPE".
+ *
+ * Almost every sofa and armchair ever made has a seam running round the edge of
+ * each cushion, and on most of them a cord is sewn into it so the seam stands
+ * proud. It is six or eight millimetres of relief and it is doing an enormous
+ * amount of work: it draws the outline of every cushion as a highlight, it
+ * catches light from a different direction than the faces either side of it,
+ * and its absence is why a smooth soft shape reads as moulded plastic.
+ *
+ * Built as a flat ring swept round the cushion's own rounded rectangle — the
+ * same profile, at the same place the bevel's widest point falls, which is
+ * where the seam actually is.
+ */
+function piping(
+  min: [number, number, number],
+  max: [number, number, number],
+  role: MaterialRole,
+  radius = 0.03,
+): FurniturePart | null {
+  const size: [number, number, number] = [
+    Math.max(1e-4, max[0] - min[0]),
+    Math.max(1e-4, max[1] - min[1]),
+    Math.max(1e-4, max[2] - min[2]),
+  ];
+
+  const r = Math.min(radius, size[0] / 2.2, size[1] / 2.2, size[2] / 2.2);
+  // Below about four millimetres the cord is finer than the eye resolves at
+  // furniture distance and is only triangles.
+  const cord = Math.min(0.007, r * 0.35);
+  if (cord < 0.004) return null;
+
+  /*
+   * ON the cushion's silhouette, and slightly proud of it.
+   *
+   * Got wrong first time in a way that produced no error and nothing to see:
+   * the outline was drawn at the same inset the cushion's own profile uses,
+   * forgetting that the cushion then SWELLS back out by its bevel. The seam
+   * ended up thirty-three millimetres inside the surface it was supposed to lie
+   * on — a cord sewn into the stuffing.
+   *
+   * The extrusion's own bevel expands this outline by `cord`, so drawing it at
+   * half the size minus half a cord puts the finished rim half a cord proud of
+   * the cushion. Which is what proud means: a seam you can see across a room is
+   * a seam you could catch a fingernail on.
+   */
+  const halfX = size[0] / 2 - r - cord * 0.5;
+  const halfY = size[1] / 2 - r - cord * 0.5;
+
+  /** The cushion's own outline, at the widest part of its bevel. */
+  const outline = new THREE.Shape();
+  outline.moveTo(-halfX + r, -halfY);
+  outline.lineTo(halfX - r, -halfY);
+  outline.quadraticCurveTo(halfX, -halfY, halfX, -halfY + r);
+  outline.lineTo(halfX, halfY - r);
+  outline.quadraticCurveTo(halfX, halfY, halfX - r, halfY);
+  outline.lineTo(-halfX + r, halfY);
+  outline.quadraticCurveTo(-halfX, halfY, -halfX, halfY - r);
+  outline.lineTo(-halfX, -halfY + r);
+  outline.quadraticCurveTo(-halfX, -halfY, -halfX + r, -halfY);
+  outline.closePath();
+
+  /*
+   * A hole just inside it, so what gets extruded is a BAND and not a slab.
+   *
+   * Without this the piping is a solid plate the size of the cushion sitting
+   * inside the cushion, which is invisible, costs a few hundred triangles and
+   * would have been very hard to notice was wrong.
+   */
+  const inset = cord * 1.6;
+  const innerX = Math.max(1e-3, halfX - inset);
+  const innerY = Math.max(1e-3, halfY - inset);
+  const innerR = Math.max(1e-3, r - inset);
+  const hole = new THREE.Path();
+  hole.moveTo(-innerX + innerR, -innerY);
+  hole.lineTo(innerX - innerR, -innerY);
+  hole.quadraticCurveTo(innerX, -innerY, innerX, -innerY + innerR);
+  hole.lineTo(innerX, innerY - innerR);
+  hole.quadraticCurveTo(innerX, innerY, innerX - innerR, innerY);
+  hole.lineTo(-innerX + innerR, innerY);
+  hole.quadraticCurveTo(-innerX, innerY, -innerX, innerY - innerR);
+  hole.lineTo(-innerX, -innerY + innerR);
+  hole.quadraticCurveTo(-innerX, -innerY, -innerX + innerR, -innerY);
+  hole.closePath();
+  outline.holes.push(hole);
+
+  /*
+   * Swept as a thin extrusion with its own bevel, which makes a rounded cord
+   * rather than a flat strip. A flat strip would catch light as a band with two
+   * hard edges — the opposite of the soft highlight this is for.
+   */
+  const geometry = new THREE.ExtrudeGeometry(outline, {
+    depth: cord,
+    bevelEnabled: true,
+    bevelThickness: cord,
+    bevelSize: cord,
+    bevelOffset: 0,
+    bevelSegments: 2,
+    curveSegments: cornerSegments(r) + 1,
+    steps: 1,
+  });
+
+  geometry.translate(
+    min[0] + size[0] / 2,
+    min[1] + size[1] / 2,
+    // The seam runs round the middle of the cushion's depth.
+    min[2] + size[2] / 2 - cord,
+  );
   return { geometry, role };
 }
 
@@ -103,13 +300,15 @@ function cylinder(
   bottom: number,
   top: number,
   role: MaterialRole,
-  radialSegments = 10,
+  // Defaulted from the radius rather than to a number, so a table leg and a
+  // waste pipe are each exactly as round as their own size calls for.
+  sides = segmentsFor(radius),
 ): FurniturePart {
   const geometry = new THREE.CylinderGeometry(
     radius,
     radius,
     Math.max(1e-4, top - bottom),
-    radialSegments,
+    sides,
   );
   geometry.translate(center[0], (bottom + top) / 2, center[1]);
   return { geometry, role };
@@ -128,7 +327,7 @@ function cone(
     topRadius,
     bottomRadius,
     Math.max(1e-4, top - bottom),
-    18,
+    segmentsFor(Math.max(topRadius, bottomRadius)),
     1,
     true,
   );
@@ -229,23 +428,32 @@ function buildSofa(
   for (let i = 0; i < spec.seats; i++) {
     const from = innerLeft + (seatSpan / spec.seats) * i + 0.01;
     const to = innerLeft + (seatSpan / spec.seats) * (i + 1) - 0.01;
-    parts.push(
-      cushion(
-        [from, seatHeight - 0.12, -d / 2 + backThickness],
-        [to, seatHeight, -d / 2 + backThickness + seatDepth],
-        'soft',
-        0.04,
-      ),
-    );
+
+    const seat: [[number, number, number], [number, number, number]] = [
+      [from, seatHeight - 0.12, -d / 2 + backThickness],
+      [to, seatHeight, -d / 2 + backThickness + seatDepth],
+    ];
+    parts.push(cushion(seat[0], seat[1], 'soft', 0.04));
+
     // Back cushion above it, leaning forward off the back panel.
-    parts.push(
-      cushion(
-        [from, seatHeight, -d / 2 + backThickness],
-        [to, h - 0.03, -d / 2 + backThickness + 0.16],
-        'soft',
-        0.05,
-      ),
-    );
+    const back: [[number, number, number], [number, number, number]] = [
+      [from, seatHeight, -d / 2 + backThickness],
+      [to, h - 0.03, -d / 2 + backThickness + 0.16],
+    ];
+    parts.push(cushion(back[0], back[1], 'soft', 0.05));
+
+    /*
+     * The seam round each cushion, which is the detail that says upholstery.
+     *
+     * Only the cushions get it, not the plinth or the arms: piping goes where
+     * two panels of fabric are sewn together, and on most sofas that is the
+     * cushions' own edges. Putting it on everything would read as a seam where
+     * no seam is, which is worse than none.
+     */
+    const seatPipe = piping(seat[0], seat[1], 'accent', 0.04);
+    if (seatPipe) parts.push(seatPipe);
+    const backPipe = piping(back[0], back[1], 'accent', 0.05);
+    if (backPipe) parts.push(backPipe);
   }
 
   // A chaise extends the seat on one side, which is what makes a corner sofa

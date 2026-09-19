@@ -23,6 +23,8 @@
 
 import * as THREE from 'three';
 
+import { chamferedBox } from './millwork';
+
 import { MOUNTING } from '@/code/nec';
 import { isLighting, isReceptacle } from '@/services/layout';
 import { elevationOf } from '@/state/levels';
@@ -74,7 +76,7 @@ export class Electrical {
   private lines: THREE.Line[] = [];
   private materials = new Map<number, THREE.MeshStandardMaterial>();
   private lineMaterials = new Map<number, THREE.LineBasicMaterial>();
-  private geometries = new Map<string, THREE.BoxGeometry>();
+  private geometries = new Map<string, THREE.BufferGeometry>();
 
   /** Whether home runs are drawn as well as the devices themselves. */
   private showRuns = true;
@@ -276,10 +278,10 @@ export class Electrical {
     this.lines.push(line);
   }
 
-  private geometryFor(key: string, size: [number, number, number]): THREE.BoxGeometry {
+  private geometryFor(key: string, size: [number, number, number]): THREE.BufferGeometry {
     const existing = this.geometries.get(key);
     if (existing) return existing;
-    const geometry = new THREE.BoxGeometry(size[0], size[1], size[2]);
+    const geometry = chamferedBox(size[0], size[1], size[2]);
     this.geometries.set(key, geometry);
     return geometry;
   }

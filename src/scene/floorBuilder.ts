@@ -15,6 +15,7 @@
 
 import * as THREE from 'three';
 
+import { subdivideForLight } from './subdivide';
 import type { Point2 } from '@/state/types';
 
 /**
@@ -63,7 +64,22 @@ function buildSurface(
     shape.holes.push(path);
   }
 
-  const geometry = new THREE.ShapeGeometry(shape);
+  const shaped = new THREE.ShapeGeometry(shape);
+
+  /*
+   * Cut into pieces small enough to carry a gradient.
+   *
+   * `ShapeGeometry` triangulates a rectangle into two triangles, which is
+   * correct and is also the fewest vertices a surface can have. A floor with
+   * four corner vertices can express exactly one flat tone no matter what the
+   * lighting does — there is nowhere for "bright by the window, dim at the back"
+   * to be stored. See `subdivide.ts`.
+   *
+   * Done before the rotation so the edge length is measured in the plane the
+   * surface actually lies in.
+   */
+  const geometry = subdivideForLight(shaped);
+  if (geometry !== shaped) shaped.dispose();
 
   // ShapeGeometry emits every normal as +Z; the rotation turns that into +Y for
   // a floor or -Y for a ceiling, so both end up facing into the room.

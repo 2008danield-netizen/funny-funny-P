@@ -39,6 +39,8 @@
 
 import * as THREE from 'three';
 
+import { chamferedBox } from './millwork';
+
 import { runGeometry, type PlacedUnit } from '@/building/cabinetRun';
 import { CARCASS, WORKTOP, doorFinish, worktopMaterial } from '@/fittings/modules';
 import { getFixture, type FixtureEntry } from '@/fittings/fixtures';
@@ -88,7 +90,7 @@ export class Fittings {
   private builtSignature = '';
   private selectedId: string | null = null;
 
-  private geometries = new Map<string, THREE.BoxGeometry>();
+  private geometries = new Map<string, THREE.BufferGeometry>();
   private materials = new Map<number, THREE.MeshStandardMaterial>();
 
   /** The fronts that move, by the id of the unit they belong to. */
@@ -606,12 +608,21 @@ export class Fittings {
     if (pickable) this.targets.push(mesh);
   }
 
-  private boxFor(width: number, height: number, depth: number): THREE.BoxGeometry {
+  /**
+   * A cached box with its edges eased.
+   *
+   * Cabinet fronts are the geometry a person gets closest to in this app — you
+   * stand at a worktop with your face half a metre from a door — so a
+   * mathematically sharp arris is more obvious here than anywhere else in the
+   * building. The cache makes the extra triangles nearly free: a kitchen has
+   * sixty fronts and about six distinct sizes.
+   */
+  private boxFor(width: number, height: number, depth: number): THREE.BufferGeometry {
     const key = `${width.toFixed(3)}x${height.toFixed(3)}x${depth.toFixed(3)}`;
     const existing = this.geometries.get(key);
     if (existing) return existing;
 
-    const geometry = new THREE.BoxGeometry(
+    const geometry = chamferedBox(
       Math.max(0.001, width),
       Math.max(0.001, height),
       Math.max(0.001, depth),

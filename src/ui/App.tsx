@@ -47,6 +47,14 @@ export function App() {
   // available and can enable controls that depend on it.
   const [engineReady, setEngineReady] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  /*
+   * Whether the refining renderer is on.
+   *
+   * Mirrored in React state rather than read from the engine, because the
+   * engine is a ref and a ref does not re-render — the toggle would show the
+   * old position until something else happened to repaint the panel.
+   */
+  const [progressive, setProgressive] = useState(false);
 
   const name = useDesignSlice((doc) => doc.name);
   // Only so the crosshair mounts and unmounts with the mode; nothing else here
@@ -176,6 +184,15 @@ export function App() {
             <LightingPanel />
             <ViewPanel
               onAutoHideWallsChange={(enabled) => engineRef.current?.setAutoHideWalls(enabled)}
+              progressive={progressive}
+              onProgressiveChange={
+                engineReady
+                  ? (enabled) => {
+                      engineRef.current?.setProgressive(enabled);
+                      setProgressive(enabled);
+                    }
+                  : null
+              }
             />
             <ProjectPanel onScreenshot={engineReady ? handleScreenshot : null} />
           </aside>

@@ -95,6 +95,26 @@ export function useKeyboardShortcuts(onViewpoint: (viewpoint: ViewpointId) => vo
 
       const key = event.key.toLowerCase();
 
+      /*
+       * V MEANS SOMETHING DIFFERENT INSIDE THE WALKTHROUGH.
+       *
+       * It is the Select tool everywhere else, and that is what it should stay.
+       * But there is no toolbar while somebody is walking through the building —
+       * every tool shortcut is inert in there — so the letter is free, and "V
+       * for view" is the obvious key for swapping between first and third
+       * person.
+       *
+       * Checked before the tool table rather than added to it, because this is a
+       * genuine mode and pretending otherwise by special-casing inside
+       * `setTool` would hide it.
+       */
+      if (key === 'v' && editorStore.getState().walkthrough) {
+        event.preventDefault();
+        const current = editorStore.getState().walkView;
+        editorStore.patch({ walkView: current === 'first' ? 'third' : 'first' });
+        return;
+      }
+
       const tool = TOOL_KEYS[key];
       if (tool) {
         event.preventDefault();

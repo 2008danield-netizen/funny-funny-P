@@ -159,6 +159,17 @@ export interface EditorState {
   walkthrough: boolean;
 
   /**
+   * Whether the walkthrough looks out of your own eyes or back at you.
+   *
+   * View state, like `walkthrough` itself. First person is the default and is
+   * the honest way to judge a room — it is the only view that puts your eye
+   * where a real eye would be. Third person is for looking AT the space rather
+   * than from inside it, and for the oldest trick in architectural drawing:
+   * telling somebody how big a room is by standing a person in it.
+   */
+  walkView: 'first' | 'third';
+
+  /**
    * How somebody moves, and how hard the app works to stop them feeling ill.
    *
    * These are preferences about a PERSON, not about a building, which is why
@@ -221,6 +232,23 @@ export interface ComfortSettings {
   snapTurn: boolean;
   /** Walking pace, metres per second. Slower is calmer. */
   speed: number;
+  /**
+   * Whether the head rises and falls as you walk.
+   *
+   * Loved by most people and genuinely sickening to a minority within about a
+   * minute, which is why it is a setting rather than a constant. It is driven by
+   * the same stride the footsteps are, so the head reaches the bottom of its
+   * travel exactly as the foot lands.
+   */
+  headBob: boolean;
+  /**
+   * Whether the view widens a little when you run.
+   *
+   * The strongest single cue for speed there is — most of how motion is
+   * perceived is the rate at which the edges of the frame sweep past. Also one
+   * of the strongest triggers for simulator sickness, hence the switch.
+   */
+  fovKick: boolean;
 }
 
 /**
@@ -281,6 +309,8 @@ export const DEFAULT_COMFORT: ComfortSettings = {
   vignetteStrength: 0.55,
   snapTurn: true,
   speed: 1.4,
+  headBob: true,
+  fovKick: true,
 };
 
 const EMPTY: Selection = { kind: null, id: null };
@@ -323,6 +353,7 @@ function initialState(): EditorState {
     // building, not half of it.
     activeSectionId: null,
     walkthrough: false,
+    walkView: 'first',
     comfort: { ...DEFAULT_COMFORT },
     sound: { ...DEFAULT_SOUND },
   };
