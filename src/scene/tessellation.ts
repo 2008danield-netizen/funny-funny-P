@@ -45,6 +45,8 @@
  * `MAX_SEGMENTS` is for.
  */
 
+import { detailLevel } from './detail';
+
 /**
  * How far a flat chord may depart from the true curve, in metres.
  *
@@ -88,7 +90,11 @@ export const MAX_SEGMENTS = 48;
  * `detail` scales the demand for a quality tier: a half means twice the
  * permitted error, which is roughly half the segments.
  */
-export function radialSegments(radius: number, arc: number = Math.PI * 2, detail = 1): number {
+export function radialSegments(
+  radius: number,
+  arc: number = Math.PI * 2,
+  detail: number = detailLevel(),
+): number {
   /*
    * The floor and ceiling scale with the arc, and forgetting that is a real
    * mistake rather than a rounding one.
@@ -134,7 +140,10 @@ export function radialSegments(radius: number, arc: number = Math.PI * 2, detail
  * equator. Without it the widest part of the sphere — the only part of it whose
  * outline is ever seen — falls between two rings and is measurably narrow.
  */
-export function sphereSegments(radius: number, detail = 1): { width: number; height: number } {
+export function sphereSegments(
+  radius: number,
+  detail: number = detailLevel(),
+): { width: number; height: number } {
   const width = radialSegments(radius, Math.PI * 2, detail);
   const height = Math.max(6, Math.round(width / 2 / 2) * 2);
   return { width, height };
@@ -147,6 +156,6 @@ export function sphereSegments(radius: number, detail = 1): { width: number; hei
  * one segment across a corner is a flat cut rather than a round one, which is a
  * chamfer and not a fillet.
  */
-export function cornerSegments(radius: number, detail = 1): number {
+export function cornerSegments(radius: number, detail: number = detailLevel()): number {
   return Math.max(2, Math.min(8, radialSegments(radius, Math.PI / 2, detail)));
 }

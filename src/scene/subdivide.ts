@@ -31,6 +31,8 @@
  */
 
 import * as THREE from 'three';
+
+import { detailLevel } from './detail';
 import { TessellateModifier } from 'three/examples/jsm/modifiers/TessellateModifier.js';
 
 /**
@@ -75,7 +77,15 @@ const MAX_TRIANGLES = 24000;
  */
 export function subdivideForLight(
   geometry: THREE.BufferGeometry,
-  maxEdge = LIGHT_EDGE,
+  /*
+   * The edge length, coarsened on a machine that is struggling.
+   *
+   * Dividing by the detail dial rather than multiplying by it, because this is
+   * a TOLERANCE: half the detail means twice the permitted edge, which is the
+   * same direction the chord error moves in `tessellation.ts`. One dial, two
+   * quantities, both getting looser together.
+   */
+  maxEdge = LIGHT_EDGE / detailLevel(),
 ): THREE.BufferGeometry {
   const position = geometry.getAttribute('position');
   if (!position) return geometry;

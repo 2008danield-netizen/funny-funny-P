@@ -57,6 +57,7 @@
 import * as THREE from 'three';
 
 import { Bvh } from './bvh';
+import { detailLevel } from './detail';
 
 /** How many rays each vertex casts over its hemisphere. */
 const SAMPLES = 48;
@@ -596,7 +597,16 @@ export function bakeSkyVisibility(
    * and it lets a small house get a fine bake while a large one degrades to a
    * coarser one rather than to a frozen tab.
    */
-  const budget = MAX_RAYS;
+  /*
+   * Scaled by the detail dial, like everything else this pass builds.
+   *
+   * The bake is the single most expensive thing that happens when a plan
+   * settles — a second or two of blocked main thread — and it is the first
+   * thing a struggling machine should be given less of. Half the rays means
+   * fewer samples per point, which is noisier; the smoothing passes are what
+   * make that an acceptable trade rather than a visible one.
+   */
+  const budget = MAX_RAYS * detailLevel();
 
   /*
    * How many samples each point can afford, worked out before any are cast.

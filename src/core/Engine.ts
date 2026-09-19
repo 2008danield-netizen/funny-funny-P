@@ -49,6 +49,7 @@ import { bakeSkyVisibility, fillUnbaked, useBakedAmbient } from '@/scene/skyBake
 import { designStore } from '@/state/store';
 import { editorStore } from '@/state/selection';
 import { EnvironmentProbe, wantsReflections, type ProbeResult } from '@/scene/EnvironmentProbe';
+import { TIER_DETAIL, detailLevel, setDetailLevel } from '@/scene/detail';
 import type { DesignDocument, Point2 } from '@/state/types';
 
 /** Reported once per second to the UI's performance readout. */
@@ -641,6 +642,35 @@ export class Engine {
      * showing three's stock studio box, which looks entirely plausible and is
      * somebody else's room.
      */
+    /*
+     * What the last frame actually cost, straight from the renderer.
+     *
+     * Every item in this realism pass has added geometry — subdivision,
+     * segment counts from the sagitta, chamfers on everything, panelled doors,
+     * sashes. None of it has been measured against a budget, and "it still
+     * feels fine on my machine" is not a measurement when the machine is a
+     * software rasteriser. This is what the paying-for-it work needs to aim at.
+     */
+    scope.__renderStats = () => {
+      const info = this.renderer.webgl.info;
+      let meshes = 0;
+      let instanced = 0;
+      this.scene.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.visible) return;
+        if ((mesh as unknown as THREE.InstancedMesh).isInstancedMesh) instanced++;
+        else meshes++;
+      });
+      return {
+        drawCalls: info.render.calls,
+        triangles: info.render.triangles,
+        geometries: info.memory.geometries,
+        textures: info.memory.textures,
+        meshes,
+        instanced,
+      };
+    };
+
     scope.__envProbe = (on?: boolean) => {
       if (on === false) {
         this.lighting.useCapturedEnvironment(null);
@@ -1802,6 +1832,23 @@ export class Engine {
   private applyQuality(): void {
     const settings = this.quality.settings;
     this.lighting.setShadowMapSize(settings.shadowMapSize);
+
+    /*
+     * The tier now reaches the GEOMETRY, not just the resolution.
+     *
+     * Until this, demotion changed the pixel ratio and the shadow map and left
+     * every curve, every subdivided wall and the whole sky bake exactly as
+     * expensive as before — which is most of what a slow machine is struggling
+     * with. The dial is read at BUILD time, so the tier change has to be
+     * followed by a rebuild to take effect; a demotion is one of the few
+     * moments where paying for a rebuild is obviously worth it.
+     */
+    const wanted = TIER_DETAIL[this.quality.current];
+    if (wanted !== detailLevel()) {
+      setDetailLevel(wanted);
+      this.rebuildForMode();
+      this.scheduleSkyBake();
+    }
     this.pipeline?.setQuality(settings, this.cameraController.camera);
     this.sizePipeline();
   }
