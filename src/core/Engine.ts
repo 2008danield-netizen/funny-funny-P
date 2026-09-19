@@ -48,6 +48,7 @@ import { MaterialLibrary } from '@/scene/materials/MaterialLibrary';
 import { bakeSkyVisibility, fillUnbaked, useBakedAmbient } from '@/scene/skyBake';
 import { designStore } from '@/state/store';
 import { editorStore } from '@/state/selection';
+import { EnvironmentProbe, wantsReflections, type ProbeResult } from '@/scene/EnvironmentProbe';
 import type { DesignDocument, Point2 } from '@/state/types';
 
 /** Reported once per second to the UI's performance readout. */
@@ -143,6 +144,7 @@ export class Engine {
 
   /** The user's own "show roofs" setting, which the cutaway then overrides. */
   private showRoofs = true;
+  private environmentProbe!: EnvironmentProbe;
 
   /**
    * Pending sky-visibility bake, and why it is debounced rather than immediate.
@@ -177,6 +179,7 @@ export class Engine {
     this.materials.setMaxAnisotropy(this.renderer.maxAnisotropy);
 
     this.lighting = new Lighting(this.scene, this.renderer.webgl);
+    this.environmentProbe = new EnvironmentProbe(this.renderer.webgl);
     this.scene.add(this.lighting.group);
 
     this.building = new Building(this.materials);
@@ -629,6 +632,28 @@ export class Engine {
         this.runSkyBake();
       }
       return this.lastBake;
+    };
+
+    /*
+     * What the reflections are actually reflecting.
+     *
+     * `captured` false means every shiny surface in the building is still
+     * showing three's stock studio box, which looks entirely plausible and is
+     * somebody else's room.
+     */
+    scope.__envProbe = (on?: boolean) => {
+      if (on === false) {
+        this.lighting.useCapturedEnvironment(null);
+        this.applyReflections(null);
+        this.invalidate();
+      } else if (on === true) {
+        this.captureEnvironment();
+        this.invalidate();
+      }
+      return {
+        captured: this.lighting.environmentIsCaptured,
+        last: this.lastProbe,
+      };
     };
 
     /*
@@ -1319,8 +1344,96 @@ export class Engine {
     }
 
     this.lastBake = result;
+
+    /*
+     * The reflection probe rides with the bake, and deliberately so.
+     *
+     * Both answer "what does this building look like from inside itself", both
+     * cost far too much per frame and nothing once, and both are invalidated by
+     * exactly the same events — a wall moved, a window added, the time of day
+     * changed. Scheduling them separately would mean two debounces that drift
+     * out of step, and a reflection describing a plan the bake has already
+     * moved past.
+     */
+    this.captureEnvironment();
+
     this.invalidate();
   }
+
+  /**
+   * Photographs the building from inside itself, for everything shiny.
+   *
+   * The point is the centroid of the largest room at standing eye height,
+   * which is where somebody would be. A probe is a single point pretending to
+   * be the whole room, so where that point sits decides whose view of the room
+   * every reflective surface in it shows; the middle of the main space is the
+   * least wrong answer available without one probe per room.
+   */
+  private captureEnvironment(): void {
+    const focus = this.focusPoint();
+    if (!focus) return;
+
+    /*
+     * The pick proxies are hidden for the capture.
+     *
+     * They are invisible to the eye because their material does not write
+     * colour, not because they are absent — and a cube camera renders what is
+     * there. Left in, every shiny surface in the building would reflect six
+     * large grey slabs standing where the doors are.
+     */
+    const hidden: THREE.Object3D[] = [];
+    this.scene.traverse((object) => {
+      if (object.name.includes('Pick')) hidden.push(object);
+    });
+
+    const result = this.environmentProbe.capture(
+      this.scene,
+      { x: focus.x, y: 1.6, z: focus.z },
+      hidden,
+    );
+    this.lighting.useCapturedEnvironment(this.environmentProbe.texture);
+    this.applyReflections(this.environmentProbe.texture);
+    this.lastProbe = result;
+  }
+
+  /**
+   * Puts the captured probe on the materials that actually reflect.
+   *
+   * -----------------------------------------------------------------------------
+   * ROUGHNESS DECIDES, BECAUSE ROUGHNESS IS WHAT REFLECTION MEANS.
+   *
+   * A surface's roughness is precisely how much it scatters what it reflects. A
+   * pane of glass at 0.04 returns a sharp image of the room; plaster at 0.9
+   * returns a smear indistinguishable from ambient light. So the rule is the
+   * physical one — below a quarter, a reflection is a picture of something and
+   * belongs here; above it, nothing would be gained and the double count with
+   * the baked bounce would be paid for nothing.
+   *
+   * In practice that catches the glazing, the tap and handle chrome, and a
+   * polished stone worktop, and leaves every painted and plastered surface in
+   * the building alone. Which is exactly the list.
+   */
+  private applyReflections(texture: THREE.Texture | null): void {
+    const seen = new Set<THREE.Material>();
+
+    this.scene.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh) return;
+
+      for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+        if (!material || seen.has(material)) continue;
+        seen.add(material);
+
+        if (!wantsReflections(material)) continue;
+
+        (material as THREE.MeshStandardMaterial).envMap = texture;
+        material.needsUpdate = true;
+      }
+    });
+  }
+
+  /** What the last environment capture did, for the checking probe. */
+  private lastProbe: ProbeResult | null = null;
 
   /**
    * How far away whatever is in the middle of the frame is, in metres.
@@ -1839,6 +1952,7 @@ export class Engine {
     this.ground.dispose();
     this.furnishings.dispose();
     this.building.dispose();
+    this.environmentProbe.dispose();
     this.lighting.dispose();
     this.materials.dispose();
     this.cameraController.dispose();

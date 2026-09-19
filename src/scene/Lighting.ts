@@ -213,6 +213,8 @@ export class Lighting {
 
   /** Pre-filtered environment map used for indirect lighting. */
   private environment: THREE.Texture | null = null;
+  /** The same thing, captured from inside the actual building. */
+  private captured: THREE.Texture | null = null;
   /** The sun's un-jittered position, for `offsetSun`. */
   private sunBase: THREE.Vector3 | null = null;
   /** The gradient sky behind everything. */
@@ -277,6 +279,25 @@ export class Lighting {
     this.fill.color.setHex(preset.fillColor);
     this.fill.intensity = preset.fillIntensity * gain;
 
+    /*
+     * The SCENE's environment stays the neutral studio box, deliberately.
+     *
+     * The probe captured from inside the building goes onto reflective
+     * materials one at a time instead, and the reason is a double count. In a
+     * physically based renderer `scene.environment` supplies indirect DIFFUSE
+     * as well as specular — and the captured probe is a photograph of a room
+     * that has already been lit by the baked bounce, so handing it to every
+     * material makes the bounce arrive twice, squared.
+     *
+     * That is not a subtle error. The first version did exactly this and the
+     * ceiling turned orange: the probe sees the wood floor below it, the
+     * ceiling's indirect diffuse is gathered from the probe's lower hemisphere,
+     * and the warm light a wood floor really does throw upwards was applied on
+     * top of the same warm light the bake had already applied.
+     *
+     * So: the bake owns the diffuse, per vertex, where it can vary across a
+     * wall. The probe owns the reflections, on the few materials that have any.
+     */
     this.scene.environment = this.environment;
     this.scene.environmentIntensity = preset.environmentIntensity * gain;
     this.positionLights(preset, plan);
@@ -292,6 +313,26 @@ export class Lighting {
      */
     const sunDirection = this.sun.position.clone().sub(this.sun.target.position).normalize();
     this.sky.apply(this.scene, preset.sky, sunDirection);
+  }
+
+  /**
+   * Swaps in a probe captured from inside this building.
+   *
+   * Not owned here — `EnvironmentProbe` holds it and disposes it — so this only
+   * points at it. It is not put on the scene; see `apply` for why.
+   */
+  useCapturedEnvironment(texture: THREE.Texture | null): void {
+    this.captured = texture;
+  }
+
+  /** The probe taken from inside the building, for reflective materials. */
+  get capturedEnvironment(): THREE.Texture | null {
+    return this.captured;
+  }
+
+  /** Whether reflections are coming from the building or from the stock box. */
+  get environmentIsCaptured(): boolean {
+    return this.captured !== null;
   }
 
   /**

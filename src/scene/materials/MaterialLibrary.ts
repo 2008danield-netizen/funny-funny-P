@@ -126,11 +126,28 @@ export class MaterialLibrary {
    * reference and shader recompilation is avoided on every edit.
    */
   createFloorMaterial(): THREE.MeshStandardMaterial {
-    return new THREE.MeshStandardMaterial({
+    const material = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       roughness: 0.6,
       metalness: 0,
     });
+
+    /*
+     * A floor reflects, and the roughness number alone does not say so.
+     *
+     * Every floor preset here is a sealed surface — "satin lacquer", "polished
+     * marble", "ground and sealed screed" — and the roughness MAP each one
+     * generates is what carries that: oak's base is 0.52, and three multiplies
+     * the map by this material's own 0.6, so the surface is really around 0.31.
+     * Anything deciding by `material.roughness` alone reads 0.6 and concludes
+     * "matte", which is how the one large horizontal surface in the building
+     * ended up with no reflection in it.
+     *
+     * So it is marked, rather than inferred. The file that builds the floor is
+     * the one that knows a floor is varnished.
+     */
+    material.userData.reflective = true;
+    return material;
   }
 
   /**
