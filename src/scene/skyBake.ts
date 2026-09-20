@@ -65,11 +65,23 @@ const SAMPLES = 48;
 /**
  * The most rays one bake may cast, across every surface.
  *
- * Roughly a second of work in a browser. Past that the bake is spread thinner
- * rather than allowed to run longer: a large building gets fewer samples per
- * point, which is noisier, instead of a frozen tab, which is unusable.
+ * -----------------------------------------------------------------------------
+ * TRIPLED, BECAUSE THE REASON IT WAS LOW STOPPED BEING TRUE.
+ *
+ * 400,000 was "roughly a second of work in a browser", and a second was the
+ * ceiling because the bake ran in one blocking lump: past that the tab was
+ * visibly frozen. That is no longer how it runs. The work is sliced across
+ * frames now, so the cost of a longer bake is that the new shading takes
+ * another second to appear — while the app stays responsive throughout — which
+ * is a completely different and much cheaper kind of expensive.
+ *
+ * It mattered immediately. Bringing furniture into the bake took a room from
+ * about 3,700 points to 10,000, and at the old ceiling that dropped the samples
+ * per point from 48 to 20 — the whole room got noisier as a side effect of the
+ * sofa being lit properly. The budget still exists, and still degrades a large
+ * building gracefully rather than letting it run away.
  */
-const MAX_RAYS = 400000;
+const MAX_RAYS = 1200000;
 
 /**
  * How far a ray travels before it counts as having escaped, in metres.
@@ -210,7 +222,14 @@ export interface BakeResult {
   vertices: number;
   /** Rays cast. */
   rays: number;
-  /** Milliseconds taken. */
+  /**
+   * Milliseconds of work, which is not the same as elapsed time.
+   *
+   * A bake spread over frames finishes seconds after it starts and this counts
+   * only the slices — so the number still answers "what does this cost" rather
+   * than "how long was the user waiting", which is a different and much less
+   * useful question once it stopped blocking anything.
+   */
   ms: number;
   /** Mean sky visibility, for a check to assert the bake did something. */
   mean: number;
@@ -493,25 +512,19 @@ function gatherSourceRadiance(bvh: Bvh, light: BakeLight): Float32Array {
 }
 
 /**
- * Bakes sky visibility and one bounce of coloured light into each mesh.
+ * The bake itself, as a generator that can be put down between points.
  *
- * `surfaces` are the meshes that receive the bake; `occluders` are everything
- * that can block a ray, which is normally the surfaces plus the furniture. The
- * two lists differ because a sofa should darken the wall behind it without
- * itself needing per-vertex shading.
- *
- * Two attributes come out, and they are separate on purpose. `bakedAmbient` is
- * a single float: how much open sky this point can see, sampled finely because
- * it carries the corner darkening. `bakedBounce` is an RGB: the light that
- * arrived here off other surfaces, sampled coarsely because it changes over
- * metres rather than centimetres. The shader adds them.
+ * Written as a generator rather than as a callback-driven state machine
+ * because the loop it suspends is four levels deep — mesh, point, direction,
+ * and the tangent frame in between — and unrolling that into explicit resumable
+ * state would be a rewrite of the one part of this file that is known to be
+ * correct. A `yield` in the middle of it is one line and changes nothing else.
  */
-export function bakeSkyVisibility(
+function* runBake(
   surfaces: readonly THREE.Mesh[],
   occluders: readonly THREE.Object3D[],
-  light: BakeLight = PLAIN_LIGHT,
-): BakeResult {
-  const started = Date.now();
+  light: BakeLight,
+): Generator<void, BakeResult, void> {
 
   /*
    * Rays are cast against the COARSE geometry, not against what is drawn.
@@ -827,6 +840,17 @@ export function bakeSkyVisibility(
       bounced[g * 3 + 2] = bounceB / BOUNCE_SAMPLES / reference[2];
 
       vertices++;
+
+      /*
+       * The point at which this can be put down and picked up again.
+       *
+       * One point is the right grain. Finer — inside the ray loop — and the
+       * bookkeeping starts to cost more than the work; coarser, per mesh, and
+       * a single large floor is still a frozen second, which is the whole
+       * problem. Sixty rays is a few tens of microseconds, so a caller asking
+       * for eight milliseconds gets within a fraction of a millisecond of it.
+       */
+      yield;
     }
 
     smoothAlongEdges(geometry, groupOf, values, SMOOTH_PASSES);
@@ -868,13 +892,128 @@ export function bakeSkyVisibility(
   return {
     vertices,
     rays,
-    ms: Date.now() - started,
+    // Filled in by whoever drove this. See `BakeResult.ms`: it is time actually
+    // spent computing, which for a bake spread over frames is not wall time.
+    ms: 0,
     mean: vertices > 0 ? total / vertices : 0,
     darkest,
     samples,
     bounce: vertices > 0 ? bounceTotal / vertices : 0,
     chroma: vertices > 0 ? chromaTotal / vertices : 0,
   };
+}
+
+/**
+ * A bake in progress, driven a slice at a time.
+ *
+ * -----------------------------------------------------------------------------
+ * THE BAKE IS CORRECT, FAST ENOUGH, AND STILL FREEZES THE TAB.
+ *
+ * A second of work is a second of work, and JavaScript has one thread. Doing it
+ * in one go means the page stops — no scrolling, no typing in a panel, no
+ * cursor — for as long as it takes, and it happens on every edit that settles.
+ * That is the difference between an app that feels heavy and one that does not,
+ * and it has nothing to do with how long the bake takes in total.
+ *
+ * So the bake yields after every point and this hands out slices of it. Eight
+ * milliseconds at a time leaves half a sixty-hertz frame for everything else,
+ * and a bake that took 1.2 seconds in one lump becomes about seventy frames
+ * during which the app still answers.
+ *
+ * -----------------------------------------------------------------------------
+ * AND THE OLD RESULT IS LEFT ON SCREEN WHILE IT RUNS.
+ *
+ * Nothing is written to a mesh until that mesh's own points are all done, so a
+ * part-finished bake never shows as a half-lit wall. The room keeps the shading
+ * it had until the new answer is ready to replace it, which is why this can be
+ * spread over a second without anything flickering.
+ */
+export class SkyBake {
+  private readonly steps: Generator<void, BakeResult, void>;
+  private finished: BakeResult | null = null;
+  private spent = 0;
+
+  constructor(
+    surfaces: readonly THREE.Mesh[],
+    occluders: readonly THREE.Object3D[],
+    light: BakeLight = PLAIN_LIGHT,
+  ) {
+    this.steps = runBake(surfaces, occluders, light);
+  }
+
+  /** The finished bake, or null while it is still running. */
+  get result(): BakeResult | null {
+    return this.finished;
+  }
+
+  get done(): boolean {
+    return this.finished !== null;
+  }
+
+  /**
+   * Works for about `budgetMs`, then stops. Returns true when the bake is done.
+   *
+   * The budget is honoured to within one point's work rather than exactly,
+   * because checking the clock more often than that would cost more than it
+   * saves. At sixty rays a point that overshoot is tens of microseconds.
+   */
+  step(budgetMs = 8): boolean {
+    if (this.finished) return true;
+
+    const started = now();
+    do {
+      const next = this.steps.next();
+      if (next.done) {
+        this.spent += now() - started;
+        this.finished = { ...next.value, ms: Math.round(this.spent) };
+        return true;
+      }
+    } while (now() - started < budgetMs);
+
+    this.spent += now() - started;
+    return false;
+  }
+}
+
+/**
+ * `performance.now` where there is one, `Date.now` otherwise.
+ *
+ * A bake slice is eight milliseconds and `Date.now` has a resolution of one, so
+ * measuring slices with it would be eight buckets wide. Node has
+ * `performance.now`, browsers have it, and the fallback is there so this file
+ * stays runnable somewhere that does not.
+ */
+const now: () => number =
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? () => performance.now()
+    : () => Date.now();
+
+/**
+ * Bakes sky visibility and one bounce of coloured light into each mesh.
+ *
+ * `surfaces` are the meshes that receive the bake; `occluders` are everything
+ * that can block a ray, which is normally the surfaces plus the furniture. The
+ * two lists differ because a sofa should darken the wall behind it without
+ * itself needing per-vertex shading.
+ *
+ * Two attributes come out, and they are separate on purpose. `bakedAmbient` is
+ * a single float: how much open sky this point can see, sampled finely because
+ * it carries the corner darkening. `bakedBounce` is an RGB: the light that
+ * arrived here off other surfaces, sampled coarsely because it changes over
+ * metres rather than centimetres. The shader adds them.
+ *
+ * Runs to completion in one go, which blocks for as long as it takes. The app
+ * uses `SkyBake` instead; this is for tests and for anywhere a blocked second
+ * does not matter.
+ */
+export function bakeSkyVisibility(
+  surfaces: readonly THREE.Mesh[],
+  occluders: readonly THREE.Object3D[],
+  light: BakeLight = PLAIN_LIGHT,
+): BakeResult {
+  const bake = new SkyBake(surfaces, occluders, light);
+  while (!bake.step(Infinity));
+  return bake.result!;
 }
 
 /**

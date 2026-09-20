@@ -39,6 +39,12 @@
 
 import * as THREE from 'three';
 
+/** `performance.now` where there is one, so a sub-millisecond face is visible. */
+const now: () => number =
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? () => performance.now()
+    : () => Date.now();
+
 /**
  * Resolution of each cube face.
  *
@@ -144,7 +150,51 @@ export class EnvironmentProbe {
     at: { x: number; y: number; z: number },
     hidden: readonly THREE.Object3D[] = [],
   ): ProbeResult {
-    const started = Date.now();
+    this.begin(scene, at, hidden);
+    while (!this.step());
+    return this.lastResult!;
+  }
+
+  /* --------------------------- One face at a time ------------------------- */
+
+  private pending: {
+    scene: THREE.Scene;
+    at: { x: number; y: number; z: number };
+    restore: THREE.Object3D[];
+    previousEnvironment: THREE.Texture | null;
+    previousTarget: THREE.WebGLRenderTarget | null;
+    face: number;
+    spent: number;
+  } | null = null;
+
+  private lastResult: ProbeResult | null = null;
+
+  /**
+   * Starts a capture, to be advanced one face at a time.
+   *
+   * -----------------------------------------------------------------------------
+   * SIX FULL RENDERS OF THE SCENE IS ONE VERY LONG FRAME.
+   *
+   * Measured on the software rasteriser: about 700 milliseconds, which was the
+   * one remaining freeze once the sky bake had been spread over frames. Even on
+   * real hardware six renders in a single frame is six frames' worth of work
+   * arriving at once, which is a dropped frame at best.
+   *
+   * There is no reason for them to be in the same frame. A cube face is an
+   * independent render into an independent slice of the target, and the
+   * pre-filter at the end does not care when they were drawn.
+   *
+   * The scene is held in a state it must not be left in while this runs — pick
+   * proxies hidden, `scene.environment` cleared — so `step` must keep being
+   * called until it reports done. `abandon` exists for the one case where it
+   * cannot: the plan changing underneath a capture.
+   */
+  begin(
+    scene: THREE.Scene,
+    at: { x: number; y: number; z: number },
+    hidden: readonly THREE.Object3D[] = [],
+  ): void {
+    if (this.pending) this.abandon();
 
     const restore: THREE.Object3D[] = [];
     for (const object of hidden) {
@@ -163,25 +213,92 @@ export class EnvironmentProbe {
     const previousEnvironment = scene.environment;
     scene.environment = null;
 
-    const previousTarget = this.renderer.getRenderTarget();
+    this.camera.position.set(at.x, at.y, at.z);
+    this.camera.updateMatrixWorld(true);
+
+    this.pending = {
+      scene,
+      at: { ...at },
+      restore,
+      previousEnvironment,
+      previousTarget: this.renderer.getRenderTarget(),
+      face: 0,
+      spent: 0,
+    };
+  }
+
+  /**
+   * Renders one face, or pre-filters and finishes. True when the capture is done.
+   *
+   * The faces are drawn in the order three's own `CubeCamera` keeps its
+   * children, which is the order the cube target's slices are indexed in. They
+   * are not interchangeable: swapping two would mirror the reflections about an
+   * axis, which looks like nothing in particular and is impossible to attribute.
+   */
+  step(): boolean {
+    const job = this.pending;
+    if (!job) return true;
+
+    const started = now();
+
+    if (job.face < 6) {
+      const camera = this.camera.children[job.face] as THREE.PerspectiveCamera | undefined;
+      if (camera) {
+        this.renderer.setRenderTarget(this.target, job.face);
+        this.renderer.clear();
+        this.renderer.render(job.scene, camera);
+      }
+      job.face++;
+      job.spent += now() - started;
+      return false;
+    }
 
     try {
-      this.camera.position.set(at.x, at.y, at.z);
-      this.camera.update(this.renderer, scene);
-
       const next = this.pmrem.fromCubemap(this.target.texture).texture;
       this.filtered?.dispose();
       this.filtered = next;
     } finally {
-      this.renderer.setRenderTarget(previousTarget);
-      scene.environment = previousEnvironment;
-      for (const object of restore) object.visible = true;
+      this.restore(job);
     }
 
-    return { ms: Date.now() - started, at: { ...at } };
+    job.spent += now() - started;
+    this.lastResult = { ms: Math.round(job.spent), at: job.at };
+    this.pending = null;
+    return true;
+  }
+
+  /** Whether a capture is part way through. */
+  get capturing(): boolean {
+    return this.pending !== null;
+  }
+
+  /** What the last finished capture cost. */
+  get result(): ProbeResult | null {
+    return this.lastResult;
+  }
+
+  /**
+   * Gives up on a capture in progress and puts the scene back.
+   *
+   * The half-written cube target is simply left; the previous filtered map
+   * stays in use, which is the right answer — reflections one edit out of date
+   * are very much better than none, and the next capture overwrites every face
+   * anyway.
+   */
+  abandon(): void {
+    if (!this.pending) return;
+    this.restore(this.pending);
+    this.pending = null;
+  }
+
+  private restore(job: NonNullable<EnvironmentProbe['pending']>): void {
+    this.renderer.setRenderTarget(job.previousTarget);
+    job.scene.environment = job.previousEnvironment;
+    for (const object of job.restore) object.visible = true;
   }
 
   dispose(): void {
+    this.abandon();
     this.filtered?.dispose();
     this.filtered = null;
     this.target.dispose();

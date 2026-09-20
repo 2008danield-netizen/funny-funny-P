@@ -294,7 +294,6 @@ export function createDefaultDocument(): DesignDocument {
     activeLevelId: 'lv1',
     stairs: [],
     roofs: [],
-    showRoofs: true,
     site: defaultSite(),
     exterior: defaultExterior(),
     services: [],
@@ -319,7 +318,6 @@ export function createDefaultDocument(): DesignDocument {
     currency: 'USD',
     // Hidden by default: opaque ceilings block the orbit camera's view in from
     // above, which is how people naturally inspect a floor plan.
-    showCeilings: false,
     // Feet and inches. The app is built to US codes, which are written in
     // inches, and a figure that has to be converted before it can be checked
     // against the limit it failed is a figure nobody checks.
@@ -1953,8 +1951,6 @@ export function sanitizeDocument(input: unknown): DesignDocument {
     name: safeString(raw.name, base.name),
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : base.updatedAt,
     units: raw.units === 'imperial' ? 'imperial' : 'metric',
-    showCeilings: raw.showCeilings === true,
-    showRoofs: raw.showRoofs !== false,
     levels: levels.list,
     activeLevelId: levels.activeId,
     stairs: safeStairs(raw.stairs, levels.list),

@@ -146,7 +146,6 @@ function migrateV1ToV2(doc: Record<string, unknown>): Record<string, unknown> {
     ...doc,
     schemaVersion: 2,
     // v1's ceiling visibility was per-room; v2 makes it a document-wide toggle.
-    showCeilings: ceiling.visible === true,
     plan: {
       vertices,
       walls,
@@ -279,7 +278,6 @@ function migrateV5ToV6(doc: Record<string, unknown>): Record<string, unknown> {
   return {
     ...doc,
     schemaVersion: 6,
-    showRoofs: true,
     site: {
       northAngle: typeof site.northAngle === 'number' ? site.northAngle : 0,
       boundary: Array.isArray(site.boundary) ? site.boundary : [],
@@ -454,6 +452,25 @@ function migrateV12ToV13(doc: Record<string, unknown>): Record<string, unknown> 
 }
 
 /**
+ * v13 → v14: the last two view flags leave the document.
+ *
+ * `showCeilings` and `showRoofs` were stored in the design, which meant that
+ * hiding a ceiling to look into a room was an undoable edit, marked the file
+ * dirty, and travelled to anybody the design was sent to. They are view state,
+ * and session 19 moved them to the editor store along with every other layer.
+ *
+ * A deletion, so nothing is lost that mattered — but it is still a numbered
+ * migration rather than a silent drop, because a v13 document carrying these
+ * keys has to stop carrying them or the next export puts them back.
+ */
+function migrateV13ToV14(doc: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...doc, schemaVersion: 14 };
+  delete next.showCeilings;
+  delete next.showRoofs;
+  return next;
+}
+
+/**
  * Brings a document up to the current schema.
  *
  * Migrations are applied in sequence, so a v1 document passes through every
@@ -504,6 +521,9 @@ export function migrateDocument(input: Record<string, unknown>): Record<string, 
   }
   if (declared < 13) {
     doc = migrateV12ToV13(doc);
+  }
+  if (declared < 14) {
+    doc = migrateV13ToV14(doc);
   }
 
   return doc;

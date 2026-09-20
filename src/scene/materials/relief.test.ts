@@ -57,6 +57,7 @@ import { describe, expect, it } from 'vitest';
 import { CLADDING_PRESETS } from './cladding';
 import { FLOOR_PRESETS } from './presets';
 import { heightToNormalMap } from './textureUtils';
+import { generateWeave } from './generators';
 import type { SurfaceMaps } from './generators';
 
 /** Resolution under test. Deliberately lower than production — see the header. */
@@ -219,5 +220,72 @@ describe('joints are measured in metres, not in plank cells', () => {
     // Before the fix this ratio was about six. Anything near one means the
     // joint is a physical width rather than a fraction of a board.
     expect(perJointAcross / perJointDown).toBeLessThan(2.5);
+  });
+});
+
+/**
+ * The weave, measured the same way everything else in this file is.
+ *
+ * Every relief bug this project has had was an amplitude too large for its
+ * frequency — a height field that drops most of its range across two texels is
+ * a mirror, not a texture. That is what made the wood floor gleam like wet
+ * paint and the carpet catch glints wool has never had. A weave is the finest
+ * field here, so it is the easiest one to get wrong in that direction.
+ */
+describe('woven upholstery', () => {
+  function weave(coarseness = 0.8): SurfaceMaps {
+    return generateWeave(SIZE, {
+      baseColor: '#d7cdba',
+      coarseness,
+      seed: 4471,
+      tileMetres: 0.35,
+    });
+  }
+
+  it('keeps its normals nearly flat, because threads are not spikes', () => {
+    const relief = measure(weave());
+    // Cloth breaks a sheen up; it does not face the light in six directions.
+    expect(relief.meanTilt).toBeLessThan(20);
+    expect(relief.tailTilt).toBeLessThan(TAIL_TILT);
+  });
+
+  it('does not clip, which is what a field too steep for its texels does', () => {
+    const relief = measure(weave());
+    expect(relief.heightMin).toBeGreaterThan(0);
+    expect(relief.heightMax).toBeLessThan(255);
+  });
+
+  it('puts the weave in the light, not in the colour', () => {
+    /*
+     * Dyed cloth is dyed all the way through. Painting the weave into the
+     * albedo is the usual shortcut and it reads as wallpaper, because the
+     * pattern then stays put when the light moves.
+     */
+    const albedo = weave().albedo.data;
+    let min = 255;
+    let max = 0;
+    for (let i = 0; i < albedo.length; i += 4) {
+      min = Math.min(min, albedo[i]!);
+      max = Math.max(max, albedo[i]!);
+    }
+    expect(max - min).toBeLessThan(30);
+  });
+
+  it('varies its roughness, which is where the effect actually lives', () => {
+    const rough = weave().roughness.data;
+    let min = 255;
+    let max = 0;
+    for (let i = 0; i < rough.length; i += 4) {
+      min = Math.min(min, rough[i]!);
+      max = Math.max(max, rough[i]!);
+    }
+    expect(max - min).toBeGreaterThan(10);
+    // And never reaches a gloss: upholstery has no sharp highlight anywhere.
+    expect(min).toBeGreaterThan(0.8 * 255);
+  });
+
+  it('gets flatter as the cloth gets finer', () => {
+    // Velvet is nearly smooth; linen is not. The knob has to do something.
+    expect(measure(weave(0.1)).meanTilt).toBeLessThan(measure(weave(1)).meanTilt);
   });
 });

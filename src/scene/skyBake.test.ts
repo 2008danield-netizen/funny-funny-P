@@ -19,6 +19,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 
 import {
+  SkyBake,
   bakeSkyVisibility,
   fillUnbaked,
   smoothAlongEdges,
@@ -529,5 +530,104 @@ describe('the coarse proxies', () => {
     ));
 
     expect(open.mean).toBeGreaterThan(sealed.mean + 0.3);
+  });
+});
+
+describe('SkyBake, spread over frames', () => {
+  /** The same room, baked twice, once in one go and once in slices. */
+  function room(): { ground: THREE.Mesh; roof: THREE.Mesh } {
+    return { ground: floor(4, 6), roof: lid(4, 1) };
+  }
+
+  it('reaches exactly the same answer as doing it in one go', () => {
+    /*
+     * The property that matters, and the only one worth having a test for: a
+     * bake put down and picked up between points must not depend on WHERE it
+     * was put down. Anything carried in a loop variable rather than in the
+     * generator's own state would show up here and nowhere else.
+     */
+    const one = room();
+    const whole = bakeSkyVisibility([one.ground], [one.ground, one.roof]);
+
+    const other = room();
+    const sliced = new SkyBake([other.ground], [other.ground, other.roof]);
+    let slices = 0;
+    // A slice of zero milliseconds still does one point, which is the most
+    // adversarial schedule there is: suspended after every single point.
+    while (!sliced.step(0)) slices++;
+
+    expect(slices).toBeGreaterThan(5);
+    expect(sliced.result!.vertices).toBe(whole.vertices);
+    expect(sliced.result!.rays).toBe(whole.rays);
+    expect(sliced.result!.mean).toBeCloseTo(whole.mean, 9);
+    expect(sliced.result!.darkest).toBeCloseTo(whole.darkest, 9);
+    expect(sliced.result!.bounce).toBeCloseTo(whole.bounce, 9);
+
+    const a = one.ground.geometry.getAttribute('bakedAmbient');
+    const b = other.ground.geometry.getAttribute('bakedAmbient');
+    expect(b.count).toBe(a.count);
+    for (let i = 0; i < a.count; i++) expect(b.getX(i)).toBeCloseTo(a.getX(i), 9);
+  });
+
+  it('writes nothing until it is finished', () => {
+    /*
+     * A part-finished bake must never show as a half-lit wall. Nothing is
+     * written to a mesh until that mesh's own points are all done, which is
+     * what lets this be spread over a second without anything flickering.
+     */
+    const one = room();
+    const bake = new SkyBake([one.ground], [one.ground, one.roof]);
+
+    bake.step(0);
+    expect(one.ground.geometry.getAttribute('bakedAmbient')).toBeUndefined();
+
+    while (!bake.step(0));
+    expect(one.ground.geometry.getAttribute('bakedAmbient')).toBeDefined();
+  });
+
+  it('reports done, and stays done', () => {
+    const one = room();
+    const bake = new SkyBake([one.ground], [one.ground, one.roof]);
+
+    expect(bake.done).toBe(false);
+    expect(bake.result).toBeNull();
+
+    while (!bake.step(1));
+    expect(bake.done).toBe(true);
+
+    // Stepping a finished bake is a no-op rather than an error, because the
+    // frame loop has no reason to check before asking.
+    const answer = bake.result;
+    expect(bake.step(1)).toBe(true);
+    expect(bake.result).toBe(answer);
+  });
+
+  it('counts work rather than waiting', () => {
+    /*
+     * `ms` means "what does this cost", not "how long was the user waiting".
+     * Once it is spread over frames the second question has a much larger and
+     * much less useful answer.
+     */
+    const one = room();
+    const bake = new SkyBake([one.ground], [one.ground, one.roof]);
+    while (!bake.step(0));
+    expect(bake.result!.ms).toBeGreaterThanOrEqual(0);
+    expect(bake.result!.ms).toBeLessThan(5000);
+  });
+
+  it('honours a budget to within one point of work', () => {
+    // Fine enough that eight milliseconds is eight milliseconds and not
+    // whatever the next mesh boundary happens to be.
+    const one = { ground: floor(8, 24), roof: lid(8, 1) };
+    const bake = new SkyBake([one.ground], [one.ground, one.roof]);
+
+    const started = performance.now();
+    bake.step(5);
+    const took = performance.now() - started;
+
+    expect(bake.done).toBe(false);
+    // One point is tens of microseconds, so the overshoot is small — the slack
+    // here is for a slow or contended machine, not for the grain.
+    expect(took).toBeLessThan(30);
   });
 });

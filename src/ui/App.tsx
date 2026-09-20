@@ -28,6 +28,7 @@ import { DrawingsPanel } from './panels/DrawingsPanel';
 import { CataloguePanel } from './panels/CataloguePanel';
 import { AdvisorPanel } from './panels/AdvisorPanel';
 import { IssuesPanel } from './panels/IssuesPanel';
+import { LayersPanel } from './panels/LayersPanel';
 import { ShoppingListPanel } from './panels/ShoppingListPanel';
 import { InspectorPanel } from './panels/InspectorPanel';
 import { LightingPanel } from './panels/LightingPanel';
@@ -164,6 +165,11 @@ export function App() {
             <AdvisorPanel />
             <CataloguePanel />
             <IssuesPanel />
+            {/* Layers sits above the services rather than with the other view
+                controls at the bottom: it is the panel you reach for BECAUSE
+                a service is hidden behind something, so it belongs next to
+                them rather than three screens further down. */}
+            <LayersPanel />
             <ShoppingListPanel />
             <StoreyPanel />
             <TracePanel />

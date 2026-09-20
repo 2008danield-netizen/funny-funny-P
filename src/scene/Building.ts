@@ -32,6 +32,7 @@ import {
   type WallSegment,
 } from './planGraph';
 import { WALL_MATERIAL_SLOT, buildOpeningFurniture, buildWallGeometry, wallMatrix } from './wallBuilder';
+import type { LayerState } from '@/state/layers';
 import { resolveRoomSpec } from '@/state/planOps';
 import type { Selection } from '@/state/selection';
 import type { Exterior, FloorVoid, PlanModel, Point2, WallFaceSpec } from '@/state/types';
@@ -104,6 +105,17 @@ export interface LeafHinge {
   /** Travel along local X when fully open. Zero for a hinged leaf. */
   slide: number;
 }
+
+/**
+ * How transparent a ghosted surface is.
+ *
+ * 0.18 rather than something gentler. The job is to keep the ROOM LAYOUT
+ * readable while the services read clearly through it, and anything above
+ * about a quarter starts fighting the pipes for attention — at which point
+ * people simply turn the layer off, which loses the context the ghost existed
+ * to provide.
+ */
+const GHOST_OPACITY = 0.18;
 
 interface WallEntry {
   mesh: THREE.Mesh;
@@ -182,6 +194,15 @@ export class Building {
   private holes: readonly FloorVoid[] = [];
 
   private editMode = false;
+  /**
+   * How solidly the walls, floors and ceilings are drawn. See `setShellLayers`.
+   */
+  private shell: { walls: LayerState; floors: LayerState; ceilings: LayerState } = {
+    walls: 'solid',
+    floors: 'solid',
+    ceilings: 'hidden',
+  };
+
   private autoHideWalls = true;
 
   /**
@@ -303,6 +324,80 @@ export class Building {
     for (const handle of this.handles.values()) handle.visible = enabled;
   }
 
+  /**
+   * How solidly the building itself is drawn.
+   *
+   * -----------------------------------------------------------------------------
+   * WHY THIS IS A MATERIAL CHANGE AND NOT A VISIBILITY ONE.
+   *
+   * Hiding a wall is easy — `mesh.visible = false` — and it is the wrong answer
+   * for the view this exists to serve. A drain stack floating in empty space
+   * tells a builder nothing; they need to know WHICH WALL it is in. So the
+   * default for a hidden shell is `ghost`, which leaves the geometry in place
+   * and turns its materials translucent.
+   *
+   * Ghosting also has to switch depth WRITING off while leaving depth TESTING
+   * on. Left writing, a translucent wall fills the depth buffer and occludes
+   * every pipe behind it — the pipes vanish and the wall looks like frosted
+   * glass, which is the exact opposite of the point. Turned off, the wall tints
+   * what is behind it and the services read through.
+   *
+   * The states are `solid`, `ghost` and `hidden`; see `state/layers.ts` for why
+   * three rather than two.
+   */
+  setShellLayers(shell: {
+    walls: LayerState;
+    floors: LayerState;
+    ceilings: LayerState;
+  }): void {
+    this.shell = shell;
+    this.applyShell();
+  }
+
+  /**
+   * Applies the shell states to every material and mesh.
+   *
+   * Walls are not given their visibility here. `updateForCamera` runs every
+   * frame and owns `mesh.visible` for walls — it is what takes the near walls
+   * off when the camera is outside — so a layer flag set here would be
+   * overwritten within a frame. The wall layer is ANDed in there instead, and
+   * this method only handles the materials.
+   */
+  private applyShell(): void {
+    const ghost = (material: THREE.MeshStandardMaterial, on: boolean) => {
+      if (material.transparent === on) return;
+      material.transparent = on;
+      material.opacity = on ? GHOST_OPACITY : 1;
+      // See the note above: testing stays on, writing goes off.
+      material.depthWrite = !on;
+      material.needsUpdate = true;
+    };
+
+    const wallGhost = this.shell.walls === 'ghost';
+    for (const entry of this.walls.values()) {
+      ghost(entry.faceA, wallGhost);
+      ghost(entry.faceB, wallGhost);
+      ghost(entry.edges, wallGhost);
+      if (entry.frames) {
+        const material = entry.frames.material as THREE.MeshStandardMaterial;
+        ghost(material, wallGhost);
+      }
+      for (const hinge of entry.leaves) hinge.pivot.visible = this.shell.walls !== 'hidden';
+      if (entry.glass) entry.glass.visible = this.shell.walls !== 'hidden';
+    }
+
+    const floorGhost = this.shell.floors === 'ghost';
+    for (const entry of this.rooms.values()) {
+      ghost(entry.floorMaterial, floorGhost);
+      entry.floor.visible = this.shell.floors !== 'hidden';
+      if (entry.skirting) entry.skirting.visible = this.shell.floors !== 'hidden';
+
+      ghost(entry.ceilingMaterial, this.shell.ceilings === 'ghost');
+      entry.ceiling.visible = this.shell.ceilings !== 'hidden';
+      if (entry.cornice) entry.cornice.visible = this.shell.ceilings !== 'hidden';
+    }
+  }
+
   setAutoHideWalls(enabled: boolean): void {
     this.autoHideWalls = enabled;
   }
@@ -339,7 +434,6 @@ export class Building {
    */
   update(
     plan: PlanModel,
-    showCeilings: boolean,
     holes: readonly FloorVoid[] = [],
     exterior?: Exterior,
   ): void {
@@ -352,7 +446,7 @@ export class Building {
       this.builtSignature = signature;
     }
 
-    this.applyAppearance(plan, showCeilings);
+    this.applyAppearance(plan);
     this.applyHighlights();
   }
 
@@ -774,7 +868,7 @@ export class Building {
   /* ----------------------------- Appearance -------------------------- */
 
   /** Applies colours and materials. Never touches geometry. */
-  private applyAppearance(plan: PlanModel, showCeilings: boolean): void {
+  private applyAppearance(plan: PlanModel): void {
     // Which region, if any, looks at each side of each wall.
     const facing = new Map<string, { a?: Region; b?: Region }>();
     for (const region of this.regions) {
@@ -802,8 +896,17 @@ export class Building {
       const spec = resolveRoomSpec(plan, entry.region.key);
       this.materials.applyFloorSpec(entry.floorMaterial, spec.floor);
       entry.ceilingMaterial.color.set(spec.ceilingColor);
-      entry.ceiling.visible = showCeilings;
     }
+
+    /*
+     * Re-applied after every rebuild, because a rebuild makes NEW materials.
+     *
+     * The ghost lives on the material, so a wall rebuilt while the shell is
+     * ghosted comes back solid unless this runs — which shows up as one wall
+     * going opaque in the middle of a services view after an edit, and is
+     * exactly the sort of thing that gets blamed on the renderer.
+     */
+    this.applyShell();
   }
 
   /**
@@ -930,6 +1033,16 @@ export class Building {
         // Hide only when looking at a blank outside face with a room behind it.
         visible = cameraSideHasRoom || !otherSideHasRoom;
       }
+
+      /*
+       * The layer has the final say, and it has to be applied HERE.
+       *
+       * This method owns `mesh.visible` for walls and runs every frame, so a
+       * flag written anywhere else is overwritten within a frame. Ghosting is
+       * handled by `applyShell` through the materials; only "hidden" concerns
+       * visibility, and it wins over the camera rule either way.
+       */
+      if (this.shell.walls === 'hidden') visible = false;
 
       entry.mesh.visible = visible;
       if (entry.frames) entry.frames.visible = visible;

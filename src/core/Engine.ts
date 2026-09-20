@@ -45,9 +45,10 @@ import { stairGeometry } from '@/building/stairs';
 import { activeLevel, elevationOf, floorHoles, levelBelow } from '@/state/levels';
 import { analyseClearance } from '@/clearance/analyze';
 import { MaterialLibrary } from '@/scene/materials/MaterialLibrary';
-import { bakeSkyVisibility, fillUnbaked, useBakedAmbient } from '@/scene/skyBake';
+import { SkyBake, fillUnbaked, useBakedAmbient, type BakeResult } from '@/scene/skyBake';
 import { computeWear, fillNoWear, useWear } from '@/scene/wear';
 import { designStore } from '@/state/store';
+import { LAYER_PRESETS, isVisible } from '@/state/layers';
 import { editorStore } from '@/state/selection';
 import { EnvironmentProbe, wantsReflections, type ProbeResult } from '@/scene/EnvironmentProbe';
 import { TIER_DETAIL, detailLevel, setDetailLevel } from '@/scene/detail';
@@ -67,6 +68,20 @@ export interface EngineStats {
 
 /** Cheap frames to render after the camera stops, before starting to converge. */
 const SETTLE_FRAMES = 6;
+
+/**
+ * How long the sky bake may work for in one frame, in milliseconds.
+ *
+ * Eight, which is half a sixty-hertz frame. It leaves the other half for the
+ * render and for whatever the browser wants to do, so a bake that takes a
+ * second in total costs about seventy frames of being slightly busy rather than
+ * one second of the page being dead.
+ *
+ * Larger would finish sooner and start to be felt; smaller would be gentler and
+ * take long enough that somebody could move a wall again before the last one
+ * landed, which just restarts it.
+ */
+const BAKE_SLICE_MS = 8;
 
 /**
  * How long a single accumulation sample may take before convergence gives up.
@@ -158,6 +173,11 @@ export class Engine {
    * bake lands shortly after the dragging stops.
    */
   private bakeTimer: number | null = null;
+  /** The bake being worked on a slice at a time, or null. */
+  private bakeInProgress: SkyBake | null = null;
+  /** What that bake is for, held until it finishes and can be applied. */
+  private bakeSurfaces: THREE.Mesh[] = [];
+  private bakeOccluders: THREE.Object3D[] = [];
   /** Whether the sky bake runs at all. `__bakeProbe(false)` turns it off. */
   private bakeEnabled = true;
 
@@ -335,9 +355,7 @@ export class Engine {
     const level = activeLevel(doc);
     const holes = floorHoles(doc, level.id, (stair) => stairGeometry(doc, stair).wellOpening);
 
-    const wantCeilings = doc.showCeilings || this.walkingThrough;
-    this.lastCeilings = wantCeilings;
-    this.building.update(level.plan, wantCeilings, holes, doc.exterior);
+    this.building.update(level.plan, holes, doc.exterior);
 
     /*
      * RE-BAKE, BECAUSE THE MODE CHANGED WHAT THE BUILDING IS.
@@ -540,7 +558,6 @@ export class Engine {
 
   private lastXrFrame = 0;
   /** What the ceilings were last built as, so the override can be noticed. */
-  private lastCeilings: boolean | null = null;
 
   /**
    * Two hooks on `window` for automated checking, and why they are not
@@ -670,6 +687,101 @@ export class Engine {
         meshes,
         instanced,
       };
+    };
+
+    /*
+     * Every visible mesh, by name, with what it costs.
+     *
+     * `__renderStats` reports totals, and a total cannot answer the question
+     * that actually comes up: "the rug is not on screen — is it missing, or is
+     * it drawn and invisible?" Those need completely different fixes and a
+     * screenshot cannot tell them apart. Added in session 18 when exactly that
+     * happened: the catalogue built a 12,000-triangle rug in node and the room
+     * rendered bare floorboards, and the first three explanations considered
+     * were all wrong.
+     */
+    /*
+     * The layer set, readable and settable from a check.
+     *
+     * Driving the Layers panel through the DOM works and tests the wrong
+     * thing: a preset button that silently applies the wrong set still looks
+     * like a working click. This reads what the scene actually ended up with —
+     * which meshes are visible, and which materials are transparent — so a
+     * check can assert that "services only" really did ghost the walls rather
+     * than merely that a button highlighted.
+     */
+    scope.__layers = (presetId?: string) => {
+      if (presetId) {
+        const preset = LAYER_PRESETS.find((entry) => entry.id === presetId);
+        if (!preset) return null;
+        editorStore.setLayers(preset.layers);
+      }
+      return editorStore.getState().layers;
+    };
+
+    scope.__layerProbe = () => {
+      let walls = 0;
+      let ghostWalls = 0;
+      let floors = 0;
+      let ghostFloors = 0;
+      let furniture = 0;
+      let services = 0;
+
+      this.scene.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.visible) return;
+        // An object inside a hidden group still reports `visible`, so the
+        // parents have to be walked — this is exactly the trap that made the
+        // first version of this probe report furniture that was not on screen.
+        for (let node: THREE.Object3D | null = mesh.parent; node; node = node.parent) {
+          if (!node.visible) return;
+        }
+
+        const material = mesh.material as THREE.Material | undefined;
+        const transparent = Array.isArray(material)
+          ? material.some((entry) => entry.transparent)
+          : material?.transparent === true;
+
+        if (mesh.name.startsWith('Wall_')) {
+          walls++;
+          if (transparent) ghostWalls++;
+        } else if (mesh.name.startsWith('Floor_')) {
+          floors++;
+          if (transparent) ghostFloors++;
+        } else if (/^f\d+_/.test(mesh.name)) {
+          furniture++;
+        } else if (/Duct|Pipe|Stack|Register|Device|Conduit|Run_/i.test(mesh.name)) {
+          services++;
+        }
+      });
+
+      return { walls, ghostWalls, floors, ghostFloors, furniture, services };
+    };
+
+    scope.__meshProbe = (match?: string) => {
+      const rows: { name: string; tris: number; visible: boolean; y: number }[] = [];
+      this.scene.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        if (match && !mesh.name.includes(match)) return;
+        const geometry = mesh.geometry;
+        const position = geometry.getAttribute('position');
+        if (!position) return;
+        const tris = geometry.index ? geometry.index.count / 3 : position.count / 3;
+        mesh.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromBufferAttribute(
+          position as THREE.BufferAttribute,
+        );
+        box.applyMatrix4(mesh.matrixWorld);
+        rows.push({
+          name: mesh.name || '(unnamed)',
+          tris: Math.round(tris),
+          visible: mesh.visible,
+          y: Number(box.min.y.toFixed(3)),
+        });
+      });
+      rows.sort((a, b) => b.tris - a.tris);
+      return rows;
     };
 
     scope.__envProbe = (on?: boolean) => {
@@ -1129,22 +1241,23 @@ export class Engine {
      * This is a view decision for one mode, not a change to the design, so it
      * overrides here rather than writing to the document.
      */
-    const wantCeilings = doc.showCeilings || this.walkingThrough;
-    const ceilingsChanged = this.lastCeilings !== wantCeilings;
-    this.lastCeilings = wantCeilings;
-
     // The whole storey rides at its own height above the ground.
     this.levelGroup.position.y = elevationOf(doc, level.id);
 
     const holes = floorHoles(doc, level.id, (stair) => stairGeometry(doc, stair).wellOpening);
 
-    if (
-      planChanged ||
-      ceilingsChanged ||
-      previous?.stairs !== doc.stairs ||
-      previous?.exterior !== doc.exterior
-    ) {
-      this.building.update(level.plan, wantCeilings, holes, doc.exterior);
+    /*
+     * Ceilings no longer force a rebuild.
+     *
+     * They used to: the visibility lived in the document, was passed into
+     * `Building.update` and was compared here so that toggling it rebuilt the
+     * storey. Ceilings are always BUILT now and the layer only sets
+     * `mesh.visible`, so switching them costs nothing — which is the difference
+     * between a layer toggle that feels instant and one that stalls the page
+     * for the length of a geometry rebuild.
+     */
+    if (planChanged || previous?.stairs !== doc.stairs || previous?.exterior !== doc.exterior) {
+      this.building.update(level.plan, holes, doc.exterior);
       this.scheduleSkyBake();
     }
     if (levelSwitched || !previousLevel || previousLevel.furniture !== level.furniture) {
@@ -1231,7 +1344,6 @@ export class Engine {
     ) {
       this.roofs.update(doc);
     }
-    this.showRoofs = doc.showRoofs;
     this.roofs.setVisible(this.showRoofs && !this.building.isCutaway);
     if (!previous || previous.site !== doc.site || previous.levels !== doc.levels) {
       this.ground.update(doc);
@@ -1307,8 +1419,6 @@ export class Engine {
   }
 
   private runSkyBake(): void {
-    const doc = designStore.getState();
-    const level = activeLevel(doc);
     const surfaces: THREE.Mesh[] = [];
     const occluders: THREE.Object3D[] = [];
 
@@ -1351,7 +1461,10 @@ export class Engine {
         mesh.name.startsWith('Skirting') ||
         mesh.name.startsWith('Cornice') ||
         mesh.name.startsWith('Frames') ||
-        mesh.name.startsWith('LeafPanel');
+        mesh.name.startsWith('LeafPanel') ||
+        // Furniture marks itself; see `Furnishings`. It was excluded, which
+        // left every sofa in the building with no real lighting at all.
+        mesh.userData.bakeReceiver === true;
       if (shell) surfaces.push(mesh);
     });
 
@@ -1366,7 +1479,44 @@ export class Engine {
      * them separately would paint a different time of day onto the walls from
      * the one being rendered.
      */
-    const result = bakeSkyVisibility(surfaces, occluders, this.lighting.bakeLight());
+    /*
+     * Started rather than run. The frame loop drives it a slice at a time.
+     *
+     * The bake is a second or so of work on one thread, and doing it in one go
+     * stops the page dead for that second — no scrolling, no typing in a panel,
+     * no cursor — on every edit that settles. `SkyBake` hands out eight
+     * millisecond slices instead; the arithmetic is identical and the app keeps
+     * answering while it happens.
+     */
+    this.bakeInProgress?.step(0);
+    this.bakeInProgress = new SkyBake(surfaces, occluders, this.lighting.bakeLight());
+    this.bakeSurfaces = surfaces;
+    this.bakeOccluders = occluders;
+    this.invalidate();
+  }
+
+  /**
+   * Works on the bake for a slice of this frame, and finishes it if it is done.
+   *
+   * Returns whether there is still work left, which is what keeps the frame
+   * loop awake: without it the loop would sleep after the first slice and the
+   * bake would never resume.
+   */
+  private advanceSkyBake(): boolean {
+    const bake = this.bakeInProgress;
+    if (!bake) return false;
+
+    if (!bake.step(BAKE_SLICE_MS)) return true;
+
+    const result = bake.result!;
+    this.bakeInProgress = null;
+    const surfaces = this.bakeSurfaces;
+    const occluders = this.bakeOccluders;
+    this.bakeSurfaces = [];
+    this.bakeOccluders = [];
+
+    const doc = designStore.getState();
+    const level = activeLevel(doc);
 
     // Everything else keeps its full ambient rather than reading a missing
     // attribute as zero and rendering black.
@@ -1416,6 +1566,7 @@ export class Engine {
     this.captureEnvironment();
 
     this.invalidate();
+    return false;
   }
 
   /**
@@ -1444,14 +1595,33 @@ export class Engine {
       if (object.name.includes('Pick')) hidden.push(object);
     });
 
-    const result = this.environmentProbe.capture(
-      this.scene,
-      { x: focus.x, y: 1.6, z: focus.z },
-      hidden,
-    );
+    /*
+     * Begun rather than done. The frame loop draws one face per frame.
+     *
+     * Six full renders of the scene is six frames' worth of work arriving at
+     * once, and on the software rasteriser it measured about 700 ms — the one
+     * remaining freeze after the sky bake had been spread out. There is no
+     * reason for the faces to share a frame: each is an independent render into
+     * an independent slice of the target.
+     */
+    this.environmentProbe.begin(this.scene, { x: focus.x, y: 1.6, z: focus.z }, hidden);
+  }
+
+  /**
+   * Renders one face of the reflection probe, and binds it when all six are in.
+   *
+   * Returns whether there is more to do, which is what keeps the frame loop
+   * awake — the same contract `advanceSkyBake` has, and for the same reason.
+   */
+  private advanceEnvironment(): boolean {
+    if (!this.environmentProbe.capturing) return false;
+    if (!this.environmentProbe.step()) return true;
+
     this.lighting.useCapturedEnvironment(this.environmentProbe.texture);
     this.applyReflections(this.environmentProbe.texture);
-    this.lastProbe = result;
+    this.lastProbe = this.environmentProbe.result;
+    this.invalidate();
+    return false;
   }
 
   /**
@@ -1519,11 +1689,11 @@ export class Engine {
   }
 
   /** What the last bake did, for the probe. */
-  private lastBake: ReturnType<typeof bakeSkyVisibility> | null = null;
+  private lastBake: BakeResult | null = null;
 
   /** Recomputes the clearance report and pushes it to the overlay. */
   private refreshClearance(): void {
-    if (!editorStore.getState().showClearance) return;
+    if (editorStore.getState().layers.clearance === 'hidden') return;
     const doc = designStore.getState();
     const report = analyseClearance(doc, activeLevel(doc));
     this.clearanceOverlay.update(report.zones, report.violatedZoneIds);
@@ -1557,12 +1727,58 @@ export class Engine {
     this.invalidate();
   }
 
+  /**
+   * Pushes the shell layers into the scene.
+   *
+   * The building, the roof, the furniture and the fitted units are four
+   * different objects with four different visibility mechanisms, and this is
+   * the one place that knows the layer states map onto all of them. Called
+   * from `applyEditorState` and on entering or leaving the walkthrough.
+   */
+  private applyShellLayers(): void {
+    const layers = editorStore.getState().layers;
+
+    this.building.setShellLayers({
+      walls: layers.walls,
+      floors: layers.floors,
+      // Forced on from inside. See the call site.
+      ceilings: this.walkingThrough ? 'solid' : layers.ceilings,
+    });
+
+    /*
+     * The roof answers to two things at once, and both can hide it.
+     *
+     * `isCutaway` is the automatic behaviour — the roof comes off by itself
+     * when the near walls do, or you would be looking at a sealed box. The
+     * layer is the manual one. Neither overrides the other: either may hide it,
+     * and it is drawn only when both agree.
+     */
+    this.showRoofs = layers.roofs !== 'hidden';
+    this.roofs.setVisible(this.showRoofs && !this.building.isCutaway);
+
+    /*
+     * Furniture and fittings ghost by group opacity rather than per material.
+     *
+     * A sofa carries four materials and a kitchen run carries more, all shared
+     * across items by role — so walking the materials would either ghost every
+     * sofa in the building when one was asked for, or need a clone per item.
+     * Group visibility plus a shared ghost pass is the cheaper answer, and
+     * "ghosted furniture" is a view nobody has asked for: the useful states
+     * are there and not there.
+     */
+    this.furnishings.group.visible = layers.furniture !== 'hidden';
+    this.fittings.group.visible = layers.fittings !== 'hidden';
+
+    this.invalidate();
+  }
+
   private applyEditorState(): void {
     this.invalidate();
     const state = editorStore.getState();
     this.planUnderlay.setProposals(state.traceCandidates, new Set(state.acceptedTraceIds));
-    this.clearanceOverlay.setVisible(state.showClearance);
-    if (state.showClearance) this.refreshClearance();
+    const layers = state.layers;
+    this.clearanceOverlay.setVisible(isVisible(layers.clearance));
+    if (isVisible(layers.clearance)) this.refreshClearance();
 
     /*
      * The electrical layer builds nothing while hidden, so switching it on has
@@ -1574,11 +1790,11 @@ export class Engine {
      * runs stay off unless they were already asked for — what the tool needs
      * is the plates, not the circuit diagram.
      */
-    const showingDevices = state.showElectrical || state.tool === 'use';
+    const showingDevices = isVisible(layers.electrical) || state.tool === 'use';
     this.electrical.setVisible(showingDevices);
-    this.electrical.setShowRuns(state.showElectricalRuns && state.showElectrical);
+    this.electrical.setShowRuns(state.showElectricalRuns && isVisible(layers.electrical));
     this.electrical.setSelection(state.selection.kind === 'device' ? state.selection.id : null);
-    this.plumbing.setVisible(state.showPlumbing);
+    this.plumbing.setVisible(isVisible(layers.plumbing));
     this.plumbing.setSystems(state.showDrainage, state.showSupply);
     /*
      * Entering and leaving the walkthrough is driven from the editor state
@@ -1590,12 +1806,22 @@ export class Engine {
     } else if (!state.walkthrough && this.walkingThrough) {
       this.exitWalkthrough();
     }
+    /*
+     * The shell, applied after the walkthrough has been entered or left.
+     *
+     * Order matters. Walking through a house forces the ceilings on whatever
+     * the layer says — you are standing under them, and a room with no ceiling
+     * from the inside is a room open to the sky — and `this.walkingThrough` is
+     * only correct after the block above has run.
+     */
+    this.applyShellLayers();
+
     this.applyComfort(state.comfort);
     this.walk?.setView(state.walkView);
     this.walk?.setSound(state.sound);
 
     this.applySectionCut(state.activeSectionId);
-    this.hvac.setVisible(state.showHvac);
+    this.hvac.setVisible(isVisible(layers.hvac));
     this.hvac.setSystems(state.showSupplyAir, state.showReturnAir);
     this.hvac.setSelection(
       state.selection.kind === 'duct' ||
@@ -1621,11 +1847,11 @@ export class Engine {
       const doc = designStore.getState();
       this.electrical.update(doc, activeLevel(doc).id);
     }
-    if (state.showPlumbing) {
+    if (isVisible(layers.plumbing)) {
       const doc = designStore.getState();
       this.plumbing.update(doc, activeLevel(doc).id);
     }
-    if (state.showHvac) {
+    if (isVisible(layers.hvac)) {
       const doc = designStore.getState();
       this.hvac.update(doc, activeLevel(doc).id);
     }
@@ -1744,6 +1970,28 @@ export class Engine {
         this.pipeline!.resetAccumulation();
       }
 
+      /*
+       * A slice of the sky bake, before anything is drawn.
+       *
+       * Before, because the frame that FINISHES the bake should be the frame
+       * that shows it; doing it afterwards would leave the new shading waiting
+       * for one more invalidation, which on a settled view might not come.
+       *
+       * It runs while the camera is moving too. That costs a few milliseconds
+       * of a drag and it is the right trade: the alternative is that a bake
+       * started by an edit never advances while somebody is still looking
+       * around, which is exactly when they are waiting for it.
+       */
+      /*
+       * The bake first, then the reflection probe — never both in one frame.
+       *
+       * They are the two expensive things that happen when a plan settles, and
+       * the probe cannot start until the bake has finished anyway: it
+       * photographs a room that the bake has just lit. Running them in series
+       * also keeps each frame's extra work to one slice rather than two.
+       */
+      const baking = this.advanceSkyBake() || this.advanceEnvironment();
+
       if (moving || this.settleFrames > 0) {
         /* ---- Cheap path ---- */
         if (!moving) this.settleFrames -= 1;
@@ -1754,6 +2002,28 @@ export class Engine {
 
         this.reportStats(delta, started);
         // Keep going: either still moving, or settling before convergence.
+        return true;
+      }
+
+      /*
+       * Work still running keeps the loop awake — and draws NOTHING.
+       *
+       * Without the wake-up the loop sleeps the moment the view settles and a
+       * bake handed one slice never gets a second. Without the "draws nothing",
+       * the cure is far worse than the disease, and it was: the first version
+       * rendered a full composed still frame after every slice. Measured on the
+       * software rasteriser that is about 600 ms of rendering chasing 8 ms of
+       * baking, so the whole thing went from a one-second freeze to sixteen
+       * frames in nine seconds and a bake that never finished at all.
+       *
+       * There is nothing to draw. The bake writes nothing until it is done and
+       * the probe binds nothing until all six faces are in, so every
+       * intermediate frame is identical to the one before it. Returning true
+       * without rendering asks for another frame and spends all of it on the
+       * work.
+       */
+      if (baking) {
+        this.reportStats(delta, started);
         return true;
       }
 

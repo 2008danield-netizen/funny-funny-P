@@ -242,16 +242,33 @@ export class RenderPipeline {
    * With that fixed, `scale` turned out to be the whole lever. Measured on the
    * AO buffer alone, where 255 is no occlusion: scale 1 gave a darkest-5% of
    * 220, scale 4 gave 195, scale 8 gave 147 and scale 16 gave 54. Sixteen is
-   * far too much — the corner goes black and smears half a metre up the wall —
-   * and a radius over a metre smears with it. Six at 0.6 m is a corner that
-   * reads as a corner, which is the whole ask.
+   * far too much — the corner goes black and smears half a metre up the wall.
+   *
+   * -----------------------------------------------------------------------------
+   * AND 0.6 m AT SCALE 6 WAS STILL TOO MUCH, WHICH TOOK A SOFA TO SHOW.
+   *
+   * That setting was chosen looking at a bare room corner, where it read
+   * correctly. Nothing was checked against furniture at close range, and there
+   * it was plainly wrong: grey clouds hanging in the air around the arms of a
+   * sofa and between its cushions, a dark bar floating above the back, and
+   * visible speckle through all of it. Not contact shadow — fog.
+   *
+   * Two changes, and the first is the one that allows the second. Furniture now
+   * receives the sky bake, so its shading comes from the same place the walls'
+   * does instead of from this pass alone. With that carrying the load, this can
+   * go back to what screen-space occlusion is actually for: the tight dark line
+   * where two things touch. A quarter of a metre at scale 3.
+   *
+   * Samples doubled to 32 at the same time. Sixteen was visibly noisy once the
+   * effect was strong, and halving the strength would have hidden the noise
+   * rather than fixed it.
    */
   private ao = {
-    radius: 0.6,
+    radius: 0.25,
     distanceExponent: 1,
     thickness: 1,
-    scale: 6,
-    samples: 16,
+    scale: 3,
+    samples: 32,
     distanceFallOff: 1,
     screenSpaceRadius: false,
   };

@@ -22,9 +22,6 @@ const LIGHTING_OPTIONS = (Object.keys(LIGHTING_PRESETS) as LightingPresetId[]).m
 
 export function LightingPanel() {
   const lighting = useDesignSlice((doc) => doc.lighting);
-  const showCeilings = useDesignSlice((doc) => doc.showCeilings);
-  const showRoofs = useDesignSlice((doc) => doc.showRoofs);
-  const hasRoof = useDesignSlice((doc) => doc.roofs.length > 0);
   const edit = useDesignEdit();
 
   return (
@@ -64,34 +61,12 @@ export function LightingPanel() {
         }
       />
 
-      <Toggle
-        label="Show ceilings"
-        checked={showCeilings}
-        onChange={(checked) =>
-          edit((draft) => {
-            draft.showCeilings = checked;
-          })
-        }
-      />
-
-      {hasRoof && (
-        <Toggle
-          label="Show roofs"
-          checked={showRoofs}
-          onChange={(checked) =>
-            edit((draft) => {
-              draft.showRoofs = checked;
-            })
-          }
-        />
-      )}
-
       <p className="field__hint">
-        Ceilings are hidden by default so you can look down into the plan. Turn
-        them on before switching to the inside view — they change how light
-        bounces around a room. Each room's ceiling colour is set in its own
-        inspector.
-        {hasRoof && ' Roofs are shown by default, and turning them off is how you look down into the storey below.'}
+        Ceilings and roofs are switched on and off in the Layers panel, along
+        with everything else that can be hidden. They are hidden by default so
+        you can look down into the plan — turn ceilings on before switching to
+        the inside view, because they change how light bounces around a room.
+        Each room's ceiling colour is set in its own inspector.
       </p>
     </Panel>
   );

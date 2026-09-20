@@ -529,6 +529,129 @@ export function generateCarpet(size: number, options: CarpetOptions): SurfaceMap
   return { albedo, roughness, height, normalStrength: 1.15, tileMetres: options.tileMetres };
 }
 
+/* ───────────────────────────── Upholstery ───────────────────────────── */
+
+export interface WeaveOptions {
+  baseColor: string;
+  /** How pronounced the weave is, 0 to 1. Linen is high, velvet near zero. */
+  coarseness: number;
+  seed: number;
+  tileMetres: number;
+}
+
+/**
+ * Woven upholstery fabric.
+ *
+ * -----------------------------------------------------------------------------
+ * WHY A SOFA LOOKED LIKE PLASTIC.
+ *
+ * Upholstery has been a plain colour at a fixed roughness since it was first
+ * built, which makes it a perfectly smooth surface — and a perfectly smooth
+ * surface reflects light the way moulded plastic does, in one broad even sheen.
+ * Fabric does not. A weave is thousands of little cylinders crossing each
+ * other, and what that does to light is the entire reason a cushion reads as
+ * cloth: the sheen breaks into a fine grain, and it changes as the cloth turns.
+ *
+ * Nothing here is modelled. The weave is far too fine to be geometry — a linen
+ * thread is under a millimetre — so it lives where fine surface detail belongs,
+ * in a normal and a roughness map.
+ *
+ * -----------------------------------------------------------------------------
+ * THE OVER/UNDER IS THE WHOLE THING.
+ *
+ * A plain weave alternates: warp over weft, then weft over warp. So the height
+ * field is the SUM of two perpendicular sines a quarter-cycle out of phase,
+ * which puts a bump wherever a thread crosses over and a dip wherever it passes
+ * under. Two independent sines would give a grid of pyramids, which is a
+ * waffle, not a weave.
+ *
+ * The noise on top is thread thickness. Real yarn is not uniform, and a
+ * perfectly regular weave moirés horribly the moment the camera moves.
+ */
+export function generateWeave(size: number, options: WeaveOptions): SurfaceMaps {
+  const albedo = new ImageData(size, size);
+  const roughness = new ImageData(size, size);
+  const thread = new ValueNoise2D(NOISE_PERIOD, options.seed);
+  const slub = new ValueNoise2D(NOISE_PERIOD, options.seed ^ 0x3b19);
+
+  const base = hexToRgb(options.baseColor);
+
+  /*
+   * Threads per tile, and this was chosen by rendering rather than by reasoning.
+   *
+   * The first value was 220, from the arithmetic: at a 0.35 m tile that is
+   * about 1.6 mm a thread, which is what coarse linen actually measures. It was
+   * completely invisible. Furniture UVs run 0 to 1 across a whole part, so a
+   * cushion carries one and a half tiles — 330 threads across half a metre,
+   * which is well under a pixel on screen, and a sub-pixel normal map averages
+   * to flat and contributes nothing.
+   *
+   * Twenty-four proved the plumbing worked and looked like a tennis net.
+   * Eighty is where it sits: a grain you can see on a cushion from a metre
+   * away without it becoming a grid. It is coarser than real thread and that is
+   * the honest trade — a texture that is physically right and invisible is
+   * worth less than one that is slightly overscaled and reads.
+   */
+  const threads = 80;
+
+  for (let y = 0; y < size; y++) {
+    const v = y / size;
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      const index = (y * size + x) * 4;
+
+      const warp = Math.sin(u * threads * Math.PI * 2);
+      const weft = Math.sin(v * threads * Math.PI * 2);
+
+      // Thread thickness, and a slub — the occasional thicker fibre that makes
+      // linen look like linen rather than like a printed pattern.
+      const thickness = fbm(thread, u * 90, v * 90, 2, NOISE_PERIOD);
+      const slubbing = fbm(slub, u * 11, v * 11, 3, NOISE_PERIOD);
+
+      /*
+       * Colour barely varies, and that is correct.
+       *
+       * Dyed cloth is dyed all the way through; what makes a weave visible is
+       * the LIGHT it returns, not a pattern printed on it. Putting the weave in
+       * the albedo is the usual shortcut and it reads as wallpaper, because the
+       * pattern then stays put when the light moves.
+       */
+      const shade = 1 + (thickness - 0.5) * 0.05 + (slubbing - 0.5) * 0.04;
+      setPixel(albedo, index, base.r * shade, base.g * shade, base.b * shade);
+
+      /*
+       * Roughness carries most of the effect.
+       *
+       * The crown of a thread is slightly smoother than the hollow between
+       * threads, where the fibre ends stand up. That variation is what turns a
+       * single broad sheen into the fine grain the eye reads as cloth.
+       */
+      const crown = (warp * weft + 1) / 2;
+      const rough = 0.93 - crown * 0.1 * options.coarseness + (thickness - 0.5) * 0.05;
+      setGrey(roughness, index, Math.max(0, Math.min(1, rough)) * 255);
+    }
+  }
+
+  /*
+   * The height field, and the amplitude is deliberately tiny.
+   *
+   * Every relief bug in this file has been an amplitude that was too large for
+   * its frequency — a field that drops most of its range across two texels is a
+   * mirror, not a texture, which is what made the wood floor gleam like wet
+   * paint and the carpet catch glints wool has never had. At 220 cycles across
+   * the tile there are only a few texels a thread, so the swing has to be small
+   * and the normal strength low to match.
+   */
+  const height = renderHeightField(size, (u, v) => {
+    const warp = Math.sin(u * threads * Math.PI * 2);
+    const weft = Math.sin(v * threads * Math.PI * 2);
+    const thickness = fbm(thread, u * 90, v * 90, 2, NOISE_PERIOD);
+    return 0.5 + (warp * weft) * 0.16 * options.coarseness + (thickness - 0.5) * 0.08;
+  });
+
+  return { albedo, roughness, height, normalStrength: 0.55, tileMetres: options.tileMetres };
+}
+
 /* ───────────────────────────── Marble ───────────────────────────── */
 
 export interface MarbleOptions {

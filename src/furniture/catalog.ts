@@ -25,6 +25,11 @@
  * -----------------------------------------------------------------------------
  */
 
+// Type-only, and deliberately from `legs.ts` rather than from `builders.ts`:
+// the builders import this file, so naming them here would close a cycle. The
+// leg and handle vocabularies live with the code that draws them.
+import type { HandleStyle, LegStyle } from './legs';
+
 export type CatalogCategory =
   | 'Seating'
   | 'Tables'
@@ -35,23 +40,53 @@ export type CatalogCategory =
   | 'Lighting';
 
 /**
- * How a piece is drawn.
+ * How a piece is drawn, in enough detail for the geometry to follow from it.
  *
  * A discriminated union rather than a mesh file: each variant names a builder in
  * `furniture/builders.ts` and carries only the parameters that builder needs, so
  * a sofa and a bookcase share no accidental fields.
+ *
+ * The optional fields were added in session 18, when a triangle census found
+ * that every leg, front and pull in the catalogue was drawn as the same
+ * chamfered box. They are all optional and all default to what the piece looked
+ * like before, so adding one to a product is a decision about THAT product
+ * rather than a migration — and a product nobody has looked at yet is drawn the
+ * old way rather than drawn wrongly.
  */
 export type BuildSpec =
   | { kind: 'sofa'; seats: number; arms: 'low' | 'high' | 'none'; chaise?: boolean }
   | { kind: 'armchair'; style: 'lounge' | 'wing' | 'office' }
-  | { kind: 'chair'; back: 'slat' | 'solid' | 'round' }
-  | { kind: 'table'; shape: 'rect' | 'round'; legs: 'corner' | 'trestle'; apron: boolean; glass?: boolean }
-  | { kind: 'shelving'; columns: number; rows: number; back: boolean }
-  | { kind: 'cabinet'; doors: number; drawers: number; plinth: boolean }
-  | { kind: 'bed'; headboard: number; storage: boolean }
-  | { kind: 'rug'; shape: 'rect' | 'round' }
+  | { kind: 'chair'; back: 'slat' | 'solid' | 'round'; legStyle?: LegStyle }
+  | {
+      kind: 'table';
+      shape: 'rect' | 'round';
+      legs: 'corner' | 'trestle';
+      apron: boolean;
+      glass?: boolean;
+      legStyle?: LegStyle;
+    }
+  | { kind: 'shelving'; columns: number; rows: number; back: boolean; legStyle?: LegStyle }
+  | {
+      kind: 'cabinet';
+      doors: number;
+      drawers: number;
+      plinth: boolean;
+      /** How the fronts are made. Defaults to a plain slab. */
+      front?: 'slab' | 'shaker' | 'grooved';
+      /** What you pull it open by. Defaults to a recessed finger pull. */
+      handle?: HandleStyle;
+      legStyle?: LegStyle;
+    }
+  | { kind: 'bed'; headboard: number; storage: boolean; legStyle?: LegStyle }
+  | {
+      kind: 'rug';
+      shape: 'rect' | 'round';
+      /** How deep the pile stands. Defaults to 'low'. */
+      pile?: 'flat' | 'low' | 'shag';
+      fringe?: boolean;
+    }
   | { kind: 'lamp'; style: 'floor' | 'table' }
-  | { kind: 'desk'; drawers: number }
+  | { kind: 'desk'; drawers: number; legStyle?: LegStyle }
   | { kind: 'trolley'; tiers: number };
 
 /**
@@ -399,7 +434,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     width: 0.43,
     depth: 0.52,
     height: 1.0,
-    build: { kind: 'chair', back: 'slat' },
+    build: { kind: 'chair', back: 'slat', legStyle: 'turned' },
     colorways: [WHITE, BLACK_BROWN, PINE],
     layer: 'furniture',
     placement: 'free',
@@ -433,7 +468,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     width: 0.55,
     depth: 0.5,
     height: 0.82,
-    build: { kind: 'chair', back: 'round' },
+    build: { kind: 'chair', back: 'round', legStyle: 'splayed' },
     colorways: [WHITE, CHARCOAL, LINEN],
     layer: 'furniture',
     placement: 'free',
@@ -469,7 +504,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     width: 0.9,
     depth: 0.55,
     height: 0.45,
-    build: { kind: 'table', shape: 'rect', legs: 'corner', apron: false },
+    build: { kind: 'table', shape: 'rect', legs: 'corner', apron: false, legStyle: 'post' },
     colorways: WOODS,
     layer: 'furniture',
     placement: 'free',
@@ -485,7 +520,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     width: 0.55,
     depth: 0.55,
     height: 0.45,
-    build: { kind: 'table', shape: 'rect', legs: 'corner', apron: false },
+    build: { kind: 'table', shape: 'rect', legs: 'corner', apron: false, legStyle: 'post' },
     colorways: WOODS,
     layer: 'furniture',
     placement: 'free',
@@ -724,7 +759,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     width: 1.6,
     depth: 0.5,
     height: 0.96,
-    build: { kind: 'cabinet', doors: 0, drawers: 8, plinth: true },
+    build: { kind: 'cabinet', doors: 0, drawers: 8, plinth: true, front: 'shaker', handle: 'knob' },
     colorways: [WHITE, BLACK_BROWN, PINE],
     layer: 'furniture',
     placement: 'wall',
@@ -758,7 +793,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     width: 1.5,
     depth: 0.58,
     height: 2.36,
-    build: { kind: 'cabinet', doors: 2, drawers: 0, plinth: false },
+    build: { kind: 'cabinet', doors: 2, drawers: 0, plinth: false, front: 'shaker', handle: 'bar' },
     colorways: WOODS_WHITE_FIRST,
     layer: 'furniture',
     placement: 'wall',
@@ -860,8 +895,22 @@ export const CATALOG: readonly CatalogEntry[] = [
     description: 'Double bed with four storage drawers in the base.',
     width: 1.66,
     depth: 2.06,
-    height: 0.47,
-    build: { kind: 'bed', headboard: 0.47, storage: true },
+    /*
+     * Was 0.47, which was not a possible height for this bed.
+     *
+     * A storage base stands 360 mm off the floor and a mattress and duvet add
+     * another 310, so the made bed reached 690 mm — above a headboard declared
+     * at 470. Nothing rendered visibly wrong, because a low headboard behind a
+     * high mattress just looks like a low headboard; `geometry.test.ts` found
+     * it by measuring the built form against the published dimension.
+     *
+     * 0.85 clears the pillows and is the same convention the other beds follow,
+     * where `height` and `headboard` are the same figure. Like every dimension
+     * in this file it is written from general knowledge and carries
+     * `verifiedAt: null` — see the header.
+     */
+    height: 0.85,
+    build: { kind: 'bed', headboard: 0.85, storage: true },
     colorways: [WHITE, BLACK_BROWN],
     layer: 'furniture',
     placement: 'wall',
@@ -931,7 +980,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     width: 0.36,
     depth: 0.58,
     height: 0.7,
-    build: { kind: 'cabinet', doors: 0, drawers: 5, plinth: false },
+    build: { kind: 'cabinet', doors: 0, drawers: 5, plinth: false, handle: 'bar' },
     colorways: [WHITE, BLACK_BROWN, OAK],
     layer: 'furniture',
     placement: 'free',
@@ -950,7 +999,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     width: 2.0,
     depth: 3.0,
     height: 0.018,
-    build: { kind: 'rug', shape: 'rect' },
+    build: { kind: 'rug', shape: 'rect', pile: 'shag' },
     colorways: [LINEN, CHARCOAL, SAGE],
     layer: 'floor',
     placement: 'free',
@@ -966,7 +1015,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     width: 1.6,
     depth: 2.3,
     height: 0.008,
-    build: { kind: 'rug', shape: 'rect' },
+    build: { kind: 'rug', shape: 'rect', pile: 'flat' },
     colorways: [LINEN, CHARCOAL],
     layer: 'floor',
     placement: 'free',
@@ -982,7 +1031,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     width: 2.5,
     depth: 3.5,
     height: 0.014,
-    build: { kind: 'rug', shape: 'rect' },
+    build: { kind: 'rug', shape: 'rect', pile: 'low', fringe: true },
     colorways: [LINEN, NAVY, RUST],
     layer: 'floor',
     placement: 'free',

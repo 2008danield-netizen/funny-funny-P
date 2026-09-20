@@ -73,8 +73,15 @@ describe('v1 to v2 migration', () => {
     expect(doc.lighting.presetId).toBe('evening');
     expect(doc.lighting.intensity).toBeCloseTo(1.2, 6);
     expect(doc.lighting.shadowsEnabled).toBe(false);
-    // v1 stored ceiling visibility per room; v2 makes it document-wide.
-    expect(doc.showCeilings).toBe(true);
+    /*
+     * v1 stored ceiling visibility per room and v2 made it document-wide, and
+     * v14 took it out of the document altogether — it is view state, and a
+     * design that remembers whether somebody had the ceilings hidden is a
+     * design carrying somebody else's camera settings. The migration drops it,
+     * so what this asserts now is that it is GONE rather than what it says.
+     */
+    expect('showCeilings' in doc).toBe(false);
+    expect('showRoofs' in doc).toBe(false);
   });
 
   it('rebuilds the room at the right size', () => {

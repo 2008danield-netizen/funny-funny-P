@@ -2336,3 +2336,103 @@ select {
 .walkhud__label {
   color: var(--text-primary);
 }
+
+/* ------------------------------- Layers ---------------------------------- */
+
+/*
+ * The preset row wraps rather than scrolls.
+ *
+ * Four buttons fit a wide sidebar and not a narrow one, and a horizontal
+ * scroller hides the buttons at the end — which for a preset list means hiding
+ * the view somebody is looking for.
+ */
+.layers__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.layers__preset {
+  flex: 1 1 auto;
+  min-width: 86px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.layers__preset:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.layers__preset--active {
+  color: var(--accent-strong);
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.layers__group {
+  margin-top: 12px;
+}
+
+.layers__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.layers__row:hover {
+  background: var(--surface-hover);
+}
+
+.layers__label {
+  color: var(--text-primary);
+}
+
+/*
+ * The state word carries the colour, not the row.
+ *
+ * Three row backgrounds would make the panel a traffic light and fight the
+ * rest of the sidebar. One tinted word per row is enough to scan.
+ */
+.layers__state {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.layers__row--solid .layers__state {
+  color: var(--accent-strong);
+}
+
+.layers__row--ghost .layers__state {
+  color: var(--text-secondary);
+}
+
+.layers__row--hidden .layers__label {
+  color: var(--text-muted);
+}
+
+.layers__row--hidden .layers__state {
+  color: var(--text-muted);
+}
