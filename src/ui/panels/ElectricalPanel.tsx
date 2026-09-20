@@ -50,7 +50,8 @@ const ADDABLE: ReadonlyArray<{ id: DeviceKind; label: string }> = [
 export function ElectricalPanel() {
   const doc = useDesign();
   const edit = useDesignEdit();
-  const { showElectrical, showElectricalRuns } = useEditor();
+  const { layers, showElectricalRuns } = useEditor();
+  const showElectrical = layers.electrical !== 'hidden';
   const { report, load, schedule, rooms } = useElectrical();
 
   const [assumptions, setAssumptions] = useState<string[]>([]);
@@ -73,7 +74,7 @@ export function ElectricalPanel() {
       results.push(layOutElectrical(draft));
     });
 
-    editorStore.patch({ showElectrical: true });
+    editorStore.showLayer('electrical');
     const result = results[0];
     setAssumptions(result?.assumptions ?? []);
     setNotice(
@@ -93,7 +94,7 @@ export function ElectricalPanel() {
 
     const id = ids[0];
     if (id) {
-      editorStore.patch({ showElectrical: true });
+      editorStore.showLayer('electrical');
       editorStore.select('device', id);
       setNotice('Added. Drag it in the 3D view to place it.');
     } else {
@@ -137,7 +138,7 @@ export function ElectricalPanel() {
           <Toggle
             label="Show the electrical in the model"
             checked={showElectrical}
-            onChange={(checked) => editorStore.patch({ showElectrical: checked })}
+            onChange={(checked) => editorStore.setLayer('electrical', checked ? 'solid' : 'hidden')}
           />
           <Toggle
             label="Show home runs back to the panel"

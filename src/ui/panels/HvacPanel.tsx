@@ -93,7 +93,8 @@ export function HvacPanel() {
   const edit = useDesignEdit();
   const { load, selection } = useHvac();
   const report = useHvacCheck();
-  const { showHvac, showSupplyAir, showReturnAir } = useEditor();
+  const { layers, showSupplyAir, showReturnAir } = useEditor();
+  const showHvac = layers.hvac !== 'hidden';
 
   const [notice, setNotice] = useState('');
   const [assumptions, setAssumptions] = useState<string[]>([]);
@@ -133,7 +134,7 @@ export function HvacPanel() {
             : 'Nothing was laid out.',
     );
 
-    editorStore.patch({ showHvac: true });
+    editorStore.showLayer('hvac');
   };
 
   return (
@@ -557,7 +558,7 @@ export function HvacPanel() {
             <input
               type="checkbox"
               checked={showHvac}
-              onChange={(event) => editorStore.patch({ showHvac: event.target.checked })}
+              onChange={(event) => editorStore.setLayer('hvac', event.target.checked ? 'solid' : 'hidden')}
             />
             <span>Draw it in the model</span>
           </label>

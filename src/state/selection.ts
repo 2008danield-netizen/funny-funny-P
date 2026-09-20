@@ -11,6 +11,7 @@
  * and neither owns the other.
  */
 
+import { DEFAULT_LAYERS, type LayerId, type LayerState, type LayerVisibility } from './layers';
 import type { TraceCandidate } from './traceOps';
 
 export type SelectionKind =
@@ -111,42 +112,42 @@ export interface EditorState {
   /** Items currently overlapping something, for the warning tint. */
   collidingIds: string[];
 
-  /** Whether clearance zones are drawn on the floor. */
-  showClearance: boolean;
-
   /**
-   * Whether the electrical is drawn in the model.
+   * What is drawn, and how solidly.
    *
-   * View state, like the clearance overlay and for the same reason: which
-   * layers somebody has switched on while working is not part of their design
-   * and has no business in an export or on the undo stack.
+   * One record rather than a flag per thing. Before this the four services each
+   * carried their own boolean in their own panel, which made "show me the
+   * services and hide the building" a treasure hunt across three panels — and
+   * an impossible one, because nothing could hide the building at all. See
+   * `state/layers.ts`.
+   *
+   * View state, and emphatically so: which layers somebody has switched on
+   * while working is not part of their design and has no business in an export
+   * or on the undo stack.
    */
-  showElectrical: boolean;
+  layers: LayerVisibility;
+
   /** Whether home runs are drawn back to the panel as well as the devices. */
   showElectricalRuns: boolean;
 
   /**
-   * Whether the pipework is drawn in the model, and which half of it.
+   * Which half of the pipework is drawn, when the plumbing layer is on.
    *
-   * View state, same as the electrical. Drainage and supply are separated
-   * because a house with both drawn at once is a thicket — and the two are
-   * looked at for different reasons, drainage for its falls and supply for
-   * where it runs.
+   * Drainage and supply are separated because a house with both drawn at once
+   * is a thicket — and the two are looked at for different reasons, drainage
+   * for its falls and supply for where it runs.
    */
-  showPlumbing: boolean;
   showDrainage: boolean;
   showSupply: boolean;
 
   /**
-   * Whether the ductwork is drawn in the model, and which half of it.
+   * Which half of the ductwork is drawn, when the HVAC layer is on.
    *
-   * View state, exactly like the plumbing. Supply and return are separated
-   * because they run at different heights and cross each other constantly —
-   * a house with both drawn is hard to read, and each is looked at for its
-   * own reason: supply for whether the trunk fits in the floor, return for
-   * whether the air can get back at all.
+   * Supply and return are separated because they run at different heights and
+   * cross each other constantly — a house with both drawn is hard to read, and
+   * each is looked at for its own reason: supply for whether the trunk fits in
+   * the floor, return for whether the air can get back at all.
    */
-  showHvac: boolean;
   showSupplyAir: boolean;
   showReturnAir: boolean;
 
@@ -332,21 +333,18 @@ function initialState(): EditorState {
     pendingCatalogId: null,
     pendingFixtureId: null,
     collidingIds: [],
-    // Off by default: the zones are analysis, and a first-time visitor should
-    // see their room rather than a floor covered in blue rectangles.
-    showClearance: false,
-    // Same reasoning. Switching the layer on is the first thing the electrical
-    // panel does, so nobody has to find this to see what they just laid out.
-    showElectrical: false,
+    /*
+     * Everything in the building, nothing of the machinery inside it.
+     *
+     * A first-time visitor should see their room, not a house full of pipe and
+     * a floor covered in blue rectangles. Each service panel switches its own
+     * layer on when it lays something out, so nobody has to find the Layers
+     * panel to see what they just got.
+     */
+    layers: { ...DEFAULT_LAYERS },
     showElectricalRuns: true,
-    // Off by default for the same reason as the electrical: a first-time
-    // visitor should see their room, not a house full of pipe.
-    showPlumbing: false,
     showDrainage: true,
     showSupply: true,
-    // Same again. The HVAC panel switches this on when it lays anything out,
-    // so nobody has to find it to see what they just got.
-    showHvac: false,
     showSupplyAir: true,
     showReturnAir: true,
     // Nothing cut until somebody asks. A first-time visitor should see their
@@ -415,6 +413,30 @@ class EditorStore {
     if (!changed) return;
     this.state = next;
     for (const listener of [...this.listeners]) listener(this.state);
+  }
+
+  /**
+   * Sets one layer, leaving the rest alone.
+   *
+   * A convenience with a purpose: without it every caller spreads the whole
+   * record by hand, and the first one to write `{ layers: { walls: 'ghost' } }`
+   * instead of `{ layers: { ...current, walls: 'ghost' } }` wipes out the other
+   * nine and turns the building invisible. That is a one-character mistake with
+   * a spectacular symptom, so it is worth a method.
+   */
+  setLayer(id: LayerId, state: LayerState): void {
+    if (this.state.layers[id] === state) return;
+    this.patch({ layers: { ...this.state.layers, [id]: state } });
+  }
+
+  /** Switches a layer on if it is off, leaving `ghost` alone. */
+  showLayer(id: LayerId): void {
+    if (this.state.layers[id] === 'hidden') this.setLayer(id, 'solid');
+  }
+
+  /** Applies a whole set at once, for the presets. */
+  setLayers(layers: LayerVisibility): void {
+    this.patch({ layers: { ...layers } });
   }
 
   select(kind: SelectionKind | null, id: string | null): void {

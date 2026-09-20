@@ -48,6 +48,7 @@ import { MaterialLibrary } from '@/scene/materials/MaterialLibrary';
 import { SkyBake, fillUnbaked, useBakedAmbient, type BakeResult } from '@/scene/skyBake';
 import { computeWear, fillNoWear, useWear } from '@/scene/wear';
 import { designStore } from '@/state/store';
+import { LAYER_PRESETS, isVisible } from '@/state/layers';
 import { editorStore } from '@/state/selection';
 import { EnvironmentProbe, wantsReflections, type ProbeResult } from '@/scene/EnvironmentProbe';
 import { TIER_DETAIL, detailLevel, setDetailLevel } from '@/scene/detail';
@@ -354,9 +355,7 @@ export class Engine {
     const level = activeLevel(doc);
     const holes = floorHoles(doc, level.id, (stair) => stairGeometry(doc, stair).wellOpening);
 
-    const wantCeilings = doc.showCeilings || this.walkingThrough;
-    this.lastCeilings = wantCeilings;
-    this.building.update(level.plan, wantCeilings, holes, doc.exterior);
+    this.building.update(level.plan, holes, doc.exterior);
 
     /*
      * RE-BAKE, BECAUSE THE MODE CHANGED WHAT THE BUILDING IS.
@@ -559,7 +558,6 @@ export class Engine {
 
   private lastXrFrame = 0;
   /** What the ceilings were last built as, so the override can be noticed. */
-  private lastCeilings: boolean | null = null;
 
   /**
    * Two hooks on `window` for automated checking, and why they are not
@@ -702,6 +700,64 @@ export class Engine {
      * rendered bare floorboards, and the first three explanations considered
      * were all wrong.
      */
+    /*
+     * The layer set, readable and settable from a check.
+     *
+     * Driving the Layers panel through the DOM works and tests the wrong
+     * thing: a preset button that silently applies the wrong set still looks
+     * like a working click. This reads what the scene actually ended up with —
+     * which meshes are visible, and which materials are transparent — so a
+     * check can assert that "services only" really did ghost the walls rather
+     * than merely that a button highlighted.
+     */
+    scope.__layers = (presetId?: string) => {
+      if (presetId) {
+        const preset = LAYER_PRESETS.find((entry) => entry.id === presetId);
+        if (!preset) return null;
+        editorStore.setLayers(preset.layers);
+      }
+      return editorStore.getState().layers;
+    };
+
+    scope.__layerProbe = () => {
+      let walls = 0;
+      let ghostWalls = 0;
+      let floors = 0;
+      let ghostFloors = 0;
+      let furniture = 0;
+      let services = 0;
+
+      this.scene.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.visible) return;
+        // An object inside a hidden group still reports `visible`, so the
+        // parents have to be walked — this is exactly the trap that made the
+        // first version of this probe report furniture that was not on screen.
+        for (let node: THREE.Object3D | null = mesh.parent; node; node = node.parent) {
+          if (!node.visible) return;
+        }
+
+        const material = mesh.material as THREE.Material | undefined;
+        const transparent = Array.isArray(material)
+          ? material.some((entry) => entry.transparent)
+          : material?.transparent === true;
+
+        if (mesh.name.startsWith('Wall_')) {
+          walls++;
+          if (transparent) ghostWalls++;
+        } else if (mesh.name.startsWith('Floor_')) {
+          floors++;
+          if (transparent) ghostFloors++;
+        } else if (/^f\d+_/.test(mesh.name)) {
+          furniture++;
+        } else if (/Duct|Pipe|Stack|Register|Device|Conduit|Run_/i.test(mesh.name)) {
+          services++;
+        }
+      });
+
+      return { walls, ghostWalls, floors, ghostFloors, furniture, services };
+    };
+
     scope.__meshProbe = (match?: string) => {
       const rows: { name: string; tris: number; visible: boolean; y: number }[] = [];
       this.scene.traverse((object) => {
@@ -1185,22 +1241,23 @@ export class Engine {
      * This is a view decision for one mode, not a change to the design, so it
      * overrides here rather than writing to the document.
      */
-    const wantCeilings = doc.showCeilings || this.walkingThrough;
-    const ceilingsChanged = this.lastCeilings !== wantCeilings;
-    this.lastCeilings = wantCeilings;
-
     // The whole storey rides at its own height above the ground.
     this.levelGroup.position.y = elevationOf(doc, level.id);
 
     const holes = floorHoles(doc, level.id, (stair) => stairGeometry(doc, stair).wellOpening);
 
-    if (
-      planChanged ||
-      ceilingsChanged ||
-      previous?.stairs !== doc.stairs ||
-      previous?.exterior !== doc.exterior
-    ) {
-      this.building.update(level.plan, wantCeilings, holes, doc.exterior);
+    /*
+     * Ceilings no longer force a rebuild.
+     *
+     * They used to: the visibility lived in the document, was passed into
+     * `Building.update` and was compared here so that toggling it rebuilt the
+     * storey. Ceilings are always BUILT now and the layer only sets
+     * `mesh.visible`, so switching them costs nothing — which is the difference
+     * between a layer toggle that feels instant and one that stalls the page
+     * for the length of a geometry rebuild.
+     */
+    if (planChanged || previous?.stairs !== doc.stairs || previous?.exterior !== doc.exterior) {
+      this.building.update(level.plan, holes, doc.exterior);
       this.scheduleSkyBake();
     }
     if (levelSwitched || !previousLevel || previousLevel.furniture !== level.furniture) {
@@ -1287,7 +1344,6 @@ export class Engine {
     ) {
       this.roofs.update(doc);
     }
-    this.showRoofs = doc.showRoofs;
     this.roofs.setVisible(this.showRoofs && !this.building.isCutaway);
     if (!previous || previous.site !== doc.site || previous.levels !== doc.levels) {
       this.ground.update(doc);
@@ -1637,7 +1693,7 @@ export class Engine {
 
   /** Recomputes the clearance report and pushes it to the overlay. */
   private refreshClearance(): void {
-    if (!editorStore.getState().showClearance) return;
+    if (editorStore.getState().layers.clearance === 'hidden') return;
     const doc = designStore.getState();
     const report = analyseClearance(doc, activeLevel(doc));
     this.clearanceOverlay.update(report.zones, report.violatedZoneIds);
@@ -1671,12 +1727,58 @@ export class Engine {
     this.invalidate();
   }
 
+  /**
+   * Pushes the shell layers into the scene.
+   *
+   * The building, the roof, the furniture and the fitted units are four
+   * different objects with four different visibility mechanisms, and this is
+   * the one place that knows the layer states map onto all of them. Called
+   * from `applyEditorState` and on entering or leaving the walkthrough.
+   */
+  private applyShellLayers(): void {
+    const layers = editorStore.getState().layers;
+
+    this.building.setShellLayers({
+      walls: layers.walls,
+      floors: layers.floors,
+      // Forced on from inside. See the call site.
+      ceilings: this.walkingThrough ? 'solid' : layers.ceilings,
+    });
+
+    /*
+     * The roof answers to two things at once, and both can hide it.
+     *
+     * `isCutaway` is the automatic behaviour — the roof comes off by itself
+     * when the near walls do, or you would be looking at a sealed box. The
+     * layer is the manual one. Neither overrides the other: either may hide it,
+     * and it is drawn only when both agree.
+     */
+    this.showRoofs = layers.roofs !== 'hidden';
+    this.roofs.setVisible(this.showRoofs && !this.building.isCutaway);
+
+    /*
+     * Furniture and fittings ghost by group opacity rather than per material.
+     *
+     * A sofa carries four materials and a kitchen run carries more, all shared
+     * across items by role — so walking the materials would either ghost every
+     * sofa in the building when one was asked for, or need a clone per item.
+     * Group visibility plus a shared ghost pass is the cheaper answer, and
+     * "ghosted furniture" is a view nobody has asked for: the useful states
+     * are there and not there.
+     */
+    this.furnishings.group.visible = layers.furniture !== 'hidden';
+    this.fittings.group.visible = layers.fittings !== 'hidden';
+
+    this.invalidate();
+  }
+
   private applyEditorState(): void {
     this.invalidate();
     const state = editorStore.getState();
     this.planUnderlay.setProposals(state.traceCandidates, new Set(state.acceptedTraceIds));
-    this.clearanceOverlay.setVisible(state.showClearance);
-    if (state.showClearance) this.refreshClearance();
+    const layers = state.layers;
+    this.clearanceOverlay.setVisible(isVisible(layers.clearance));
+    if (isVisible(layers.clearance)) this.refreshClearance();
 
     /*
      * The electrical layer builds nothing while hidden, so switching it on has
@@ -1688,11 +1790,11 @@ export class Engine {
      * runs stay off unless they were already asked for — what the tool needs
      * is the plates, not the circuit diagram.
      */
-    const showingDevices = state.showElectrical || state.tool === 'use';
+    const showingDevices = isVisible(layers.electrical) || state.tool === 'use';
     this.electrical.setVisible(showingDevices);
-    this.electrical.setShowRuns(state.showElectricalRuns && state.showElectrical);
+    this.electrical.setShowRuns(state.showElectricalRuns && isVisible(layers.electrical));
     this.electrical.setSelection(state.selection.kind === 'device' ? state.selection.id : null);
-    this.plumbing.setVisible(state.showPlumbing);
+    this.plumbing.setVisible(isVisible(layers.plumbing));
     this.plumbing.setSystems(state.showDrainage, state.showSupply);
     /*
      * Entering and leaving the walkthrough is driven from the editor state
@@ -1704,12 +1806,22 @@ export class Engine {
     } else if (!state.walkthrough && this.walkingThrough) {
       this.exitWalkthrough();
     }
+    /*
+     * The shell, applied after the walkthrough has been entered or left.
+     *
+     * Order matters. Walking through a house forces the ceilings on whatever
+     * the layer says — you are standing under them, and a room with no ceiling
+     * from the inside is a room open to the sky — and `this.walkingThrough` is
+     * only correct after the block above has run.
+     */
+    this.applyShellLayers();
+
     this.applyComfort(state.comfort);
     this.walk?.setView(state.walkView);
     this.walk?.setSound(state.sound);
 
     this.applySectionCut(state.activeSectionId);
-    this.hvac.setVisible(state.showHvac);
+    this.hvac.setVisible(isVisible(layers.hvac));
     this.hvac.setSystems(state.showSupplyAir, state.showReturnAir);
     this.hvac.setSelection(
       state.selection.kind === 'duct' ||
@@ -1735,11 +1847,11 @@ export class Engine {
       const doc = designStore.getState();
       this.electrical.update(doc, activeLevel(doc).id);
     }
-    if (state.showPlumbing) {
+    if (isVisible(layers.plumbing)) {
       const doc = designStore.getState();
       this.plumbing.update(doc, activeLevel(doc).id);
     }
-    if (state.showHvac) {
+    if (isVisible(layers.hvac)) {
       const doc = designStore.getState();
       this.hvac.update(doc, activeLevel(doc).id);
     }

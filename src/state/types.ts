@@ -51,7 +51,7 @@
  * v12 — section cuts: where the building is sliced through, which way the cut
  *      looks, and what each slice is called.
  */
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 /** Which measurement system the UI displays. Storage is always metric. */
 export type UnitSystem = 'metric' | 'imperial';
@@ -1529,17 +1529,14 @@ export interface DesignDocument {
    */
   currency: string;
 
-  /** Ceilings hidden by default so the orbit camera can look into the plan. */
-  showCeilings: boolean;
-  /**
-   * Whether the roofs are drawn.
-   *
-   * On by default, unlike ceilings — a roof only exists because somebody added
-   * one, and hiding what they just asked for would be strange. Turning it off
-   * is how you look down into the storey below, which is the one thing a roof
-   * makes impossible.
+  /*
+   * `showCeilings` and `showRoofs` used to live here, and schema v14 removed
+   * them. They are view state — which layers you are looking through says
+   * nothing about the building — and keeping them in the document meant hiding
+   * a ceiling to see into a room was an undoable edit that got saved to disk
+   * and travelled in an export. They now live in the editor store with the
+   * other layers; see `state/layers.ts`.
    */
-  showRoofs: boolean;
 
   /** Display preference. Does not affect stored values. */
   units: UnitSystem;

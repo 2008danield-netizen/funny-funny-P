@@ -40,7 +40,8 @@ export function PlumbingPanel() {
   const doc = useDesign();
   const edit = useDesignEdit();
   const report = usePlumbing();
-  const { showPlumbing, showDrainage, showSupply } = useEditor();
+  const { layers, showDrainage, showSupply } = useEditor();
+  const showPlumbing = layers.plumbing !== 'hidden';
 
   const [notice, setNotice] = useState('');
   const [assumptions, setAssumptions] = useState<string[]>([]);
@@ -71,7 +72,7 @@ export function PlumbingPanel() {
     );
 
     // Showing what was just built is the whole point of pressing the button.
-    editorStore.patch({ showPlumbing: true });
+    editorStore.showLayer('plumbing');
   };
 
   return (
@@ -206,7 +207,7 @@ export function PlumbingPanel() {
             <input
               type="checkbox"
               checked={showPlumbing}
-              onChange={(event) => editorStore.patch({ showPlumbing: event.target.checked })}
+              onChange={(event) => editorStore.setLayer('plumbing', event.target.checked ? 'solid' : 'hidden')}
             />
             <span>Draw the pipework</span>
           </label>

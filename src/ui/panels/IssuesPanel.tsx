@@ -22,7 +22,8 @@ import { formatLength } from '@/state/units';
 export function IssuesPanel() {
   const doc = useDesign();
   const edit = useDesignEdit();
-  const { showClearance, selection } = useEditor();
+  const { layers, selection } = useEditor();
+  const showClearance = layers.clearance !== 'hidden';
 
   // Shared with the Advisor panel, which reads the same circulation figures.
   // The analysis walks a grid per room and both panels re-render on every
@@ -41,7 +42,7 @@ export function IssuesPanel() {
       <Toggle
         label="Show clearance zones on the floor"
         checked={showClearance}
-        onChange={(checked) => editorStore.patch({ showClearance: checked })}
+        onChange={(checked) => editorStore.setLayer('clearance', checked ? 'solid' : 'hidden')}
       />
 
       <Toggle
