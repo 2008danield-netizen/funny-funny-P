@@ -65,11 +65,23 @@ const SAMPLES = 48;
 /**
  * The most rays one bake may cast, across every surface.
  *
- * Roughly a second of work in a browser. Past that the bake is spread thinner
- * rather than allowed to run longer: a large building gets fewer samples per
- * point, which is noisier, instead of a frozen tab, which is unusable.
+ * -----------------------------------------------------------------------------
+ * TRIPLED, BECAUSE THE REASON IT WAS LOW STOPPED BEING TRUE.
+ *
+ * 400,000 was "roughly a second of work in a browser", and a second was the
+ * ceiling because the bake ran in one blocking lump: past that the tab was
+ * visibly frozen. That is no longer how it runs. The work is sliced across
+ * frames now, so the cost of a longer bake is that the new shading takes
+ * another second to appear — while the app stays responsive throughout — which
+ * is a completely different and much cheaper kind of expensive.
+ *
+ * It mattered immediately. Bringing furniture into the bake took a room from
+ * about 3,700 points to 10,000, and at the old ceiling that dropped the samples
+ * per point from 48 to 20 — the whole room got noisier as a side effect of the
+ * sofa being lit properly. The budget still exists, and still degrades a large
+ * building gracefully rather than letting it run away.
  */
-const MAX_RAYS = 400000;
+const MAX_RAYS = 1200000;
 
 /**
  * How far a ray travels before it counts as having escaped, in metres.

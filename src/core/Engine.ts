@@ -1368,7 +1368,10 @@ export class Engine {
         mesh.name.startsWith('Skirting') ||
         mesh.name.startsWith('Cornice') ||
         mesh.name.startsWith('Frames') ||
-        mesh.name.startsWith('LeafPanel');
+        mesh.name.startsWith('LeafPanel') ||
+        // Furniture marks itself; see `Furnishings`. It was excluded, which
+        // left every sofa in the building with no real lighting at all.
+        mesh.userData.bakeReceiver === true;
       if (shell) surfaces.push(mesh);
     });
 

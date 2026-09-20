@@ -21,6 +21,8 @@ import { chamferedBox } from './millwork';
 
 import { buildFurniture, type FurniturePart, type MaterialRole } from '@/furniture/builders';
 import { clutterFor } from '@/furniture/clutter';
+import { generateWeave } from '@/scene/materials/generators';
+import { createCanvas, heightToNormalMap } from '@/scene/materials/textureUtils';
 import {
   getCatalogEntry,
   resolveColorway,
@@ -159,7 +161,29 @@ export class Furnishings {
       mesh.castShadow = role !== 'glass';
       mesh.receiveShadow = true;
       mesh.name = `${item.id}_${role}`;
-      // Geometry is shared between items, so this mesh must never mutate it.
+
+      /*
+       * FURNITURE RECEIVES THE LIGHTING BAKE, AND USED NOT TO.
+       *
+       * The bake picked its surfaces by name — walls, floors, ceilings, trim,
+       * joinery — and furniture matched none of them. So a sofa blocked light
+       * for everything around it and received none itself: no sky visibility,
+       * no bounced colour, nothing. Everything shading it came from the
+       * screen-space occlusion pass alone, which is a blunt instrument at that
+       * scale, and the result was upholstery that looked inflated and plastic
+       * while the wall behind it looked right.
+       *
+       * Marked rather than matched on a name, because this is the file that
+       * knows these meshes are solid furniture. Glass is left out: a
+       * transparent pane has no sensible per-vertex ambient and would be given
+       * the shading of whatever is behind it.
+       *
+       * Safe only because each item now has its own geometry — the shape cache
+       * is keyed by item id since the clutter work — so a bake written into it
+       * belongs to one piece standing in one place. It would be wrong the
+       * moment two sofas shared a buffer.
+       */
+      if (role !== 'glass') mesh.userData.bakeReceiver = true;
       group.add(mesh);
       meshes.push(mesh);
       materials.push(material);
@@ -282,6 +306,64 @@ export class Furnishings {
 
 /* -------------------------------- Materials ---------------------------- */
 
+/**
+ * The woven surface every upholstered thing shares.
+ *
+ * Built once, lazily, and handed to every `soft` material in the building. One
+ * set of maps for all of it, because a weave is a weave — the colour differs
+ * per colourway and that comes from `material.color`, which multiplies these.
+ *
+ * Lazy because generating it is a second of pixel arithmetic and a plan with no
+ * sofas in it should not pay for one.
+ */
+let weaveMaps: { normal: THREE.Texture; roughness: THREE.Texture } | null = null;
+
+/** How much of a sofa one tile of weave covers, in metres. */
+const WEAVE_TILE = 0.35;
+
+function weave(): { normal: THREE.Texture; roughness: THREE.Texture } {
+  if (weaveMaps) return weaveMaps;
+
+  const maps = generateWeave(512, {
+    baseColor: '#ffffff',
+    coarseness: 0.8,
+    seed: 4471,
+    tileMetres: WEAVE_TILE,
+  });
+
+  const paint = (image: ImageData, colorSpace: THREE.ColorSpace): THREE.Texture => {
+    const { canvas, ctx } = createCanvas(image.width);
+    ctx.putImageData(image, 0, 0);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = colorSpace;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    /*
+     * Repeat in tiles, not in metres.
+     *
+     * Furniture UVs are the ones `ExtrudeGeometry` and `BoxGeometry` produce —
+     * normalised across each face, not measured in world space the way the
+     * floors are. So the repeat has to be a count rather than the inverse of a
+     * tile size, and it is approximate: a cushion face is roughly half a metre,
+     * so one and a half tiles across it puts the threads at about the right
+     * size on the parts anybody looks at closely.
+     */
+    texture.repeat.set(1.5, 1.5);
+    // The weave is fine enough that a sharp minification filter aliases into
+    // moiré the moment the camera moves. Mipmaps and anisotropy are what stop
+    // that, and they are the default here only because the canvas is a power of
+    // two — worth knowing if the size above ever changes.
+    texture.anisotropy = 4;
+    return texture;
+  };
+
+  weaveMaps = {
+    normal: paint(heightToNormalMap(maps.height, maps.normalStrength), THREE.NoColorSpace),
+    roughness: paint(maps.roughness, THREE.NoColorSpace),
+  };
+  return weaveMaps;
+}
+
 function createRoleMaterial(role: MaterialRole): THREE.Material {
   switch (role) {
     case 'glass':
@@ -297,9 +379,33 @@ function createRoleMaterial(role: MaterialRole): THREE.Material {
     case 'accent':
       // Metal fittings: legs, handles, castors, steel underframes.
       return new THREE.MeshStandardMaterial({ color: 0x8d8d8d, roughness: 0.42, metalness: 0.75 });
-    case 'soft':
-      // Fabric has no specular lobe worth speaking of; any gloss reads plastic.
-      return new THREE.MeshStandardMaterial({ color: 0xd7cdba, roughness: 0.96, metalness: 0 });
+    case 'soft': {
+      /*
+       * Fabric, and the reason it needs maps rather than a number.
+       *
+       * A single roughness value is a perfectly smooth surface, and a perfectly
+       * smooth surface returns light the way moulded plastic does — one broad
+       * even sheen. That is exactly what a sofa here looked like. A weave is
+       * thousands of little cylinders crossing each other, and what that does
+       * to light is the whole reason a cushion reads as cloth: the sheen breaks
+       * into a fine grain and changes as the cloth turns.
+       *
+       * Far too fine to be geometry — a thread is under a millimetre — so it
+       * lives where fine surface detail belongs, in a normal and a roughness
+       * map. See `generateWeave`.
+       */
+      const maps = weave();
+      return new THREE.MeshStandardMaterial({
+        color: 0xd7cdba,
+        roughness: 0.96,
+        metalness: 0,
+        normalMap: maps.normal,
+        // Gentle: the bumps are a fraction of a millimetre and a strong normal
+        // map at this frequency reads as crocodile skin.
+        normalScale: new THREE.Vector2(0.85, 0.85),
+        roughnessMap: maps.roughness,
+      });
+    }
     case 'shade':
       // Lampshades are lit from within, so a little emission keeps them from
       // going dead grey in a dim room.
