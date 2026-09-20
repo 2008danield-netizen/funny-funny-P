@@ -25,8 +25,10 @@
 import * as THREE from 'three';
 
 import { chamferedBox } from '@/scene/millwork';
+import { circleSection, lathe, roundedRectSection, sweep, taperedProfile } from '@/scene/profiles';
 import { cornerSegments, radialSegments as segmentsFor } from '@/scene/tessellation';
 
+import { buildFoot, buildHandle, buildLeg, type FootStyle, type HandleStyle, type LegStyle } from './legs';
 import type { BuildSpec } from './catalog';
 
 /** Which material a part is drawn with. */
@@ -314,25 +316,132 @@ function cylinder(
   return { geometry, role };
 }
 
-/** A truncated cone — lampshades. */
-function cone(
-  center: [number, number],
-  topRadius: number,
-  bottomRadius: number,
-  bottom: number,
+/* --------------------------------- Legs -------------------------------- */
+
+/**
+ * Stands a piece on legs, with their feet.
+ *
+ * Every builder that used to write four `box(...)` calls for its legs now calls
+ * this instead, which is the single change that moved the most triangles in
+ * session 18. The positions are still the caller's — a trestle base and a
+ * four-corner base put their legs in very different places — but the SHAPE of a
+ * leg is now one decision in one file rather than a cuboid repeated eleven
+ * times across the catalogue.
+ *
+ * `splay` rakes each leg away from the piece's centre, which only the mid-century
+ * styles want; it is read from the leg's own position so a builder does not have
+ * to work out the sign itself.
+ */
+function legsAt(
+  positions: readonly [number, number][],
   top: number,
+  thickness: number,
+  style: LegStyle,
   role: MaterialRole,
-): FurniturePart {
-  const geometry = new THREE.CylinderGeometry(
-    topRadius,
-    bottomRadius,
-    Math.max(1e-4, top - bottom),
-    segmentsFor(Math.max(topRadius, bottomRadius)),
-    1,
-    true,
+  options: { foot?: FootStyle; splay?: number; bottom?: number } = {},
+): FurniturePart[] {
+  const { foot = 'glide', splay = 0, bottom = 0 } = options;
+  const parts: FurniturePart[] = [];
+
+  for (const at of positions) {
+    const rake: [number, number] =
+      splay > 0
+        ? [Math.sign(at[0] || 1) * splay, Math.sign(at[1] || 1) * splay]
+        : [0, 0];
+
+    const leg = buildLeg({ at, top, thickness, style, foot, rake, bottom });
+    if (leg) parts.push({ geometry: leg, role });
+
+    const pad = buildFoot(at, foot, thickness, bottom);
+    if (pad) parts.push({ geometry: pad, role: 'accent' });
+  }
+
+  return parts;
+}
+
+/** The four corners of a rectangular base, inset from its edges. */
+function corners(halfW: number, halfD: number, inset: number): [number, number][] {
+  return [
+    [-halfW + inset, -halfD + inset],
+    [halfW - inset, -halfD + inset],
+    [-halfW + inset, halfD - inset],
+    [halfW - inset, halfD - inset],
+  ];
+}
+
+/* ------------------------------- Fronts --------------------------------- */
+
+/**
+ * A door or drawer front, as something other than a slab.
+ *
+ * -----------------------------------------------------------------------------
+ * WHY A FRAMED FRONT IS WORTH FOUR TIMES THE TRIANGLES.
+ *
+ * A flat front reflects the room as one unbroken plane, so a chest of drawers
+ * is a single rectangle of tone however good the material is. A shaker front
+ * has a 60 mm frame standing 8 mm proud of a recessed centre, and the shadow
+ * line round that recess is the only thing in the whole object that tells you
+ * the drawers are separate from one another at a glance.
+ *
+ * Built here rather than borrowed from `openings/joinery.ts` — which already
+ * makes panelled door leaves — because that module works in a door's frame,
+ * where the leaf is upright and hinged and carries a lock rail. A drawer front
+ * is 140 mm tall and has none of those. Sharing the code would mean a stile
+ * width argument, a rail count argument and a lock-rail flag set to false at
+ * every call site, which is a worse kind of sharing than two short functions.
+ */
+type FrontStyle = 'slab' | 'shaker' | 'grooved';
+
+function front(
+  min: [number, number, number],
+  max: [number, number, number],
+  style: FrontStyle,
+  role: MaterialRole,
+): FurniturePart[] {
+  if (style === 'slab') return [box(min, max, role)];
+
+  const width = max[0] - min[0];
+  const height = max[1] - min[1];
+  const depth = max[2] - min[2];
+
+  if (style === 'grooved') {
+    /*
+     * A tongue-and-groove front: vertical boards with a V-joint between them.
+     * Drawn as the boards themselves with gaps, rather than as a slab with
+     * grooves cut in it, because the gap IS the detail and modelling it as
+     * geometry means it catches the baked ambient like a real one.
+     */
+    const parts: FurniturePart[] = [];
+    const boards = Math.max(2, Math.round(width / 0.09));
+    const pitch = width / boards;
+    for (let i = 0; i < boards; i++) {
+      const x0 = min[0] + pitch * i + 0.002;
+      const x1 = min[0] + pitch * (i + 1) - 0.002;
+      parts.push(box([x0, min[1], min[2]], [x1, max[1], max[2]], role));
+    }
+    return parts;
+  }
+
+  // Shaker: four frame members round a recessed centre panel.
+  const stile = Math.min(0.06, width * 0.28, height * 0.28);
+  const recess = Math.min(0.008, depth * 0.45);
+  const parts: FurniturePart[] = [];
+
+  parts.push(box(min, [min[0] + stile, max[1], max[2]], role));
+  parts.push(box([max[0] - stile, min[1], min[2]], max, role));
+  parts.push(box([min[0] + stile, min[1], min[2]], [max[0] - stile, min[1] + stile, max[2]], role));
+  parts.push(box([min[0] + stile, max[1] - stile, min[2]], [max[0] - stile, max[1], max[2]], role));
+
+  // The panel, set back from the frame's face.
+  parts.push(
+    box(
+      [min[0] + stile * 0.6, min[1] + stile * 0.6, min[2]],
+      [max[0] - stile * 0.6, max[1] - stile * 0.6, max[2] - recess],
+      role,
+    ),
   );
-  geometry.translate(center[0], (bottom + top) / 2, center[1]);
-  return { geometry, role };
+
+  return parts;
 }
 
 /* -------------------------------- Builders ----------------------------- */
@@ -520,13 +629,74 @@ function buildArmchair(
   const backLean = spec.style === 'lounge' ? 0.18 : 0.06;
 
   if (spec.style === 'lounge') {
-    // Bentwood side frames: two curved rails per side, joined under the seat.
+    /*
+     * A bentwood cantilever frame, actually bent.
+     *
+     * The census found this drawn as four boxes per side — a floor rail, a
+     * front post, a back post and a seat rail — which is a rectangle with a gap
+     * in it. A POÄNG has no posts and no corners: it is ONE piece of laminated
+     * birch running from the floor at the back, forward under the seat, up the
+     * front and back over to carry the headrest, and its entire identity is
+     * that continuous curve. Drawing it as four straight members does not make
+     * it look like a cheaper POÄNG, it makes it look like a different chair.
+     *
+     * The path below is written in the YZ plane and swept with the section's
+     * width pinned to world X, which is exactly the planar case `sweep` keeps
+     * its reference axis for. Laminate section: 60 mm wide, 12 mm thick, with a
+     * 4 mm arris — the real thing, as sold.
+     */
+    const laminate = roundedRectSection(0.06, 0.012, 0.004);
+    const backZ = -d / 2 + 0.04;
+    const frontZ = d / 2 - 0.03;
+
     for (const sign of [-1, 1]) {
-      const x = sign * (halfW - 0.03);
-      parts.push(box([x - 0.02, 0, -d / 2], [x + 0.02, 0.05, d / 2], 'frame'));
-      parts.push(box([x - 0.02, 0, d / 2 - 0.04], [x + 0.02, seatHeight, d / 2], 'frame'));
-      parts.push(box([x - 0.02, 0, -d / 2], [x + 0.02, h, -d / 2 + 0.04], 'frame'));
-      parts.push(box([x - 0.02, seatHeight - 0.02, -d / 2], [x + 0.02, seatHeight + 0.02, d / 2], 'frame'));
+      const x = sign * (halfW - 0.035);
+
+      /*
+       * Control points read back to front: on the floor at the rear, forward
+       * along the runner, up the front in a quarter turn, back over the seat,
+       * and up to the headrest. Sampled densely through a Catmull-Rom so the
+       * bends are curves rather than creases — a bentwood frame with a visible
+       * corner in it is a frame that broke.
+       */
+      const spine = new THREE.CatmullRomCurve3(
+        [
+          new THREE.Vector3(x, 0.012, backZ),
+          new THREE.Vector3(x, 0.012, backZ + d * 0.35),
+          new THREE.Vector3(x, 0.02, frontZ - 0.06),
+          new THREE.Vector3(x, 0.1, frontZ),
+          new THREE.Vector3(x, seatHeight - 0.06, frontZ - 0.01),
+          new THREE.Vector3(x, seatHeight + 0.02, frontZ - 0.12),
+          new THREE.Vector3(x, seatHeight + 0.08, backZ + 0.16),
+          new THREE.Vector3(x, h * 0.72, backZ + 0.04),
+          new THREE.Vector3(x, h, backZ + 0.02),
+        ],
+        false,
+        'catmullrom',
+        0.4,
+      );
+
+      parts.push({
+        geometry: sweep(laminate, spine.getPoints(56), {
+          axis: new THREE.Vector3(1, 0, 0),
+          crease: 45,
+        }),
+        role: 'frame',
+      });
+    }
+
+    // Two cross rails tying the side frames together — under the seat and
+    // behind the headrest, which is where the real chair has them.
+    for (const [y, z] of [
+      [seatHeight - 0.05, frontZ - 0.1],
+      [h - 0.05, backZ + 0.03],
+    ] as const) {
+      const rail = sweep(
+        roundedRectSection(0.03, 0.03, 0.008),
+        [new THREE.Vector3(-halfW + 0.03, y, z), new THREE.Vector3(halfW - 0.03, y, z)],
+        { axis: new THREE.Vector3(0, 1, 0), crease: 30 },
+      );
+      parts.push({ geometry: rail, role: 'frame' });
     }
   } else {
     // Wing chair: upholstered sides running full height.
@@ -580,14 +750,64 @@ function buildChair(
   const legInset = 0.035;
   const parts: FurniturePart[] = [];
 
-  // Back legs run the full height and become the back uprights.
+  const style: LegStyle = spec.legStyle ?? 'square-taper';
+
+  /*
+   * Back legs run the full height and become the back uprights, so they are NOT
+   * tapered legs — a tapered member carrying a backrest would be thinnest where
+   * the load is. They stay parallel, and only the front pair tapers, which is
+   * how a real side chair is made and why its silhouette is asymmetric.
+   */
   for (const sign of [-1, 1]) {
     const x = sign * (halfW - legInset);
-    parts.push(box([x - 0.018, 0, -d / 2 + legInset - 0.018], [x + 0.018, h, -d / 2 + legInset + 0.018], 'frame'));
-    parts.push(box([x - 0.018, 0, d / 2 - legInset - 0.018], [x + 0.018, seatHeight, d / 2 - legInset + 0.018], 'frame'));
+    const upright = taperedProfile(
+      roundedRectSection(0.036, 0.036, 0.005),
+      0,
+      h,
+      { topScale: 0.78, steps: 2, crease: 25 },
+    );
+    upright.translate(x, 0, -d / 2 + legInset);
+    parts.push({ geometry: upright, role: 'frame' });
   }
 
-  parts.push(box([-halfW, seatHeight - 0.035, -d / 2], [halfW, seatHeight, d / 2], spec.back === 'round' ? 'soft' : 'frame'));
+  parts.push(
+    ...legsAt(
+      [
+        [-(halfW - legInset), d / 2 - legInset],
+        [halfW - legInset, d / 2 - legInset],
+      ],
+      seatHeight,
+      0.036,
+      style,
+      'frame',
+      { foot: 'glide' },
+    ),
+  );
+
+  /*
+   * The seat, dished.
+   *
+   * A flat board is the single most obvious thing about a cheap chair model. A
+   * saddled seat — hollowed a few millimetres across the middle — catches a
+   * gradient of light instead of one flat tone, and the lip round its edge
+   * reads as a solid plank rather than as card.
+   */
+  const seatTop = lathe(
+    [
+      { r: 0, y: seatHeight - 0.006 },
+      { r: Math.min(halfW, d / 2) * 0.72, y: seatHeight - 0.004 },
+      { r: Math.min(halfW, d / 2) * 0.96, y: seatHeight },
+      { r: Math.min(halfW, d / 2), y: seatHeight - 0.008 },
+      { r: Math.min(halfW, d / 2), y: seatHeight - 0.032 },
+      { r: Math.min(halfW, d / 2) * 0.9, y: seatHeight - 0.038 },
+      { r: 0, y: seatHeight - 0.038 },
+    ],
+    segmentsFor(Math.min(halfW, d / 2)),
+    40,
+  );
+  // Turned round, then squashed to the seat's actual rectangle.
+  seatTop.scale(halfW / Math.min(halfW, d / 2), 1, d / 2 / Math.min(halfW, d / 2));
+  parts.push({ geometry: seatTop, role: spec.back === 'round' ? 'soft' : 'frame' });
 
   const backTop = h - 0.04;
   if (spec.back === 'slat') {
@@ -629,12 +849,65 @@ function buildTable(
   const topThickness = spec.glass ? 0.01 : 0.035;
   const topRole: MaterialRole = spec.glass ? 'glass' : 'frame';
 
+  const legRole: MaterialRole = spec.glass ? 'accent' : 'frame';
+  const legStyle: LegStyle = spec.legStyle ?? (spec.glass ? 'tube' : 'square-taper');
+
   if (spec.shape === 'round') {
     const radius = Math.min(w, d) / 2;
-    parts.push(cylinder([0, 0], radius, h - topThickness, h, topRole, 32));
-    // Pedestal: a tapered column on a disc foot.
-    parts.push(cone([0, 0], radius * 0.16, radius * 0.42, 0.02, h - topThickness, 'frame'));
-    parts.push(cylinder([0, 0], radius * 0.44, 0, 0.02, 'frame', 24));
+
+    /*
+     * A pedestal table, turned in one piece.
+     *
+     * The census caught this one at 320 triangles: a cylinder for the top, a
+     * cone for the column, a cylinder for the foot. DOCKSTA's whole identity is
+     * the curve where the column flares into the base, and a cone has no curve
+     * — it has one straight line and two hard shoulders, which is why the old
+     * version read as a lampshade with a plate on top.
+     *
+     * The profile runs floor to underside: a flared foot, a hollow under it so
+     * it sits on a rim rather than on its whole face, the waisted column, and
+     * the flare back out to meet the top.
+     */
+    const under = h - topThickness;
+    const pedestal = lathe(
+      [
+        { r: 0, y: 0.004 },
+        { r: radius * 0.24, y: 0 },
+        { r: radius * 0.44, y: 0 },
+        { r: radius * 0.46, y: 0.006 },
+        { r: radius * 0.42, y: 0.022 },
+        { r: radius * 0.3, y: 0.055 },
+        { r: radius * 0.2, y: 0.11 },
+        { r: radius * 0.15, y: under * 0.45 },
+        { r: radius * 0.14, y: under * 0.75 },
+        { r: radius * 0.18, y: under * 0.93 },
+        { r: radius * 0.34, y: under - 0.006 },
+        { r: radius * 0.36, y: under },
+        { r: 0, y: under },
+      ],
+      segmentsFor(radius * 0.46),
+      55,
+    );
+    parts.push({ geometry: pedestal, role: 'frame' });
+
+    /*
+     * The top gets a bevelled edge rather than a square-cut cylinder. A 35 mm
+     * slab seen edge-on from a sofa is a horizontal band of flat tone; rolling
+     * the underside of its rim puts a highlight along it.
+     */
+    const top = lathe(
+      [
+        { r: 0, y: under },
+        { r: radius - 0.012, y: under },
+        { r: radius, y: under + 0.008 },
+        { r: radius, y: h - 0.004 },
+        { r: radius - 0.005, y: h },
+        { r: 0, y: h },
+      ],
+      segmentsFor(radius),
+      55,
+    );
+    parts.push({ geometry: top, role: topRole });
     return parts;
   }
 
@@ -642,31 +915,39 @@ function buildTable(
   const halfD = d / 2;
   parts.push(box([-halfW, h - topThickness, -halfD], [halfW, h, halfD], topRole));
 
-  const legRole: MaterialRole = spec.glass ? 'accent' : 'frame';
-  const legSize = 0.035;
+  const legSize = 0.042;
   const inset = 0.05;
+  const legTop = h - topThickness;
 
   if (spec.legs === 'trestle') {
-    // A pair of A-frames set in from the ends, plus a stretcher.
+    /*
+     * A trestle: two uprights per end joined by a foot and a top rail, with a
+     * stretcher between them. The uprights taper — this is the part of a
+     * SKOGSTA that makes it look like joinery rather than like scaffolding.
+     */
     for (const sign of [-1, 1]) {
       const x = sign * (halfW - w * 0.14);
-      parts.push(box([x - 0.03, 0, -halfD + inset], [x + 0.03, h - topThickness, -halfD + inset + 0.06], legRole));
-      parts.push(box([x - 0.03, 0, halfD - inset - 0.06], [x + 0.03, h - topThickness, halfD - inset], legRole));
-      parts.push(box([x - 0.03, h - topThickness - 0.08, -halfD + inset], [x + 0.03, h - topThickness, halfD - inset], legRole));
+      parts.push(
+        ...legsAt([[x, -halfD + inset + 0.03], [x, halfD - inset - 0.03]], legTop, 0.055, 'square-taper', legRole, {
+          foot: 'none',
+        }),
+      );
+      // Foot rail on the floor and a bearer under the top.
+      parts.push(box([x - 0.028, 0, -halfD + inset], [x + 0.028, 0.055, halfD - inset], legRole));
+      parts.push(box([x - 0.03, legTop - 0.08, -halfD + inset], [x + 0.03, legTop, halfD - inset], legRole));
     }
-    parts.push(box([-halfW + w * 0.14, h * 0.25, -0.03], [halfW - w * 0.14, h * 0.25 + 0.06, 0.03], legRole));
+    parts.push(box([-halfW + w * 0.14, h * 0.25, -0.032], [halfW - w * 0.14, h * 0.25 + 0.065, 0.032], legRole));
   } else {
-    for (const sx of [-1, 1]) {
-      for (const sz of [-1, 1]) {
-        const x = sx * (halfW - inset);
-        const z = sz * (halfD - inset);
-        parts.push(box([x - legSize / 2, 0, z - legSize / 2], [x + legSize / 2, h - topThickness, z + legSize / 2], legRole));
-      }
-    }
+    parts.push(
+      ...legsAt(corners(halfW, halfD, inset), legTop, legSize, legStyle, legRole, {
+        foot: spec.glass ? 'glide' : 'none',
+        splay: spec.legStyle === 'splayed' ? 0.07 : 0,
+      }),
+    );
   }
 
   if (spec.apron) {
-    const apronTop = h - topThickness;
+    const apronTop = legTop;
     const apronBottom = apronTop - 0.07;
     parts.push(box([-halfW + inset, apronBottom, -halfD + inset - 0.012], [halfW - inset, apronTop, -halfD + inset + 0.012], legRole));
     parts.push(box([-halfW + inset, apronBottom, halfD - inset - 0.012], [halfW - inset, apronTop, halfD - inset + 0.012], legRole));
@@ -733,6 +1014,9 @@ function buildCabinet(
   const frontZ = halfD - 0.02;
   const gap = 0.006;
 
+  const face: FrontStyle = spec.front ?? 'slab';
+  const pull: HandleStyle = spec.handle ?? 'finger';
+
   if (spec.drawers > 0) {
     // Chests are usually two columns wide once they get past about a metre.
     const columns = w > 1.1 ? 2 : 1;
@@ -745,9 +1029,16 @@ function buildCabinet(
         const x1 = -halfW + (w / columns) * (column + 1) - gap;
         const y0 = base + drawerHeight * row + gap;
         const y1 = base + drawerHeight * (row + 1) - gap;
-        parts.push(box([x0, y0, frontZ], [x1, y1, halfD], 'frame'));
-        // Recessed finger pull along the top edge of each front.
-        parts.push(box([x0 + 0.04, y1 - 0.025, halfD - 0.004], [x1 - 0.04, y1 - 0.008, halfD + 0.008], 'accent'));
+
+        parts.push(...front([x0, y0, frontZ], [x1, y1, halfD], face, 'frame'));
+
+        if (pull === 'finger') {
+          // Recessed finger pull along the top edge of each front.
+          parts.push(box([x0 + 0.04, y1 - 0.025, halfD - 0.004], [x1 - 0.04, y1 - 0.008, halfD + 0.008], 'accent'));
+        } else {
+          const handle = buildHandle(pull, [(x0 + x1) / 2, (y0 + y1) / 2, halfD], (x1 - x0) * 0.42);
+          if (handle) parts.push({ geometry: handle, role: 'accent' });
+        }
       }
     }
   }
@@ -757,12 +1048,22 @@ function buildCabinet(
     for (let i = 0; i < spec.doors; i++) {
       const x0 = -halfW + (w / spec.doors) * i + gap;
       const x1 = -halfW + (w / spec.doors) * (i + 1) - gap;
-      parts.push(box([x0, base + gap, frontZ], [x1, base + doorHeight - gap, halfD], 'frame'));
+      parts.push(...front([x0, base + gap, frontZ], [x1, base + doorHeight - gap, halfD], face, 'frame'));
+
       // Handle on the leading edge, mirrored about the centre of the run.
-      const handleX = i < spec.doors / 2 ? x1 - 0.05 : x0 + 0.05;
-      parts.push(
-        cylinder([handleX, halfD + 0.012], 0.008, base + doorHeight * 0.42, base + doorHeight * 0.58, 'accent', 8),
+      const handleX = i < spec.doors / 2 ? x1 - 0.055 : x0 + 0.055;
+      const handle = buildHandle(
+        pull === 'finger' ? 'bar' : pull,
+        [handleX, base + doorHeight * 0.5, halfD],
+        doorHeight * 0.18,
       );
+      if (handle) {
+        // A door pull runs vertically; the builder draws it along X.
+        handle.translate(-handleX, -(base + doorHeight * 0.5), -halfD);
+        handle.rotateZ(Math.PI / 2);
+        handle.translate(handleX, base + doorHeight * 0.5, halfD);
+        parts.push({ geometry: handle, role: 'accent' });
+      }
     }
   }
 
@@ -840,19 +1141,230 @@ function buildBed(
   return parts;
 }
 
-/** A rug: a thin slab lying on the floor. */
+/**
+ * A rug.
+ *
+ * -----------------------------------------------------------------------------
+ * THE WORST OFFENDER IN THE WHOLE CATALOGUE.
+ *
+ * The census found this one at 300 triangles for a rectangle and 40 for a
+ * circle — a single extruded quad. In a screenshot it read as a sheet of paper
+ * lying on the floor, and for a very specific reason: a rug's edge is not a cut,
+ * it is where the pile stops. A razor-straight edge at a constant height is the
+ * one thing no textile on earth does.
+ *
+ * Three things fix it, in descending order of how much they matter:
+ *
+ *   1. THE EDGE. A rolled, slightly thicker border — a bound or whipped hem —
+ *      so the silhouette against the floor has a soft top and a shadow under it.
+ *   2. THE SURFACE. A displaced grid rather than a plane. The displacement is
+ *      tiny (a few millimetres) and its job is not to be seen as bumps but to
+ *      stop a two-metre expanse returning exactly the same normal everywhere,
+ *      which is what makes a flat rug read as painted floor.
+ *   3. THE FRINGE, on the kinds that have one.
+ *
+ * This is deliberately the most expensive item in the catalogue. A rug is the
+ * largest single soft surface in a room and it sits right where the eye lands.
+ */
 function buildRug(
   spec: Extract<BuildSpec, { kind: 'rug' }>,
   size: BuildDimensions,
 ): FurniturePart[] {
   const { width: w, depth: d, height: h } = size;
+  const parts: FurniturePart[] = [];
+
+  const pile = spec.pile ?? 'low';
+  const relief = pile === 'shag' ? h * 0.55 : pile === 'flat' ? h * 0.12 : h * 0.3;
+  // A hand's width of border, bound slightly proud of the field.
+  const border = Math.min(0.06, Math.min(w, d) * 0.06);
+
+  /*
+   * Deterministic, and deliberately not `Math.random`.
+   *
+   * Two rugs of the same product must be identical, because the geometry cache
+   * is keyed by item id and a random surface would mean a rug that reshuffled
+   * itself every time the document rebuilt. The hash is the same cheap one the
+   * clutter generator uses.
+   */
+  const wobble = (x: number, z: number): number => {
+    const a = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
+    const b = Math.sin(x * 39.3468 + z * 11.135) * 24634.6345;
+    return ((a - Math.floor(a)) + (b - Math.floor(b))) / 2;
+  };
+
   if (spec.shape === 'round') {
-    return [cylinder([0, 0], Math.min(w, d) / 2, 0, h, 'soft', 40)];
+    const radius = Math.min(w, d) / 2;
+    const sides = segmentsFor(radius);
+
+    // Field and bound edge in one turned profile: flat centre, a dip where the
+    // binding is stitched down, then the raised hem and the roll back to the
+    // floor.
+    const rug = lathe(
+      [
+        { r: 0, y: h * 0.82 },
+        { r: radius - border * 1.6, y: h * 0.86 },
+        { r: radius - border, y: h * 0.78 },
+        { r: radius - border * 0.55, y: h },
+        { r: radius - border * 0.15, y: h * 0.92 },
+        { r: radius, y: h * 0.45 },
+        { r: radius - 0.004, y: 0 },
+        { r: 0, y: 0 },
+      ],
+      sides,
+      45,
+    );
+    parts.push({ geometry: rug, role: 'soft' });
+    return parts;
   }
-  return [box([-w / 2, 0, -d / 2], [w / 2, h, d / 2], 'soft')];
+
+  const halfW = w / 2;
+  const halfD = d / 2;
+
+  /*
+   * The field: a grid, displaced.
+   *
+   * 25 mm cells, which on a 2 x 3 m rug is 80 x 120 — about 19,000 triangles.
+   * That is more than the sofa, and it is the right call: this surface fills a
+   * third of the frame in any view of a seating group.
+   */
+  const cell = 0.025;
+  const nx = Math.max(2, Math.round(w / cell));
+  const nz = Math.max(2, Math.round(d / cell));
+
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  for (let iz = 0; iz <= nz; iz++) {
+    for (let ix = 0; ix <= nx; ix++) {
+      const x = -halfW + (w / nx) * ix;
+      const z = -halfD + (d / nz) * iz;
+
+      /*
+       * Falls away at the border so the field meets the hem rather than
+       * ending in mid-air. `edge` is 0 at the very edge and 1 once the border
+       * width is cleared.
+       */
+      const fromEdge = Math.min(halfW - Math.abs(x), halfD - Math.abs(z));
+      const edge = Math.max(0, Math.min(1, fromEdge / border));
+
+      const y = h * 0.8 + (wobble(x * 37, z * 37) - 0.5) * relief * edge - (1 - edge) * h * 0.1;
+      positions.push(x, y, z);
+    }
+  }
+
+  const stride = nx + 1;
+  for (let iz = 0; iz < nz; iz++) {
+    for (let ix = 0; ix < nx; ix++) {
+      const a = iz * stride + ix;
+      const b = a + 1;
+      const c = a + stride;
+      const e = c + 1;
+      // Wound so the normals point up out of the floor.
+      indices.push(a, c, b);
+      indices.push(b, c, e);
+    }
+  }
+
+  const field = new THREE.BufferGeometry();
+  field.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  field.setIndex(indices);
+  field.computeVertexNormals();
+  parts.push({ geometry: field, role: 'soft' });
+
+  /*
+   * The bound edge, swept round the rug's perimeter as a rolled hem.
+   *
+   * This is the part that does the work. It gives the rug a silhouette with a
+   * thickness that varies, an underside for the occlusion to find, and a
+   * top edge that catches the light along its whole run.
+   */
+  /*
+   * The section is written HEIGHT FIRST, and that is not a slip.
+   *
+   * `sweep` maps the section's local x onto its reference axis and its local y
+   * onto the perpendicular. The reference axis here has to be world up, because
+   * the path turns four corners and no fixed horizontal direction stays
+   * perpendicular to all four sides. So local x is VERTICAL and local y is the
+   * horizontal width of the hem — the opposite way round from how a section is
+   * normally read.
+   *
+   * Written the intuitive way round it came out as a 78 mm vertical fin running
+   * all the way round the rug and 35 mm down through the floorboards. It did
+   * not look like a bug in a screenshot: it looked like a rug with a thick
+   * edge, which is a thing that exists. `__meshProbe` reporting `minY = -0.035`
+   * on a rug is what actually identified it.
+   */
+  const hem = roundedRectSection(h * 1.0, border * 1.3, Math.min(h * 0.45, border * 0.3));
+  const path: THREE.Vector3[] = [];
+  const inset = border * 0.5;
+  const ring: [number, number][] = [
+    [-halfW + inset, -halfD + inset],
+    [halfW - inset, -halfD + inset],
+    [halfW - inset, halfD - inset],
+    [-halfW + inset, halfD - inset],
+  ];
+  // Walk the loop, subdividing each side so the sweep's central-difference
+  // tangent has something to work with at the corners.
+  for (let i = 0; i <= ring.length; i++) {
+    const from = ring[i % ring.length]!;
+    const to = ring[(i + 1) % ring.length]!;
+    for (let s = 0; s < 4; s++) {
+      const t = s / 4;
+      // Centred so the hem sits ON the floor and stands very slightly proud of
+      // the field, which is what a bound edge does.
+      path.push(new THREE.Vector3(from[0] + (to[0] - from[0]) * t, h * 0.52, from[1] + (to[1] - from[1]) * t));
+    }
+  }
+  parts.push({
+    geometry: sweep(hem, path, { axis: new THREE.Vector3(0, 1, 0), crease: 35 }),
+    role: 'soft',
+  });
+
+  if (spec.fringe) {
+    /*
+     * Fringe on the two short ends, as tapered strands lying on the floor.
+     *
+     * Individually modelled rather than faked with a texture, because a fringe
+     * is a silhouette feature — the whole point of it is the ragged outline
+     * against the floorboards, which an alpha map on a flat quad cannot give at
+     * a grazing angle.
+     */
+    const strands = Math.max(8, Math.round(w / 0.018));
+    for (const sign of [-1, 1]) {
+      for (let i = 0; i < strands; i++) {
+        const x = -halfW + (w / (strands - 1)) * i;
+        const lean = (wobble(x * 91, sign * 13) - 0.5) * 0.02;
+        const length = 0.05 + wobble(x * 17, sign * 29) * 0.02;
+        const strand = taperedProfile(circleSection(0.0018, 5), 0, length, { topScale: 0.6, crease: 60 });
+        // Turned on its side to lie on the floor, splaying outward.
+        strand.rotateX(sign > 0 ? -Math.PI / 2 : Math.PI / 2);
+        strand.rotateY(lean * 8);
+        strand.translate(x, h * 0.18, sign * (halfD - inset * 0.4));
+        parts.push({ geometry: strand, role: 'soft' });
+      }
+    }
+  }
+
+  return parts;
 }
 
-/** A lamp: base, stem and shade. */
+/**
+ * A lamp: base, stem and shade.
+ *
+ * -----------------------------------------------------------------------------
+ * A SHADE IS A HOLLOW OBJECT, AND THAT IS THE WHOLE POINT OF ONE.
+ *
+ * The old version drew it as an open-ended cone — a surface with no thickness,
+ * so from below you saw the back of it and from the side its rim was a line with
+ * no width. A real shade has an inside, and the inside is the brightest surface
+ * in the room when the lamp is on: it is the thing that produces the warm ring
+ * of light on the ceiling. Turning the profile up the outside, over the rim and
+ * back down the inside costs about 600 triangles and gives the shade a lip, an
+ * interior for the bounce to land on, and a silhouette with depth.
+ *
+ * The whole lamp was 214 triangles before this. It is the smallest object in the
+ * catalogue and one of the few that is usually lit from within.
+ */
 function buildLamp(
   spec: Extract<BuildSpec, { kind: 'lamp' }>,
   size: BuildDimensions,
@@ -861,18 +1373,110 @@ function buildLamp(
   const radius = w / 2;
   const parts: FurniturePart[] = [];
 
+  /** A shade turned as a hollow form: up the outside, over the rim, back down. */
+  const shadeAt = (bottom: number, top: number, lower: number, upper: number) => {
+    const wall = 0.0025;
+    return lathe(
+      [
+        { r: lower, y: bottom },
+        { r: upper, y: top },
+        { r: upper - wall * 0.6, y: top + 0.004 },
+        { r: upper - wall, y: top },
+        { r: lower - wall, y: bottom + 0.004 },
+        { r: lower - wall * 0.4, y: bottom },
+      ],
+      segmentsFor(Math.max(lower, upper)),
+      48,
+    );
+  };
+
   if (spec.style === 'floor') {
-    parts.push(cylinder([0, 0], radius * 0.55, 0, 0.02, 'accent', 20));
-    parts.push(cylinder([0, 0], 0.014, 0.02, h - radius * 0.9, 'accent'));
-    parts.push(cone([0, 0], radius * 0.55, radius, h - radius * 0.9, h, 'shade'));
+    const shadeBottom = h - radius * 0.95;
+
+    /*
+     * A weighted base, turned. The taper matters more than it sounds: a floor
+     * lamp base is the only part of the object at eye level for somebody
+     * sitting down, and a flat disc has no silhouette at all from there.
+     */
+    const base = lathe(
+      [
+        { r: 0, y: 0.002 },
+        { r: radius * 0.5, y: 0 },
+        { r: radius * 0.56, y: 0.004 },
+        { r: radius * 0.54, y: 0.016 },
+        { r: radius * 0.3, y: 0.03 },
+        { r: radius * 0.16, y: 0.05 },
+        { r: 0.016, y: 0.075 },
+        { r: 0, y: 0.075 },
+      ],
+      segmentsFor(radius * 0.56),
+      55,
+    );
+    parts.push({ geometry: base, role: 'accent' });
+
+    // The stem, very slightly tapered so it does not read as a pipe.
+    parts.push({
+      geometry: taperedProfile(circleSection(0.013), 0.06, shadeBottom + 0.02, {
+        topScale: 0.82,
+        crease: 60,
+      }),
+      role: 'accent',
+    });
+
+    parts.push({ geometry: shadeAt(shadeBottom, h, radius, radius * 0.62), role: 'shade' });
     return parts;
   }
 
-  // Table lamp: a weighted base, a short arm and a small shade.
-  parts.push(cylinder([0, 0], radius * 0.85, 0, 0.02, 'accent', 16));
-  parts.push(cylinder([0, 0], 0.012, 0.02, h * 0.55, 'accent'));
-  parts.push(box([-0.012, h * 0.55 - 0.012, 0], [0.012, h * 0.55 + 0.012, size.depth * 0.5], 'accent'));
-  parts.push(cone([0, size.depth * 0.45], radius * 0.5, radius * 0.95, h * 0.55 - 0.14, h * 0.55 + 0.02, 'shade'));
+  /*
+   * Table lamp: a weighted base, a stem, a jointed arm and a shade on the end.
+   *
+   * The ARM is the point, and the rewrite lost it once already. RANARP is
+   * catalogued as a work lamp 190 mm wide and 340 mm deep, and the only thing
+   * that makes a lamp deeper than it is wide is a shade cantilevered out over a
+   * desk. A centred shade left it rattling around inside a footprint twice its
+   * size, which `geometry.test.ts` caught as a piece that does not fill the
+   * space it claims — a check that exists precisely because "too small" looks
+   * entirely reasonable on screen.
+   */
+  const stemTop = h * 0.55;
+  const reach = size.depth * 0.42;
+  const base = lathe(
+    [
+      { r: 0, y: 0.002 },
+      { r: radius * 0.8, y: 0 },
+      { r: radius * 0.85, y: 0.006 },
+      { r: radius * 0.78, y: 0.024 },
+      { r: radius * 0.42, y: 0.05 },
+      { r: 0.014, y: 0.08 },
+      { r: 0, y: 0.08 },
+    ],
+    segmentsFor(radius * 0.85),
+    55,
+  );
+  parts.push({ geometry: base, role: 'accent' });
+
+  parts.push({
+    geometry: taperedProfile(circleSection(0.011), 0.06, stemTop, { topScale: 0.85, crease: 60 }),
+    role: 'accent',
+  });
+
+  // The arm: a rod from the top of the stem out over the desk, with a slight
+  // droop so it reads as a jointed arm rather than as a shelf bracket.
+  const arm = sweep(
+    circleSection(0.009, 10),
+    [
+      new THREE.Vector3(0, stemTop, 0),
+      new THREE.Vector3(0, stemTop + 0.012, reach * 0.45),
+      new THREE.Vector3(0, stemTop - 0.005, reach),
+    ],
+    { axis: new THREE.Vector3(1, 0, 0), crease: 60 },
+  );
+  parts.push({ geometry: arm, role: 'accent' });
+
+  // The shade hangs off the end of the arm, not off the stem.
+  const shade = shadeAt(stemTop - 0.15, stemTop - 0.01, radius * 0.95, radius * 0.5);
+  shade.translate(0, 0, reach);
+  parts.push({ geometry: shade, role: 'shade' });
   return parts;
 }
 
@@ -925,15 +1529,18 @@ function buildTrolley(
   const halfD = d / 2;
   const parts: FurniturePart[] = [];
 
+  /*
+   * Castors, as wheels rather than as two stacked cylinders.
+   *
+   * A trolley sits at knee height with nothing in front of it, so its feet are
+   * unusually exposed — more visible than a sofa's, which are behind a skirt.
+   * The wheel is the one part of a RÅSKOG a person can name from across a room.
+   */
   const castor = 0.05;
-  for (const sx of [-1, 1]) {
-    for (const sz of [-1, 1]) {
-      const x = sx * (halfW - 0.03);
-      const z = sz * (halfD - 0.03);
-      parts.push(cylinder([x, z], 0.02, 0.02, castor, 'accent', 8));
-      parts.push(cylinder([x, z], 0.009, castor, h, 'accent'));
-    }
-  }
+  parts.push(
+    ...legsAt(corners(halfW, halfD, 0.03), h, 0.018, 'tube', 'accent', { foot: 'castor', bottom: 0 }),
+  );
+  void castor;
 
   const usable = h - castor - 0.08;
   for (let tier = 0; tier < spec.tiers; tier++) {

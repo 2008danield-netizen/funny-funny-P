@@ -691,6 +691,43 @@ export class Engine {
       };
     };
 
+    /*
+     * Every visible mesh, by name, with what it costs.
+     *
+     * `__renderStats` reports totals, and a total cannot answer the question
+     * that actually comes up: "the rug is not on screen — is it missing, or is
+     * it drawn and invisible?" Those need completely different fixes and a
+     * screenshot cannot tell them apart. Added in session 18 when exactly that
+     * happened: the catalogue built a 12,000-triangle rug in node and the room
+     * rendered bare floorboards, and the first three explanations considered
+     * were all wrong.
+     */
+    scope.__meshProbe = (match?: string) => {
+      const rows: { name: string; tris: number; visible: boolean; y: number }[] = [];
+      this.scene.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        if (match && !mesh.name.includes(match)) return;
+        const geometry = mesh.geometry;
+        const position = geometry.getAttribute('position');
+        if (!position) return;
+        const tris = geometry.index ? geometry.index.count / 3 : position.count / 3;
+        mesh.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromBufferAttribute(
+          position as THREE.BufferAttribute,
+        );
+        box.applyMatrix4(mesh.matrixWorld);
+        rows.push({
+          name: mesh.name || '(unnamed)',
+          tris: Math.round(tris),
+          visible: mesh.visible,
+          y: Number(box.min.y.toFixed(3)),
+        });
+      });
+      rows.sort((a, b) => b.tris - a.tris);
+      return rows;
+    };
+
     scope.__envProbe = (on?: boolean) => {
       if (on === false) {
         this.lighting.useCapturedEnvironment(null);
